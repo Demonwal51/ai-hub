@@ -418,7 +418,8 @@ def active_request(conn, conversation_id):
     )
 
 
-def add_user_message(conn, conversation_id, content):
+def add_user_message(conn, conversation_id, content, user_id=None):
+    """`user_id`: who wrote it, when several people share the conversation (None: the owner)."""
     _check_text(content, "message")
     get_conversation(conn, conversation_id)
     if active_request(conn, conversation_id) is not None:
@@ -428,10 +429,10 @@ def add_user_message(conn, conversation_id, content):
     with transaction(conn):
         cur = conn.execute(
             """
-            INSERT INTO messages (conversation_id, role, content, status, created_at)
-            VALUES (?, 'user', ?, 'ok', ?)
+            INSERT INTO messages (conversation_id, role, content, status, created_at, user_id)
+            VALUES (?, 'user', ?, 'ok', ?, ?)
             """,
-            (conversation_id, content, utc_now()),
+            (conversation_id, content, utc_now(), user_id),
         )
         _touch(conn, conversation_id)
     return cur.lastrowid
@@ -541,7 +542,8 @@ QUOTA_STATUSES = ("allowed", "allowed_warning", "rejected")
 
 
 def record_quota(conn, provider, status, *, limit_type=None, utilization=None,
-                 resets_at=None, windows_json=None):
+                 resets_at=None, windows_json=None, user_id=None):
+    """`user_id`: the quota of that person's own account (None: the computer's)."""
     _check_choice(provider, PROVIDERS, "fournisseur")
     _check_choice(status, QUOTA_STATUSES, "état de quota")
     if utilization is not None and (not isinstance(utilization, (int, float))
@@ -550,20 +552,20 @@ def record_quota(conn, provider, status, *, limit_type=None, utilization=None,
     cur = conn.execute(
         """
         INSERT INTO quota_observations (provider, status, limit_type, utilization, resets_at,
-                                        windows_json, observed_at)
-        VALUES (?, ?, ?, ?, ?, ?, ?)
+                                        windows_json, observed_at, user_id)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?)
         """,
-        (provider, status, limit_type, utilization, resets_at, windows_json, utc_now()),
+        (provider, status, limit_type, utilization, resets_at, windows_json, utc_now(), user_id),
     )
     return cur.lastrowid
 
 
-def latest_quota(conn, provider):
-    """Last quota state seen for a provider, or None if none was ever reported."""
+def latest_quota(conn, provider, user_id=None):
+    """Last quota state seen for a provider's account (`user_id`: a person's own, None: the computer's)."""
     return _one(
         conn,
-        "SELECT * FROM quota_observations WHERE provider = ? ORDER BY id DESC LIMIT 1",
-        (provider,),
+        "SELECT * FROM quota_observations WHERE provider = ? AND user_id IS ? ORDER BY id DESC LIMIT 1",
+        (provider, user_id),
     )
 
 

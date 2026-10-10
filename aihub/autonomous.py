@@ -170,7 +170,8 @@ class AutonomousRun:
             raise StoreError("aucun dossier de travail n'est défini pour cette conversation")
         if store.active_request(self.conn, self.conversation_id) is not None:
             raise store.Busy("une requête est en cours dans cette conversation")
-        goal_id = store.add_user_message(self.conn, self.conversation_id, self.goal)
+        goal_id = store.add_user_message(self.conn, self.conversation_id, self.goal,
+                                         self.request_kwargs.get("user_id"))
         self.run_id = self.conn.execute(
             "INSERT INTO autonomous_runs (conversation_id, goal_message_id, agent_id, check_command, max_rounds, "
             "max_minutes, status, schedule_id, started_at) VALUES (?, ?, ?, ?, ?, ?, 'running', ?, ?)",

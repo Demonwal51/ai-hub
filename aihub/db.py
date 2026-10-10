@@ -10,7 +10,7 @@ import sqlite3
 from contextlib import contextmanager
 from datetime import datetime, timezone
 
-SCHEMA_VERSION = 14
+SCHEMA_VERSION = 15
 
 # One statement per string: triggers contain semicolons, so the schema
 # cannot be split on ";" and executescript() would commit mid-migration.
@@ -593,6 +593,68 @@ _SCHEMA_V14 = [
 ]
 
 
+_SCHEMA_V15 = [
+    # Several people on one server (version 0.2). The owner is the person who
+    # set the server's password; the others come by invitation. Each one has
+    # a password of their own (scrypt hash only).
+    """
+    CREATE TABLE users (
+        id            INTEGER PRIMARY KEY,
+        name          TEXT NOT NULL UNIQUE COLLATE NOCASE,
+        password_hash TEXT NOT NULL,
+        is_owner      INTEGER NOT NULL DEFAULT 0 CHECK (is_owner IN (0, 1)),
+        disabled      INTEGER NOT NULL DEFAULT 0 CHECK (disabled IN (0, 1)),
+        created_at    TEXT NOT NULL
+    )
+    """,
+    "CREATE UNIQUE INDEX one_owner ON users(is_owner) WHERE is_owner = 1",
+    # The server's password becomes the owner's.
+    """
+    INSERT INTO users (name, password_hash, is_owner, created_at)
+    SELECT 'Propriétaire', password_hash, 1, changed_at FROM auth_password WHERE id = 1
+    """,
+    "DELETE FROM auth_password",
+    # Whose session it is; the open sessions were the owner's.
+    "ALTER TABLE sessions ADD COLUMN user_id INTEGER REFERENCES users(id) ON DELETE CASCADE",
+    "UPDATE sessions SET user_id = (SELECT id FROM users WHERE is_owner = 1)",
+    # A link the owner gives to one person; only its SHA-256 is kept, used once.
+    """
+    CREATE TABLE invitations (
+        id         INTEGER PRIMARY KEY,
+        token_hash TEXT NOT NULL UNIQUE,
+        note       TEXT,
+        created_at TEXT NOT NULL,
+        expires_at TEXT NOT NULL,
+        used_at    TEXT,
+        user_id    INTEGER REFERENCES users(id) ON DELETE SET NULL
+    )
+    """,
+    # Who owns a conversation or a project: NULL is the server's owner (all
+    # that existed before, and everything without accounts).
+    "ALTER TABLE conversations ADD COLUMN owner_id INTEGER REFERENCES users(id) ON DELETE SET NULL",
+    "ALTER TABLE projects ADD COLUMN owner_id INTEGER REFERENCES users(id) ON DELETE SET NULL",
+    # A conversation or a project shared with a person, read only or read and write.
+    """
+    CREATE TABLE shares (
+        id              INTEGER PRIMARY KEY,
+        conversation_id INTEGER REFERENCES conversations(id) ON DELETE CASCADE,
+        project_id      INTEGER REFERENCES projects(id) ON DELETE CASCADE,
+        user_id         INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+        role            TEXT NOT NULL CHECK (role IN ('read', 'write')),
+        created_at      TEXT NOT NULL,
+        CHECK ((conversation_id IS NULL) <> (project_id IS NULL))
+    )
+    """,
+    "CREATE UNIQUE INDEX shares_conversation ON shares(conversation_id, user_id) WHERE conversation_id IS NOT NULL",
+    "CREATE UNIQUE INDEX shares_project ON shares(project_id, user_id) WHERE project_id IS NOT NULL",
+    "CREATE INDEX shares_by_user ON shares(user_id)",
+    # Who sent a message (NULL: the owner, or before accounts existed).
+    "ALTER TABLE messages ADD COLUMN user_id INTEGER REFERENCES users(id) ON DELETE SET NULL",
+    # Whose quota a reading is (NULL: the owner's own AI accounts).
+    "ALTER TABLE quota_observations ADD COLUMN user_id INTEGER REFERENCES users(id) ON DELETE CASCADE",
+]
+
+
 class SchemaError(Exception):
     """The database file cannot be used by this version of the code."""
 
@@ -690,6 +752,9 @@ def migrate(conn: sqlite3.Connection) -> None:
                 conn.execute(statement)
         if version < 14:
             for statement in _SCHEMA_V14:
+                conn.execute(statement)
+        if version < 15:
+            for statement in _SCHEMA_V15:
                 conn.execute(statement)
         # PRAGMA does not accept bound parameters; SCHEMA_VERSION is an int constant.
         conn.execute(f"PRAGMA user_version = {SCHEMA_VERSION}")

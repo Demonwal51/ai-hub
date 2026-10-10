@@ -172,7 +172,8 @@ def describe_error(text, *, kind=None, quota=None, model=None):
     low = (text or "").lower()
     if kind == "unauthorized" or "not logged in" in low or ("login" in low and "required" in low):
         return (f"{DISPLAY_NAME} n'est connecté à aucun compte. Ouvrez l'application Codex et "
-                "connectez-vous (ou lancez « codex login »), puis réessayez.")
+                "connectez-vous (ou lancez « codex login »), puis réessayez "
+                "(une personne invitée : menu « Mes comptes IA »).")
     if kind == "usageLimitExceeded" or (quota is not None and quota.status == "rejected") or "usage limit" in low:
         who = f"{DISPLAY_NAME} ({model})" if model else DISPLAY_NAME
         when = _local_time(quota.resets_at) if quota and quota.resets_at else None
@@ -193,6 +194,8 @@ class _Server:
     """One app server process and its JSON-RPC line protocol."""
 
     def __init__(self, command, workdir, env, home=None):
+        if home is None and env and env.get("CODEX_HOME"):
+            home = Path(env["CODEX_HOME"])  # a person's own account (aihub/accounts.py)
         try:
             self.proc = subprocess.Popen(
                 server_args(command, home), cwd=workdir, env=env if env is not None else dict(os.environ),

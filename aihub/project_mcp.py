@@ -118,8 +118,11 @@ def _local(iso):
 
 
 class Access:
-    def __init__(self, db_path, conversation_id):
+    def __init__(self, db_path, conversation_id, own_only=False):
         self.db_path, self.conversation_id = db_path, conversation_id
+        # own_only: the request comes from a person the project is not shared with
+        # (version 0.2): this conversation's own past only, never the others.
+        self.own_only = own_only
 
     def _connect(self):
         # as_uri: drive letter, backslashes and spaces made valid for a URI.
@@ -133,6 +136,8 @@ class Access:
                           (self.conversation_id,)).fetchone()
         if me is None:
             raise Refused("cette conversation n'existe plus")
+        if self.own_only:
+            raise Refused("les autres conversations du projet ne sont pas partagées avec la personne qui demande")
         if me["project_id"] is None:
             raise Refused("cette conversation n'est dans aucun projet : elle ne voit aucune autre conversation")
         if not me["shared"]:
@@ -432,8 +437,9 @@ def main(argv=None):
     parser = argparse.ArgumentParser()
     parser.add_argument("--db", required=True)
     parser.add_argument("--conversation", type=int, required=True)
+    parser.add_argument("--seule", action="store_true", help="cette conversation seulement, pas les autres du projet")
     args = parser.parse_args(argv)
-    access = Access(args.db, args.conversation)
+    access = Access(args.db, args.conversation, own_only=args.seule)
     for stream in (sys.stdin, sys.stdout):
         stream.reconfigure(encoding="utf-8")
     for line in sys.stdin:

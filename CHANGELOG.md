@@ -1,5 +1,22 @@
 # Changelog
 
+## 0.2.0 beta — 2026-10-11
+
+Several people on one server, each with their own AI accounts.
+
+- People: the owner invites by a one-use link (7 days); each person has a
+  name and a password, and logs in with them.
+- Sharing of a conversation or of a whole project, read or read and write.
+  What is not shared answers "introuvable"; what is the owner's stays so.
+- Each person's own Claude and Codex accounts ("Mes comptes IA", sign-in
+  from the hub): their requests, plans, delegations and quota use them,
+  never the owner's.
+- Authors on the requests; a permission prompt answered only by the person
+  whose request it is; alerts only about what is shared with you, quota
+  alerts only about your own accounts.
+- The owner can also make an account directly (name and password to pass
+  on), and rename anyone, themselves too.
+
 ## 0.1.0 beta — 2026-10-10
 
 First published version.

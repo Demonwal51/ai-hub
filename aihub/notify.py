@@ -228,29 +228,33 @@ class Notifier:
         self._lock = threading.Lock()
         self._thread = None
 
-    def notify(self, event, conversation_id=None, detail=None, *, test=False):
-        """`test`: the « Essayer » button, shown even with the app in front."""
+    def notify(self, event, conversation_id=None, detail=None, *, test=False, user_id=None, session_id=None):
+        """`test`: the « Essayer » button, shown even with the app in front, and
+        only on the asking device (`session_id`). `user_id`: an alert about a
+        person's own account (their quota): only their devices, not the owner's."""
         if event not in EVENTS:
             raise ValueError(event)
         if self.sync:
-            self._deliver(event, conversation_id, detail, test)
+            self._deliver(event, conversation_id, detail, test, session_id, user_id)
             return
         with self._lock:
             if self._thread is None or not self._thread.is_alive():
                 self._thread = threading.Thread(target=self._loop, name="aihub-notify", daemon=True)
                 self._thread.start()
-        self._queue.put((event, conversation_id, detail, test))
+        self._queue.put((event, conversation_id, detail, test, session_id, user_id))
 
-    def quota(self, provider_name, info, threshold_percent):
-        """Alert once when a quota crosses the alert threshold, and once when it is reached."""
+    def quota(self, provider_name, info, threshold_percent, user_id=None):
+        """Alert once when a quota crosses the alert threshold, and once when it is reached.
+
+        `user_id`: the quota of that person's own account (None: the computer's)."""
         used = info.utilization if isinstance(info.utilization, (int, float)) else 0
         level = 2 if info.status == "rejected" else 1 if used * 100 >= threshold_percent else 0
         with self._lock:
-            before = self._quota_levels.get(provider_name, 0)
-            self._quota_levels[provider_name] = level
+            before = self._quota_levels.get((provider_name, user_id), 0)
+            self._quota_levels[(provider_name, user_id)] = level
         if level > before:
             what = "atteint" if level == 2 else f"à {round(used * 100)} %"
-            self.notify("quota", None, f"{provider_name} : quota {what}")
+            self.notify("quota", None, f"{provider_name} : quota {what}", user_id=user_id)
 
     def flush(self, timeout=10):
         """Wait until every queued alert is delivered (tests, shutdown)."""
@@ -269,21 +273,51 @@ class Notifier:
             finally:
                 self._queue.task_done()
 
-    def _deliver(self, event, conversation_id, detail, test=False):
+    def _deliver(self, event, conversation_id, detail, test=False, session_id=None, user_id=None):
         conn = db.connect(self.db_path)
         try:
             title_of = None
             if conversation_id is not None:
                 row = conn.execute("SELECT title FROM conversations WHERE id = ?", (conversation_id,)).fetchone()
                 title_of = row["title"] if row else None
-            self._web_push(conn, event, conversation_id, title_of, detail, test)
-            self._ntfy(event, title_of, detail, test)
+            self._web_push(conn, event, conversation_id, title_of, detail, test, session_id, user_id)
+            # ntfy is the owner's channel: never an alert about someone else's account.
+            if (not test or session_id is None) and user_id is None:
+                self._ntfy(event, title_of, detail, test)
         finally:
             conn.close()
 
-    def _web_push(self, conn, event, conversation_id, conversation_title, detail, test=False):
-        rows = [r for r in conn.execute("SELECT * FROM push_subscriptions").fetchall()
-                if test or event in json.loads(r["events_json"])]
+    @staticmethod
+    def _audience(conn, conversation_id):
+        """Who besides the owner sees this alert: the people the conversation is shared with."""
+        if conversation_id is None:
+            return set()
+        project = conn.execute("SELECT project_id FROM conversations WHERE id = ?", (conversation_id,)).fetchone()
+        rows = conn.execute("SELECT user_id FROM shares WHERE conversation_id = ? OR "
+                            "(project_id IS NOT NULL AND project_id = ?)",
+                            (conversation_id, project["project_id"] if project else None)).fetchall()
+        return {r["user_id"] for r in rows}
+
+    def _web_push(self, conn, event, conversation_id, conversation_title, detail, test=False, session_id=None,
+                  user_id=None):
+        guests = self._audience(conn, conversation_id)
+        rows = []
+        for r in conn.execute("SELECT p.*, s.user_id, u.is_owner FROM push_subscriptions p "
+                              "LEFT JOIN sessions s ON s.id = p.session_id LEFT JOIN users u ON u.id = s.user_id"):
+            if test:
+                if session_id is None or r["session_id"] == session_id:
+                    rows.append(r)
+                continue
+            if event not in json.loads(r["events_json"]):
+                continue
+            if user_id is not None:
+                if r["user_id"] == user_id:  # about that person's own account: theirs only
+                    rows.append(r)
+                continue
+            # The owner's devices (and those of a server without accounts) get everything;
+            # a guest's, only the alerts of what is shared with them.
+            if r["user_id"] is None or r["is_owner"] or r["user_id"] in guests:
+                rows.append(r)
         if not rows:
             return
         private, public = server_key(conn)

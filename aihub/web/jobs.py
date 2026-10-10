@@ -15,7 +15,7 @@ import uuid
 from dataclasses import dataclass, field
 from pathlib import Path
 
-from .. import autonomous, db, obsidian, orchestrator, providers, schedule, store
+from .. import accounts, autonomous, db, obsidian, orchestrator, providers, schedule, store
 from ..providers.claude_code import Decision, ProviderError
 from ..runner import Request
 from ..store import StoreError
@@ -83,6 +83,7 @@ class Job:
         self.plan_id = None
         self.run_id = None          # autonomous work: its run
         self.schedule_id = None     # launched by a scheduled task
+        self.user = None            # who started it (None: the owner): their AI accounts, their prompts
         self.round = None           # autonomous work: the round in progress
         self.length = 0             # characters of the reply streamed so far
         self.subtask_texts = {}     # subtask id -> text streamed so far
@@ -102,6 +103,7 @@ class JobManager:
         self.notifier = None          # phone alerts (aihub/notify.py; create_app sets it)
         self.command = command
         self.env = env
+        self.accounts_root = Path(db_path).resolve().parent / "comptes"  # each person's AI accounts
         self.permission_timeout_s = permission_timeout_s
         self.request_timeout_s = request_timeout_s
         self.hub = EventHub()
@@ -117,7 +119,7 @@ class JobManager:
 
     # --- starting and stopping --------------------------------------------
 
-    def start(self, conversation_id, agent_id, prompt, *, wait_s=30, schedule_id=None):
+    def start(self, conversation_id, agent_id, prompt, *, wait_s=30, schedule_id=None, user=None):
         """Start a single reply; return its message id once it exists.
 
         Refusals (a request already running, no working folder...) are
@@ -127,24 +129,24 @@ class JobManager:
         def body(job, conn):
             job.schedule_id = schedule_id
             return self._single(job, conn, agent_id, prompt)
-        return self._launch(conversation_id, "single", body, wait_s)
+        return self._launch(conversation_id, "single", body, wait_s, user)
 
-    def start_planning(self, conversation_id, prompt, *, wait_s=30):
+    def start_planning(self, conversation_id, prompt, *, wait_s=30, user=None):
         """Ask the conductor for a plan; return the conductor's message id."""
         return self._launch(conversation_id, "planning",
-                            lambda job, conn: self._planning(job, conn, prompt), wait_s)
+                            lambda job, conn: self._planning(job, conn, prompt), wait_s, user)
 
-    def start_discussion(self, conversation_id, text, *, wait_s=30):
+    def start_discussion(self, conversation_id, text, *, wait_s=30, user=None):
         """Send a message to the conductor; return its reply's message id."""
         return self._launch(conversation_id, "discussion",
-                            lambda job, conn: self._discussion(job, conn, text), wait_s)
+                            lambda job, conn: self._discussion(job, conn, text), wait_s, user)
 
-    def start_adapt(self, conversation_id, plan_id, *, wait_s=30):
+    def start_adapt(self, conversation_id, plan_id, *, wait_s=30, user=None):
         """Ask the conductor to adapt a proposed plan; return its message id."""
         return self._launch(conversation_id, "adapt",
-                            lambda job, conn: self._adapt(job, conn, plan_id), wait_s)
+                            lambda job, conn: self._adapt(job, conn, plan_id), wait_s, user)
 
-    def start_autonomous(self, conversation_id, agent_id, goal, *, wait_s=30, **limits):
+    def start_autonomous(self, conversation_id, agent_id, goal, *, wait_s=30, user=None, **limits):
         """Start autonomous work toward a goal; return its run id once it exists.
 
         `limits`: max_rounds, max_minutes, check_command, confirm_check, schedule_id.
@@ -157,17 +159,18 @@ class JobManager:
             seen["job"] = job
             job.schedule_id = limits.get("schedule_id")
             return self._autonomous(job, conn, agent_id, goal, limits)
-        self._launch(conversation_id, "autonomous", body, wait_s)
+        self._launch(conversation_id, "autonomous", body, wait_s, user)
         return seen["job"].run_id
 
-    def start_execution(self, conversation_id, plan_id, *, wait_s=30):
+    def start_execution(self, conversation_id, plan_id, *, wait_s=30, user=None):
         """Run a validated plan; return the plan id once it is running."""
         self._launch(conversation_id, "execution",
-                     lambda job, conn: self._execution(job, plan_id), wait_s)
+                     lambda job, conn: self._execution(job, plan_id), wait_s, user)
         return plan_id
 
-    def _launch(self, conversation_id, kind, body, wait_s):
+    def _launch(self, conversation_id, kind, body, wait_s, user=None):
         job = Job(conversation_id, kind)
+        job.user = user
         with self._lock:
             if conversation_id in self._jobs:
                 raise store.Busy("une requête est déjà en cours dans cette conversation")
@@ -235,8 +238,20 @@ class JobManager:
         with job.lock:
             return [p.to_dict() for p in job.pending.values()]
 
-    def answer(self, permission_id, *, allow, message="", answers=None):
-        """Answer a pending prompt. False if it is unknown or already answered."""
+    def may_answer(self, permission_id, user):
+        """The person who started the request, or the owner: a guest never answers another's prompt."""
+        with self._lock:
+            jobs = list(self._jobs.values())
+        for job in jobs:
+            with job.lock:
+                if permission_id in job.pending:
+                    return user is None or user.get("is_owner") or (job.user or {}).get("id") == user["id"]
+        return False
+
+    def answer(self, permission_id, *, allow, message="", answers=None, user=None):
+        """Answer a pending prompt. False if it is unknown, already answered, or not this person's."""
+        if not self.may_answer(permission_id, user):
+            return False
         with self._lock:
             jobs = list(self._jobs.values())
         for job in jobs:
@@ -395,11 +410,22 @@ class JobManager:
         def on_quota(provider, quota):
             settings = self.settings()
             if self.notifier is not None and settings is not None:
-                self.notifier.quota(providers.NAMES.get(provider, provider), quota, settings.quota_warning)
+                self.notifier.quota(providers.NAMES.get(provider, provider), quota, settings.quota_warning,
+                                    user_id=self.account_id(job))
 
         return {"ask_permission": lambda r: self._ask(job, r), "on_start": on_start,
-                "on_text": on_text, "on_quota": on_quota, "command": self.command, "env": self.env,
-                "timeout_s": self.request_timeout_s, "settings": self.settings()}
+                "on_text": on_text, "on_quota": on_quota, "command": self.command, "env": self.env_of(job),
+                "timeout_s": self.request_timeout_s, "settings": self.settings(),
+                "user_id": (job.user or {}).get("id"), "account_id": self.account_id(job)}
+
+    def env_of(self, job):
+        """The environment of a job's runs: the AI accounts of the person who started it."""
+        return accounts.run_env(self.env, job.user, self.accounts_root)
+
+    @staticmethod
+    def account_id(job):
+        """Whose own accounts pay for the job (None: the computer's, the owner's)."""
+        return job.user["id"] if accounts.own_accounts(job.user) else None
 
     @staticmethod
     def _result_event(job, result):
@@ -479,9 +505,10 @@ class JobManager:
             self.hub.publish(cid, event)
 
         execution = orchestrator.PlanExecution(
-            self.db_path, plan_id, command=self.command, env=self.env,
+            self.db_path, plan_id, command=self.command, env=self.env_of(job),
             ask_permission=lambda subtask, r: self._ask(job, r, subtask),
-            on_event=on_event, timeout_s=self.request_timeout_s, settings=self.settings())
+            on_event=on_event, timeout_s=self.request_timeout_s, settings=self.settings(),
+            user_id=(job.user or {}).get("id"), account_id=self.account_id(job))
         self._attach(job, execution)
         status = execution.run()
         note_error = self.note_plan(plan_id)

@@ -260,6 +260,31 @@ never another project, and never itself. "Privée" in the conversation header
 closes it both ways: it reads nothing and nobody reads it. "Citer…" in the
 composer inserts a reference to another conversation of the project.
 
+### Several people on one server
+
+The hub can be shared by several people, each with their own AI accounts:
+what they ask is paid by their own Claude or ChatGPT subscription, never by
+the owner's.
+
+- The owner (the server's password) invites from "Personnes": a link valid
+  7 days, for one use. The person picks a name and a password, then logs in
+  with that name (the owner leaves the name empty).
+- A person sees only what is shared with them: a conversation, or a whole
+  project, in "Lecture" (read) or "Lecture et écriture" (they may send
+  requests). Anything else answers "introuvable". Settings, people, new
+  conversations, the folder, the mode, the tools and the scheduled tasks stay
+  the owner's.
+- "Mes comptes IA": the person signs in to Claude (a page, then the code it
+  shows, pasted back) and to Codex (a code to type at OpenAI's page). Their
+  sign-ins live in `data/comptes/<id>/` (`CLAUDE_CONFIG_DIR`, `CODEX_HOME`);
+  the hub never reads them, only the CLIs' own commands do. An empty folder is
+  "not signed in": there is no fallback on the owner's account. Their quota
+  and its alerts are theirs too. The local AI (Ollama) stays common.
+- Each request shows who wrote it. A permission prompt is answered only by
+  the person whose request it is.
+- A person with one conversation of a project, not the project, never makes
+  the agent read the other conversations.
+
 ### From the phone (Tailscale)
 
 1. Install Tailscale on the PC and on the phone, with the same account. In
@@ -387,7 +412,9 @@ The last one runs the real Codex (GPT-5.6 Luna, a little of the ChatGPT quota).
 - `aihub/autonomous.py` — autonomous work: rounds, check command, limits
 - `aihub/schedule.py` — scheduled tasks and their scheduler
 - `aihub/tools.py` — the tools of a conversation; `aihub/vault_mcp.py` (vault, read only), `aihub/delegate_mcp.py` (another AI's opinion)
-- `aihub/auth.py` — password hash, sessions, lockout
+- `aihub/auth.py` — people, invitations, password hash, sessions, lockout
+- `aihub/access.py` — who sees and writes what: shares of conversations and projects
+- `aihub/accounts.py` — each person's own AI accounts: their folders, the sign-ins from the hub
 - `aihub/notify.py` — phone alerts: Web Push (encryption, VAPID signature, devices' choices) and ntfy
 - `aihub/backup.py` — daily backups, deletion from backups
 - `aihub/eveil.py` — holds the PC's sleep back while an agent works

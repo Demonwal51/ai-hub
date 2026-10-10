@@ -17,7 +17,7 @@ import queue
 import threading
 from pathlib import Path
 
-from . import config, db, project_access, providers, routing, store, tools
+from . import access, accounts, config, db, project_access, providers, routing, store, tools
 from .providers import claude_code
 from .providers.claude_code import Decision, ProviderError
 from .runner import Request
@@ -183,7 +183,7 @@ def discuss(conn, conversation_id, text, *, on_request=None, **request_kwargs):
     row = store.open_plan(conn, conversation_id)
     plan = store.get_plan(conn, row["id"]) if row is not None and row["status"] == "proposed" else None
     agents_by_id = {a["id"]: a for a in store.list_agents(conn)}
-    store.add_user_message(conn, conversation_id, text)
+    store.add_user_message(conn, conversation_id, text, request_kwargs.get("user_id"))
     run = Request(conn, conversation_id, conductor, discussion_prompt(text, plan, agents_by_id),
                   record_prompt=False, resume=True, tools=READ_ONLY_TOOLS, **request_kwargs)
     if on_request:
@@ -283,7 +283,7 @@ def propose_plan(conn, conversation_id, prompt, *, on_request=None, **request_kw
     if store.open_plan(conn, conversation_id) is not None:
         # Checked before the conductor runs: a refused plan must cost no quota.
         raise store.Busy("un plan est déjà ouvert : lancez-le ou annulez-le, ou discutez-en avec le chef")
-    request_id = store.add_user_message(conn, conversation_id, prompt)
+    request_id = store.add_user_message(conn, conversation_id, prompt, request_kwargs.get("user_id"))
     parsed = {}
 
     def check(result):
@@ -376,10 +376,12 @@ class PlanExecution:
     """
 
     def __init__(self, db_path, plan_id, *, command=None, env=None, ask_permission=None,
-                 on_event=None, timeout_s=None, settings=None):
+                 on_event=None, timeout_s=None, settings=None, user_id=None, account_id=None):
         self.db_path = db_path
         self.plan_id = plan_id
         self.settings = settings or config.Settings()  # the tool catalog, the vault
+        self.user_id = user_id  # who launched it: their accounts, what they may let agents read
+        self.account_id = account_id  # whose own AI accounts `env` names (None: the computer's)
         self.command = command
         self.env = env
         self.ask_permission = ask_permission
@@ -507,7 +509,9 @@ class PlanExecution:
                                "offset": offset, "chunk": chunk})
 
             provider = subtask["provider"] or claude_code.PROVIDER
-            given = tools.for_run(journal, conversation, self.settings, commands=command)
+            project = access.reads_project(journal, self.user_id, conversation)
+            given = tools.for_run(journal, conversation, self.settings, commands=command, project=project,
+                                  account_env=accounts.account_vars(self.env))
             env = self.env
             if given.env:
                 env = {**(env if env is not None else claude_code.clean_env(os.environ)), **given.env}
@@ -518,7 +522,7 @@ class PlanExecution:
                 ask_permission=lambda request: self._ask(journal, conversation, subtask, request),
                 on_text=on_text, timeout_s=self.timeout_s, env=env,
                 mcp_config=given.mcp_config, auto_allow=given.auto_allow, web=given.web,
-                instructions=project_access.instructions(journal, conversation),
+                instructions=project_access.instructions(journal, conversation, project=project),
             )
             with self._lock:
                 self._runs[subtask["id"]] = run
@@ -595,7 +599,7 @@ class PlanExecution:
         synthesis = Request(conn, conversation["id"], conductor, synthesis_prompt(request_text, plan),
                             record_prompt=False, resume=False, tools=READ_ONLY_TOOLS,
                             on_start=on_start, on_text=on_text, command=self.command, env=self.env,
-                            timeout_s=self.timeout_s, settings=self.settings,
+                            timeout_s=self.timeout_s, settings=self.settings, account_id=self.account_id,
                             ask_permission=lambda r: Decision(False, "la synthèse ne fait que lire"))
         with self._lock:
             self._synthesis = synthesis

@@ -131,12 +131,15 @@ def delegate_models(settings):
     return out
 
 
-def for_run(conn, conversation, settings, *, own=False, commands=None):
+def for_run(conn, conversation, settings, *, own=False, commands=None, project=True, account_env=None):
     """The MCP servers, the tools allowed without asking, and the web search, of one run.
 
-    `commands`: the CLIs the hub was given (tests), passed on to a delegation."""
+    `commands`: the CLIs the hub was given (tests), passed on to a delegation.
+    `account_env`: the variables naming the asking person's own AI accounts
+    (aihub/accounts.py), given to the delegation too: what it asks is paid
+    by that person (Codex hands its MCP servers only a few variables)."""
     names = chosen(conversation)
-    base = project_access.mcp_config(conn, conversation, own=own)
+    base = project_access.mcp_config(conn, conversation, own=own, project=project)
     servers = dict((base or {}).get("mcpServers", {}))
     auto = list(project_access.TOOL_NAMES) if base else []
     if VAULT in names and settings.obsidian_vault:
@@ -153,6 +156,8 @@ def for_run(conn, conversation, settings, *, own=False, commands=None):
             args += ["--commands", json.dumps(commands if isinstance(commands, dict) else {"claude_code": commands})]
         servers[DELEGATE] = {"type": "stdio", "command": project_access._python(), "args": args,
                              "tool_timeout_sec": DELEGATE_TIMEOUT_S}
+        if account_env:
+            servers[DELEGATE]["env"] = dict(account_env)
         auto.append(f"mcp__{DELEGATE}__ask_ai")  # chosen by the person; limited and recorded by the server
         env["MCP_TOOL_TIMEOUT"] = str(DELEGATE_TIMEOUT_S * 1000)  # Claude Code's limit, in ms
     catalog = {s["name"]: s for s in settings.tool_servers}

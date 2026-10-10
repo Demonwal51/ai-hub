@@ -38,13 +38,15 @@ PREFETCH_MAX = 2      # conversations read in advance for one request
 AUTO_BUDGET = 1500    # characters joined when the request names no conversation
 
 
-def instructions(conn, conversation):
+def instructions(conn, conversation, project=True):
     """What the agent may consult, for its system prompt, or None.
+
+    `project`: False when the person who asks may not read the project (version 0.2).
 
     The list of the other conversations comes with it: the agent knows what
     exists without a tool call (each call sends the whole context again).
     """
-    if mcp_config(conn, conversation) is None:
+    if not project or mcp_config(conn, conversation) is None:
         return None
     project = conn.execute("SELECT name FROM projects WHERE id = ?", (conversation["project_id"],)).fetchone()
     name = project["name"] if project is not None else "?"
@@ -65,7 +67,7 @@ def instructions(conn, conversation):
             "extraits sont déjà joints à la demande, réponds d'abord avec eux.")
 
 
-def prefetch(conn, conversation, prompt, *, automatic=True):
+def prefetch(conn, conversation, prompt, *, automatic=True, project=True):
     """Passages of the conversations a request names (« #12 » or a title), to join to it.
 
     Read here, for free, instead of by the agent: no tool round trip. Only
@@ -74,7 +76,7 @@ def prefetch(conn, conversation, prompt, *, automatic=True):
     project if they are clearly related (only for what the user typed: the
     hub's own prompts are full of generic words).
     """
-    if mcp_config(conn, conversation) is None:
+    if not project or mcp_config(conn, conversation) is None:
         return ""
     access = project_mcp.Access(database_path(conn), conversation["id"])
     named = list(access.cited(prompt))[:PREFETCH_MAX]
@@ -94,13 +96,13 @@ def prefetch(conn, conversation, prompt, *, automatic=True):
             "pour en savoir plus) :\n\n" + "\n\n".join(blocks) + "\n</extraits_du_projet>")
 
 
-def mcp_config(conn, conversation, own=False):
+def mcp_config(conn, conversation, own=False, project=True):
     """The --mcp-config for this conversation's agents, or None (no project, not shared).
 
     `own`: a fresh start, whose agent may search the conversation's own past
     (its history is not resent): the server is given even outside a project.
     """
-    if not own and (conversation["project_id"] is None or not conversation["shared"]):
+    if not own and (not project or conversation["project_id"] is None or not conversation["shared"]):
         return None
     db_path = database_path(conn)
     if db_path is None:
@@ -109,5 +111,6 @@ def mcp_config(conn, conversation, own=False):
         "type": "stdio",
         "command": _python(),
         # -I: the agent's folder must not be able to plant a module the server would import.
-        "args": ["-I", str(SERVER_SCRIPT), "--db", db_path, "--conversation", str(conversation["id"])],
+        "args": ["-I", str(SERVER_SCRIPT), "--db", db_path, "--conversation", str(conversation["id"])]
+                + ([] if project else ["--seule"]),  # this conversation's past only
     }}}

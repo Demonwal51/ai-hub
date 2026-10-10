@@ -232,7 +232,8 @@ class WebAuthTests(TempDirMixin, unittest.TestCase):
         for path in ("/", "/static/app.js", "/static/icon-192.png", "/manifest.webmanifest", "/sw.js"):
             with self.subTest(path=path):
                 self.assertEqual(self.client.get(path).status_code, 200)
-        self.assertEqual(self.client.get("/api/auth/session").json(), {"required": True, "logged_in": False})
+        self.assertEqual(self.client.get("/api/auth/session").json(),
+                         {"required": True, "logged_in": False, "user": None})
         # Checked again before reuse: an update reaches the browser and the phone at once.
         for path in ("/", "/static/app.js", "/static/style.css", "/sw.js", "/manifest.webmanifest"):
             self.assertEqual(self.client.get(path).headers["cache-control"], "no-cache", path)
@@ -250,7 +251,8 @@ class WebAuthTests(TempDirMixin, unittest.TestCase):
         self.assertIn("SameSite=strict", cookie)
         self.assertNotIn("Secure", cookie)  # plain http on this computer
         self.assertEqual(self.client.get("/api/conversations").status_code, 200)
-        self.assertEqual(self.client.get("/api/auth/session").json(), {"required": True, "logged_in": True})
+        self.assertEqual(self.client.get("/api/auth/session").json(),
+                         {"required": True, "logged_in": True, "user": {"name": "Propriétaire", "is_owner": True}})
 
     def test_cookie_is_secure_behind_https(self):
         r = self.login(**{"X-Forwarded-Proto": "https", "X-Forwarded-For": "100.64.0.2"})
@@ -326,7 +328,7 @@ class LocalOnlyTests(TempDirMixin, unittest.TestCase):
     def test_this_computer_needs_no_password(self):
         local = self.client(("127.0.0.1", 1))
         self.assertEqual(local.get("/api/conversations").status_code, 200)
-        self.assertEqual(local.get("/api/auth/session").json(), {"required": False, "logged_in": True})
+        self.assertEqual(local.get("/api/auth/session").json(), {"required": False, "logged_in": True, "user": None})
 
     def test_other_machines_and_proxies_are_refused(self):
         self.assertEqual(self.client(("100.64.0.2", 1)).get("/api/conversations").status_code, 403)

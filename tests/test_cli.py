@@ -157,7 +157,7 @@ class PasswordAndServeTests(CliTestCase):
         self.assertEqual(self.set_password("court", "court"), 1)
         self.assertIn("au moins 12", self.text())
         self.assertEqual(self.set_password(password, password), 0)
-        stored = self.conn().execute("SELECT password_hash FROM auth_password").fetchone()[0]
+        stored = self.conn().execute("SELECT password_hash FROM users WHERE is_owner = 1").fetchone()[0]
         self.assertTrue(auth.verify_password(password, stored))
         self.assertNotIn(password, stored)
 

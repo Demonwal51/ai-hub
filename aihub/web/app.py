@@ -5,6 +5,7 @@ aihub/auth.py. Without one (`local_only`), the server answers only requests
 made on this computer, never one relayed by a proxy such as Tailscale.
 """
 
+import contextvars
 import json
 import os
 import queue
@@ -14,7 +15,7 @@ import time
 from contextlib import asynccontextmanager, contextmanager
 from pathlib import Path
 
-from fastapi import FastAPI, Request as HttpRequest
+from fastapi import Depends, FastAPI, Request as HttpRequest
 from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
@@ -22,12 +23,15 @@ from pydantic import BaseModel
 from .. import VERSION_LABEL
 from .. import (auth, autonomous, backup, config, db, eveil, memory, notify, obsidian, providers, routing, runner,
                 schedule, semantic, store, tools)
+from .. import access, accounts
 from ..providers import claude_code, codex, ollama
 from ..providers.claude_code import ProviderError
 from ..store import BypassConfirmationRequired, Busy, NotFound, StoreError
 from .jobs import JobManager
 
 STATIC = Path(__file__).with_name("static")
+_NOBODY = object()  # with accounts, a request that came without a session
+_ASKER = contextvars.ContextVar("aihub_asker", default=_NOBODY)  # the person of the request being answered
 MODELS = config.MODELS
 _STATUS_CACHE_S = 60
 QUOTA_REFRESH_S = 30
@@ -152,6 +156,43 @@ class PermissionAnswer(BaseModel):
 
 class Login(BaseModel):
     password: str
+    name: str | None = None   # empty: the owner (a server of one person types no name)
+
+
+class Accept(BaseModel):
+    invitation: str
+    name: str
+    password: str
+
+
+class NewInvitation(BaseModel):
+    note: str | None = None
+
+
+class UserChange(BaseModel):
+    disabled: bool | None = None
+    name: str | None = None
+
+
+class NewUser(BaseModel):
+    name: str
+    password: str
+
+
+class Share(BaseModel):
+    user_id: int
+    role: str = "read"
+    conversation_id: int | None = None
+    project_id: int | None = None
+
+
+class PasswordChange(BaseModel):
+    current: str
+    new: str
+
+
+class AccountCode(BaseModel):
+    code: str
 
 
 class FreshStart(BaseModel):
@@ -172,7 +213,7 @@ class ConfigChange(BaseModel):
 # Reachable without a session: the page itself (it shows the login form),
 # what the phone needs to install it, and the login routes.
 PUBLIC_PATHS = {"/", "/manifest.webmanifest", "/sw.js", "/api/auth/session", "/api/auth/login",
-                "/api/auth/logout"}
+                "/api/auth/logout", "/api/invitations/accept"}
 PUBLIC_PREFIXES = ("/static/",)
 # A custom header no other site can make a browser send (no CORS here):
 # with SameSite=Strict, it keeps another page from acting through the session.
@@ -232,8 +273,10 @@ class Guard:
         if path in PUBLIC_PATHS or path.startswith(PUBLIC_PREFIXES):
             return await self.app(scope, receive, send)
         import anyio
-        if not await anyio.to_thread.run_sync(self.check_session, _cookie(scope, auth.COOKIE)):
+        user = await anyio.to_thread.run_sync(self.check_session, _cookie(scope, auth.COOKIE))
+        if not user:
             return await _deny(send, 401, "connexion requise", "auth_required")
+        scope.setdefault("state", {})["user"] = user  # read by the endpoints: request.state.user
         if scope["method"] not in ("GET", "HEAD", "OPTIONS") and _headers(scope).get(CSRF_HEADER) != "1":
             return await _deny(send, 403, "requête refusée : en-tête X-AIHub manquant", "csrf")
         return await self.app(scope, receive, send)
@@ -349,6 +392,8 @@ def create_app(db_path, *, command=None, env=None, allowed_roots=(), permission_
                 ollama.PROVIDER: [ollama_url] if ollama_url else (None if command is None else False)}
     jobs = JobManager(db_path, command=commands, env=env, permission_timeout_s=permission_timeout_s,
                       request_timeout_s=request_timeout_s, obsidian_vault=settings.obsidian_vault)
+    people_accounts = accounts.Accounts(jobs.accounts_root, commands=commands, env=env,
+                                        workdir=Path(db_path).resolve().parent)
     status_cache = {}
     refresh_lock = threading.Lock()
     refresh_state = {}
@@ -385,7 +430,16 @@ def create_app(db_path, *, command=None, env=None, allowed_roots=(), permission_
         jobs.shutdown()
         app.state.notifier.flush(10)  # the last alerts (the end of those agents) still go out
 
-    app = FastAPI(title="AI Hub", docs_url=None, redoc_url=None, lifespan=lifespan)
+    async def who_asks(request: HttpRequest):
+        # Async on purpose: it runs in the request's own context, which the
+        # endpoint's worker thread then copies, so `asker()` sees it there.
+        if authority is None:
+            _ASKER.set(None)  # no accounts: the owner, on this computer only
+        else:
+            # With accounts, no person is never « the owner »: public pages only, refused anywhere else.
+            _ASKER.set(getattr(request.state, "user", None) or _NOBODY)
+
+    app = FastAPI(title="AI Hub", docs_url=None, redoc_url=None, lifespan=lifespan, dependencies=[Depends(who_asks)])
     app.state.jobs = jobs
     app.state.backup = make_backup(settings)
     app.state.awake = make_awake(settings)
@@ -442,6 +496,13 @@ def create_app(db_path, *, command=None, env=None, allowed_roots=(), permission_
         with database() as conn:
             return authority.check(conn, token)
 
+    def me(request=None):
+        """The person asking (set by the Guard), or None without accounts: the owner, all rights."""
+        user = _ASKER.get()
+        if user is _NOBODY:
+            raise access.Forbidden("connexion requise")
+        return user
+
     app.add_middleware(Guard, check_session=check_session if authority else None, local_only=local_only)
 
     @app.exception_handler(auth.Locked)
@@ -458,8 +519,10 @@ def create_app(db_path, *, command=None, env=None, allowed_roots=(), permission_
     @app.get("/api/auth/session")
     def session(request: HttpRequest):
         if authority is None:
-            return {"required": False, "logged_in": True}
-        return {"required": True, "logged_in": check_session(request.cookies.get(auth.COOKIE))}
+            return {"required": False, "logged_in": True, "user": None}
+        user = check_session(request.cookies.get(auth.COOKIE))
+        return {"required": True, "logged_in": bool(user),
+                "user": {"name": user["name"], "is_owner": user["is_owner"]} if user else None}
 
     @app.post("/api/auth/login")
     def login(body: Login, request: HttpRequest):
@@ -467,13 +530,160 @@ def create_app(db_path, *, command=None, env=None, allowed_roots=(), permission_
             return {"logged_in": True}
         with database() as conn:
             token = authority.login(conn, body.password, client_of(request.scope),
-                                    request.headers.get("user-agent"))
-        response = JSONResponse({"logged_in": True})
+                                    request.headers.get("user-agent"), name=body.name)
+        return with_session(JSONResponse({"logged_in": True}), token, request)
+
+    def with_session(response, token, request):
         secure = (request.url.scheme == "https"
                   or request.headers.get("x-forwarded-proto", "").lower() == "https")
         response.set_cookie(auth.COOKIE, token, max_age=int(authority.policy.max_days * 86400),
                             httponly=True, samesite="strict", secure=secure, path="/")
         return response
+
+    # --- people (version 0.2: several people on one server) -------------------
+
+    @app.post("/api/invitations/accept")
+    def accept_invitation(body: Accept, request: HttpRequest):
+        """A person comes with their link, chooses their name and password, and is logged in."""
+        if authority is None:
+            raise StoreError("ce serveur n'a pas de comptes (pas de mot de passe)")
+        with database() as conn:
+            token = authority.accept_invitation(conn, body.invitation, body.name, body.password,
+                                                client_of(request.scope), request.headers.get("user-agent"))
+        return with_session(JSONResponse({"logged_in": True}), token, request)
+
+    @app.get("/api/users")
+    def users():
+        access.require_owner(me())
+        if authority is None:
+            return {"users": [], "invitations": [], "accounts": False}
+        with database() as conn:
+            return {"users": auth.list_users(conn), "invitations": auth.list_invitations(conn), "accounts": True}
+
+    @app.post("/api/invitations", status_code=201)
+    def new_invitation(body: NewInvitation, request: HttpRequest):
+        access.require_owner(me())
+        if authority is None:
+            raise StoreError("définissez d'abord le mot de passe du serveur : python -m aihub mot-de-passe")
+        with database() as conn:
+            token = auth.invite(conn, body.note, now=authority.now())
+        # The address the owner is using (Tailscale's, on the phone): the guest will use the same.
+        base = str(request.base_url).rstrip("/")
+        if request.headers.get("x-forwarded-proto", "").lower() == "https":
+            base = "https://" + base.split("://", 1)[-1]
+        return {"link": f"{base}/?invitation={token}", "days": auth.INVITE_DAYS}
+
+    @app.delete("/api/invitations/{iid}")
+    def revoke_invitation(iid: int):
+        access.require_owner(me())
+        with database() as conn:
+            if not auth.revoke_invitation(conn, iid):
+                raise NotFound("invitation introuvable ou déjà utilisée")
+        return {"revoked": iid}
+
+    @app.patch("/api/users/{uid}")
+    def change_user(uid: int, body: UserChange):
+        access.require_owner(me())
+        with database() as conn:
+            if body.name is not None:
+                auth.rename_user(conn, uid, body.name)
+            if body.disabled is not None:
+                auth.set_disabled(conn, uid, body.disabled)
+            return {"user": auth.get_user(conn, uid)}
+
+    @app.post("/api/users", status_code=201)
+    def create_user(body: NewUser):
+        """An account made by the owner, without a link: they pass on the name and password."""
+        access.require_owner(me())
+        if authority is None:
+            raise StoreError("ce serveur n'a pas de comptes (pas de mot de passe)")
+        with database() as conn:
+            return {"user": auth.create_user(conn, body.name, body.password)}
+
+    @app.delete("/api/users/{uid}")
+    def remove_user(uid: int):
+        access.require_owner(me())
+        with database() as conn:
+            auth.delete_user(conn, uid)
+        people_accounts.forget(uid)  # their AI accounts' folders go with them
+        return {"deleted": uid}
+
+    @app.post("/api/shares")
+    def add_share(body: Share):
+        access.require_owner(me())
+        with database() as conn:
+            access.share(conn, user_id=body.user_id, role=body.role, conversation_id=body.conversation_id,
+                         project_id=body.project_id)
+            return {"shared_with": access.shares_of(conn, conversation_id=body.conversation_id,
+                                                    project_id=body.project_id)}
+
+    @app.post("/api/shares/remove")
+    def remove_share(body: Share):
+        access.require_owner(me())
+        with database() as conn:
+            access.unshare(conn, user_id=body.user_id, conversation_id=body.conversation_id,
+                           project_id=body.project_id)
+            return {"shared_with": access.shares_of(conn, conversation_id=body.conversation_id,
+                                                    project_id=body.project_id)}
+
+    @app.post("/api/me/password")
+    def change_my_password(body: PasswordChange, request: HttpRequest):
+        """A person changes their own password (their other devices are logged out)."""
+        user = me()
+        if authority is None or user is None:
+            raise StoreError("ce serveur n'a pas de comptes")
+        with database() as conn:
+            authority.verify(conn, body.current, client_of(request.scope), name=user["name"])
+            if user["is_owner"]:
+                auth.set_password(conn, body.new)  # the server's password: every session closes
+            else:
+                auth.set_user_password(conn, user["id"], body.new)
+            token = authority._open(conn, user["id"], client_of(request.scope), request.headers.get("user-agent"))
+        return with_session(JSONResponse({"changed": True}), token, request)
+
+    # --- each person's own AI accounts (« Mes comptes IA ») ----------------------
+
+    def my_accounts():
+        user = me()
+        if not accounts.own_accounts(user):
+            raise StoreError("le propriétaire utilise les comptes IA de cet ordinateur")
+        return user
+
+    def account_call(action):
+        try:
+            return action()
+        except accounts.AccountError as exc:
+            raise StoreError(str(exc)) from None
+
+    @app.get("/api/accounts")
+    def my_account_status():
+        user = me()
+        if not accounts.own_accounts(user):
+            return {"own": False}
+        return {"own": True, "providers": people_accounts.status(user)}
+
+    @app.post("/api/accounts/{provider}/login")
+    def account_login(provider: str):
+        user = my_accounts()
+        return account_call(lambda: people_accounts.start_login(user, provider))
+
+    @app.post("/api/accounts/{provider}/code")
+    def account_code(provider: str, body: AccountCode):
+        user = my_accounts()
+        return account_call(lambda: people_accounts.send_code(user, provider, body.code))
+
+    @app.post("/api/accounts/{provider}/cancel")
+    def account_cancel(provider: str):
+        user = my_accounts()
+        people_accounts.cancel_login(user, provider)
+        return {"cancelled": provider}
+
+    @app.post("/api/accounts/{provider}/logout")
+    def account_logout(provider: str):
+        user = my_accounts()
+        account_call(lambda: people_accounts.logout(user, provider))
+        status_cache.clear()
+        return {"logged_out": provider}
 
     # Connected devices. Behind the session check (not in PUBLIC_PATHS).
     @app.get("/api/sessions")
@@ -484,11 +694,11 @@ def create_app(db_path, *, command=None, env=None, allowed_roots=(), permission_
             return {"sessions": authority.sessions(conn, request.cookies.get(auth.COOKIE)), "required": True}
 
     @app.delete("/api/sessions/{sid}")
-    def close_session(sid: int):
+    def close_session(sid: int, request: HttpRequest):
         if authority is None:
             raise NotFound("session introuvable")
-        with database() as conn:
-            if not authority.close_session(conn, sid):
+        with database() as conn:  # one's own devices only
+            if not authority.close_session(conn, sid, request.cookies.get(auth.COOKIE)):
                 raise NotFound("session introuvable")
         return {"closed": sid}
 
@@ -528,8 +738,14 @@ def create_app(db_path, *, command=None, env=None, allowed_roots=(), permission_
             return {"removed": notify.unsubscribe(conn, body.endpoint)}
 
     @app.post("/api/push/test")
-    def push_test():
-        notifier.notify("done", None, "notification d'essai", test=True)
+    def push_test(request: HttpRequest):
+        user = me()
+        session_id = None
+        if authority is not None:
+            with database() as conn:
+                session_id = authority.session_id(conn, request.cookies.get(auth.COOKIE))
+        # The test goes to the devices of the person who asked, not to everyone's.
+        notifier.notify("done", None, "notification d'essai", test=True, session_id=session_id)
         return {"sent": True}
 
     @app.post("/api/auth/logout")
@@ -548,6 +764,10 @@ def create_app(db_path, *, command=None, env=None, allowed_roots=(), permission_
     @app.exception_handler(autonomous.CheckConfirmationRequired)
     def _check_confirmation(request: HttpRequest, exc):
         return JSONResponse({"detail": str(exc), "code": "check_confirmation_required"}, 409)
+
+    @app.exception_handler(access.Forbidden)
+    def _forbidden(request: HttpRequest, exc):
+        return JSONResponse({"detail": str(exc), "code": "forbidden"}, 403)
 
     @app.exception_handler(NotFound)
     def _not_found(request: HttpRequest, exc):
@@ -689,34 +909,49 @@ def create_app(db_path, *, command=None, env=None, allowed_roots=(), permission_
         Refreshes closer than QUOTA_REFRESH_S apart reuse the last reading.
         """
         errors = {}
-        gpt = provider_status()["codex"]
+        # Each person sees the quota of the accounts that pay for their requests.
+        user = me()
+        account = user["id"] if accounts.own_accounts(user) else None
+        run_env = people_accounts.env_for(user)
+        state = refresh_state.setdefault(account, {})
+        if account is None:
+            gpt_in = bool(provider_status()["codex"]["logged_in"])
+        else:
+            gpt_in = state.get("codex_in")
+            if gpt_in is None or refresh:
+                try:
+                    gpt_in = codex.login_status(providers.command_for(commands, codex.PROVIDER), env=run_env) \
+                        if commands[codex.PROVIDER] is not False else False
+                except ProviderError:
+                    gpt_in = False
+                state["codex_in"] = gpt_in
         if refresh:
             with refresh_lock:
-                last = refresh_state.get("at")
+                last = state.get("at")
                 if last is None or time.monotonic() - last >= QUOTA_REFRESH_S:
-                    refresh_state["at"] = time.monotonic()
-                    wanted = [claude_code] + ([codex] if gpt["logged_in"] else [])
+                    state["at"] = time.monotonic()
+                    wanted = [claude_code] + ([codex] if gpt_in else [])
                     for module in wanted:
                         try:
                             info = module.read_usage(
                                 providers.command_for(commands, module.PROVIDER),
                                 workdir=str(Path(db_path).resolve().parent),
-                                env=env, warning_from=current().quota_warning / 100)
+                                env=run_env, warning_from=current().quota_warning / 100)
                             with database() as conn:
                                 store.record_quota(
                                     conn, module.PROVIDER, info.status, limit_type=info.limit_type,
                                     utilization=info.utilization, resets_at=info.resets_at,
-                                    windows_json=json.dumps(info.windows))
-                            notifier.quota(module.DISPLAY_NAME, info, current().quota_warning)
+                                    windows_json=json.dumps(info.windows), user_id=account)
+                            notifier.quota(module.DISPLAY_NAME, info, current().quota_warning, user_id=account)
                         except ProviderError as exc:
                             errors[module.PROVIDER] = str(exc)
-                    refresh_state["errors"] = errors
+                    state["errors"] = errors
                 else:
-                    errors = refresh_state.get("errors") or {}
+                    errors = state.get("errors") or {}
         with database() as conn:
-            return {"claude_code": _quota(store.latest_quota(conn, "claude_code")),
-                    "codex": _quota(store.latest_quota(conn, "codex")) if gpt["logged_in"] else None,
-                    "codex_connected": bool(gpt["logged_in"]),
+            return {"claude_code": _quota(store.latest_quota(conn, "claude_code", account)),
+                    "codex": _quota(store.latest_quota(conn, "codex", account)) if gpt_in else None,
+                    "codex_connected": bool(gpt_in), "own_accounts": account is not None,
                     "error": errors.get(claude_code.PROVIDER), "codex_error": errors.get(codex.PROVIDER)}
 
     def offered_models(s):
@@ -744,6 +979,7 @@ def create_app(db_path, *, command=None, env=None, allowed_roots=(), permission_
 
     @app.get("/api/config")
     def get_config():
+        access.require_owner(me())
         s = current()
         return {"settings": s.to_dict(), "labels": config.LABELS, "all_models": list(config.MODELS),
                 "editable": config_path is not None, "password_needed": authority is not None,
@@ -752,6 +988,7 @@ def create_app(db_path, *, command=None, env=None, allowed_roots=(), permission_
 
     @app.patch("/api/config")
     def change_config(body: ConfigChange, request: HttpRequest):
+        access.require_owner(me(request))
         if config_path is None:
             raise StoreError("ces réglages sont fixés au lancement : pas de fichier de réglages")
         if authority is not None:
@@ -770,38 +1007,52 @@ def create_app(db_path, *, command=None, env=None, allowed_roots=(), permission_
     # --- conversations ----------------------------------------------------
 
     @app.get("/api/conversations")
-    def conversations():
+    def conversations(request: HttpRequest):
+        user = me(request)
         with database() as conn:
-            rows = [dict(r) for r in store.list_conversations(conn)]
-        for row in rows:
-            row["running"] = jobs.running(row["id"])
+            visible = access.visible_conversation_ids(conn, user)
+            rows = [dict(r) for r in store.list_conversations(conn) if visible is None or r["id"] in visible]
+            for row in rows:
+                row["running"] = jobs.running(row["id"])
+                row["my_role"] = access.conversation_role(conn, user, row)
         return {"conversations": rows}
 
     # --- projects ------------------------------------------------------------
 
     @app.get("/api/projects")
-    def projects():
+    def projects(request: HttpRequest):
+        user = me(request)
         with database() as conn:
-            return {"projects": [dict(p) for p in store.list_projects(conn)]}
+            visible = access.visible_project_ids(conn, user)
+            return {"projects": [dict(p) for p in store.list_projects(conn) if visible is None or p["id"] in visible]}
 
     @app.post("/api/projects", status_code=201)
-    def create_project(body: NewProject):
+    def create_project(body: NewProject, request: HttpRequest):
+        access.require_owner(me(request))
         workdir = check_workdir(body.workdir) if body.workdir.strip() else None
         with database() as conn:
             pid = store.create_project(conn, body.name, description=body.description, workdir=workdir)
             return {"project": dict(store.get_project(conn, pid))}
 
     @app.get("/api/projects/{pid}")
-    def project(pid: int):
+    def project(pid: int, request: HttpRequest):
+        user = me(request)
         with database() as conn:
+            visible = access.visible_project_ids(conn, user)
+            if visible is not None and pid not in visible:
+                raise NotFound("projet introuvable")
             row = dict(store.get_project(conn, pid))
-            convs = [dict(c) for c in store.project_conversations(conn, pid)]
+            seen = access.visible_conversation_ids(conn, user)
+            convs = [dict(c) for c in store.project_conversations(conn, pid) if seen is None or c["id"] in seen]
+            mine = user is None or user["is_owner"]
+            shared_with = access.shares_of(conn, project_id=pid) if mine and authority is not None else None
         for conv in convs:
             conv["running"] = jobs.running(conv["id"])
-        return {"project": row, "conversations": convs}
+        return {"project": row, "conversations": convs, "shared_with": shared_with, "is_owner": mine}
 
     @app.patch("/api/projects/{pid}")
-    def change_project(pid: int, body: ProjectChange):
+    def change_project(pid: int, body: ProjectChange, request: HttpRequest):
+        access.require_owner(me(request))
         workdir = None
         if body.workdir is not None:
             workdir = check_workdir(body.workdir) if body.workdir.strip() else ""
@@ -810,7 +1061,8 @@ def create_app(db_path, *, command=None, env=None, allowed_roots=(), permission_
             return {"project": dict(store.get_project(conn, pid))}
 
     @app.delete("/api/projects/{pid}")
-    def delete_project(pid: int, with_conversations: bool = False):
+    def delete_project(pid: int, request: HttpRequest, with_conversations: bool = False):
+        access.require_owner(me(request))
         with database() as conn:
             for row in store.project_conversations(conn, pid):
                 if with_conversations and jobs.running(row["id"]):
@@ -824,7 +1076,8 @@ def create_app(db_path, *, command=None, env=None, allowed_roots=(), permission_
         return {"deleted": pid, "conversations": deleted, "backup_errors": errors}
 
     @app.post("/api/conversations", status_code=201)
-    def create_conversation(body: NewConversation):
+    def create_conversation(body: NewConversation, request: HttpRequest):
+        access.require_owner(me(request))  # a guest takes part in shared conversations, creates none
         if body.mode not in store.MODES:
             raise StoreError(f"mode inconnu : {body.mode!r}")
         with database() as conn:
@@ -848,24 +1101,30 @@ def create_app(db_path, *, command=None, env=None, allowed_roots=(), permission_
             return {"conversation": _row(store.get_conversation(conn, cid))}
 
     @app.get("/api/conversations/{cid}")
-    def conversation(cid: int):
+    def conversation(cid: int, request: HttpRequest):
+        user = me(request)
         with database() as conn:
-            conv = dict(store.get_conversation(conn, cid))
+            conv = dict(access.require(conn, user, cid))
+            conv["my_role"] = access.conversation_role(conn, user, conv)
+            names = {u["id"]: u["name"] for u in auth.list_users(conn)}
             agent = store.get_agent(conn, conv["agent_id"]) if conv["agent_id"] else None
             conductor = (store.get_agent(conn, conv["conductor_agent_id"])
                          if conv["conductor_agent_id"] else None)
             messages = [dict(m) for m in store.list_messages(conn, cid)]
+            for m in messages:  # who asked, when several people share the conversation
+                m["author"] = names.get(m.get("user_id")) if m.get("user_id") else None
             plans = store.list_plans(conn, cid)
             runs = autonomous.list_runs(conn, cid)
             delegations = [dict(r) for r in conn.execute(
                 "SELECT * FROM delegations WHERE conversation_id = ? ORDER BY id", (cid,))]
+            shared_with = access.shares_of(conn, conversation_id=cid) if conv["my_role"] == "owner" else None
         conv["model"] = agent["model"] if agent else None
         conv["conductor_model"] = conductor["model"] if conductor else None
         conv["tools"] = tools.chosen(conv)
-        return {"conversation": conv, "tools_offered": tools.offered(current()), "messages": messages, "plans": plans, "autonomous": runs,
-                "delegations": delegations,
-                "running": jobs.running(cid), "running_kind": jobs.kind(cid),
-                "pending": jobs.pending(cid)}
+        pending = [dict(p, can_answer=jobs.may_answer(p["id"], user)) for p in jobs.pending(cid)]
+        return {"conversation": conv, "tools_offered": tools.offered(current()), "messages": messages, "plans": plans,
+                "autonomous": runs, "delegations": delegations, "shared_with": shared_with,
+                "running": jobs.running(cid), "running_kind": jobs.kind(cid), "pending": pending}
 
     # --- agents -------------------------------------------------------------
 
@@ -882,8 +1141,15 @@ def create_app(db_path, *, command=None, env=None, allowed_roots=(), permission_
     # --- plans ---------------------------------------------------------------
 
     def editable_plan(conn, plan_id):
-        """A plan can be edited only while nothing runs in its conversation."""
-        plan = store.get_plan(conn, plan_id)
+        """A plan can be edited only while nothing runs in its conversation, by who may write there."""
+        try:
+            plan = store.get_plan(conn, plan_id)
+        except NotFound:
+            raise NotFound("plan introuvable") from None
+        try:
+            access.require(conn, me(), plan["conversation_id"], "write")
+        except NotFound:
+            raise NotFound("plan introuvable") from None
         if jobs.running(plan["conversation_id"]):
             raise Busy("le chef d'orchestre travaille sur ce plan : attendez qu'il ait fini")
         return plan
@@ -982,7 +1248,7 @@ def create_app(db_path, *, command=None, env=None, allowed_roots=(), permission_
             plan = editable_plan(conn, pid)
             if plan["status"] != "proposed":
                 raise StoreError("le plan est validé : il ne peut plus être modifié")
-        return {"message_id": jobs.start_adapt(plan["conversation_id"], pid)}
+        return {"message_id": jobs.start_adapt(plan["conversation_id"], pid, user=me())}
 
     @app.post("/api/plans/{pid}/launch", status_code=202)
     def launch(pid: int):
@@ -991,7 +1257,7 @@ def create_app(db_path, *, command=None, env=None, allowed_roots=(), permission_
             plan = editable_plan(conn, pid)
             store.validate_plan(conn, pid)
         try:
-            jobs.start_execution(plan["conversation_id"], pid)
+            jobs.start_execution(plan["conversation_id"], pid, user=me())  # runs with the launcher's accounts
         except (StoreError, ProviderError):
             with database() as conn:
                 if store.get_plan(conn, pid)["status"] == "validated":
@@ -1011,6 +1277,7 @@ def create_app(db_path, *, command=None, env=None, allowed_roots=(), permission_
     @app.patch("/api/conversations/{cid}")
     def change_conversation(cid: int, body: ConversationChange):
         with database() as conn:
+            access.require(conn, me(), cid, "owner")  # its folder, mode, AI, tools, sharing: the owner's
             if body.title is not None:
                 store.rename_conversation(conn, cid, body.title)
             if body.permission_mode is not None:
@@ -1054,7 +1321,7 @@ def create_app(db_path, *, command=None, env=None, allowed_roots=(), permission_
         """Add one reply to the project note, at the user's request."""
         with database() as conn:
             message = store.get_message(conn, mid)
-            conv = store.get_conversation(conn, message["conversation_id"])
+            conv = access.require(conn, me(), message["conversation_id"], "owner")
             if not conv["obsidian_note"]:
                 raise StoreError("la note Obsidian n'est pas activée pour cette conversation")
             if message["role"] != "assistant" or message["status"] != "ok":
@@ -1071,6 +1338,8 @@ def create_app(db_path, *, command=None, env=None, allowed_roots=(), permission_
     @app.post("/api/conversations/{cid}/obsidian/rewrite")
     def rewrite_note(cid: int):
         """Rebuild the whole project note; the previous one is backed up outside the vault."""
+        with database() as conn:
+            access.require(conn, me(), cid, "owner")
         if jobs.running(cid):
             raise Busy("une requête est en cours : attendez qu'elle ait fini pour réécrire la note")
         path, backup = jobs.rewrite_note(cid)
@@ -1080,6 +1349,7 @@ def create_app(db_path, *, command=None, env=None, allowed_roots=(), permission_
     def delete_conversation(cid: int):
         # The store refuses to delete a conversation whose reply is running.
         with database() as conn:
+            access.require(conn, me(), cid, "owner")
             store.delete_conversation(conn, cid)
         # Deleted for good means from the backups too.
         errors = backup.purge_conversation(purge_folder(), cid)
@@ -1089,45 +1359,53 @@ def create_app(db_path, *, command=None, env=None, allowed_roots=(), permission_
 
     @app.post("/api/conversations/{cid}/messages", status_code=202)
     def send(cid: int, body: NewMessage):
+        user = me()
         with database() as conn:
-            conv = store.get_conversation(conn, cid)
+            conv = access.require(conn, user, cid, "write")  # runs with the sender's own AI accounts
             if not conv["agent_id"]:
                 raise StoreError("aucun agent n'est choisi pour cette conversation")
             agent_id = conv["agent_id"]
         if conv["mode"] == "orchestration":
             if body.kind == "discuss":
-                return {"message_id": jobs.start_discussion(cid, body.prompt)}
+                return {"message_id": jobs.start_discussion(cid, body.prompt, user=user)}
             if body.kind != "plan":
                 raise StoreError(f"genre de message inconnu : {body.kind!r} (attendu : plan, discuss)")
             # The conductor proposes a plan; nothing else runs before it is validated.
-            return {"message_id": jobs.start_planning(cid, body.prompt)}
-        return {"message_id": jobs.start(cid, agent_id, body.prompt)}
+            return {"message_id": jobs.start_planning(cid, body.prompt, user=user)}
+        return {"message_id": jobs.start(cid, agent_id, body.prompt, user=user)}
 
     # --- autonomous work --------------------------------------------------------
 
     @app.post("/api/conversations/{cid}/autonomous", status_code=202)
     def start_autonomous(cid: int, body: AutonomousStart):
         """The AI pursues the goal alone, round after round, within the limits."""
+        user = me()
         with database() as conn:
-            conv = store.get_conversation(conn, cid)
+            conv = access.require(conn, user, cid, "write")
+            if body.check_command and access.conversation_role(conn, user, conv) != "owner":
+                # It runs on the server without the agent's sandbox: the owner's alone.
+                raise access.Forbidden("une commande de vérification est réservée au propriétaire de la conversation")
         if conv["mode"] != "single":
             raise StoreError("le travail autonome se lance dans une conversation à une IA")
         if not conv["agent_id"]:
             raise StoreError("aucun agent n'est choisi pour cette conversation")
         run_id = jobs.start_autonomous(cid, conv["agent_id"], body.goal, max_rounds=body.max_rounds,
                                        max_minutes=body.max_minutes, check_command=body.check_command,
-                                       confirm_check=body.confirm_check)
+                                       confirm_check=body.confirm_check, user=user)
         return {"run_id": run_id}
 
     # --- scheduled tasks ----------------------------------------------------------
 
     @app.get("/api/schedules")
     def schedules(conversation_id: int | None = None):
+        # Scheduled tasks run with the owner's accounts: the owner's to see and to set.
+        access.require_owner(me())
         with database() as conn:
             return {"schedules": schedule.list_all(conn, conversation_id)}
 
     @app.post("/api/schedules", status_code=201)
     def add_schedule(body: NewSchedule):
+        access.require_owner(me())
         with database() as conn:
             sid = schedule.create(conn, body.conversation_id, body.prompt, kind=body.kind, every=body.every,
                                   interval_minutes=body.interval_minutes, at_time=body.at_time,
@@ -1138,11 +1416,13 @@ def create_app(db_path, *, command=None, env=None, allowed_roots=(), permission_
 
     @app.patch("/api/schedules/{sid}")
     def change_schedule(sid: int, body: ScheduleChange):
+        access.require_owner(me())
         with database() as conn:
             return {"schedule": schedule.set_enabled(conn, sid, body.enabled, now=app.state.scheduler.clock())}
 
     @app.delete("/api/schedules/{sid}")
     def delete_schedule(sid: int):
+        access.require_owner(me())
         with database() as conn:
             schedule.delete(conn, sid)
         return {"deleted": sid}
@@ -1150,6 +1430,7 @@ def create_app(db_path, *, command=None, env=None, allowed_roots=(), permission_
     @app.post("/api/schedules/{sid}/run", status_code=202)
     def run_schedule_now(sid: int):
         """Run a task now, outside its rule (its next run stays as it was)."""
+        access.require_owner(me())
         with database() as conn:
             task = schedule.get(conn, sid)
         launch_task(task)
@@ -1171,7 +1452,7 @@ def create_app(db_path, *, command=None, env=None, allowed_roots=(), permission_
             raise StoreError(f"choix inconnu : {body.decision!r} (attendu : raise, auto, custom)")
         s = current()
         with database() as conn:
-            conv = store.get_conversation(conn, cid)
+            conv = access.require(conn, me(), cid, "write")
             budget = conv["rag_budget"] or s.rag_budget
             summarize = summary_ai(conv)
             if body.decision == "custom":
@@ -1199,30 +1480,37 @@ def create_app(db_path, *, command=None, env=None, allowed_roots=(), permission_
     @app.delete("/api/conversations/{cid}/fresh-start")
     def cancel_fresh_start(cid: int):
         with database() as conn:
-            store.get_conversation(conn, cid)
+            access.require(conn, me(), cid, "write")
             memory.store_package(conn, cid, None)
         return {"ready": False}
 
     @app.get("/api/search")
     def search(q: str = "", limit: int = 30):
         with database() as conn:
-            return {"results": memory.search(conn, q, limit=max(1, min(limit, 100)))}
+            visible = access.visible_conversation_ids(conn, me())
+            found = memory.search(conn, q, limit=max(1, min(limit, 100)) if visible is None else 100)
+        if visible is not None:  # only in the conversations this person may see
+            found = [r for r in found if r["conversation_id"] in visible][:max(1, min(limit, 100))]
+        return {"results": found}
 
     @app.post("/api/conversations/{cid}/stop")
     def stop(cid: int):
+        with database() as conn:
+            access.require(conn, me(), cid, "write")
         return {"stopped": jobs.stop(cid)}
 
     @app.post("/api/permissions/{permission_id}")
     def answer(permission_id: str, body: PermissionAnswer):
+        # The person whose request it is answers it (or the owner); nobody else.
         if not jobs.answer(permission_id, allow=body.allow, message=body.message,
-                           answers=body.answers):
+                           answers=body.answers, user=me()):
             return JSONResponse({"detail": "demande introuvable ou déjà traitée"}, 404)
         return {"answered": permission_id}
 
     @app.get("/api/conversations/{cid}/events")
     def events(cid: int):
         with database() as conn:
-            store.get_conversation(conn, cid)
+            access.require(conn, me(), cid, "read")
         q = jobs.hub.subscribe(cid)
         snapshot = jobs.snapshot(cid)
 

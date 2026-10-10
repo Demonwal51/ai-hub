@@ -204,16 +204,44 @@ def main():
     # PYTHONUTF8 say: without this, "é" arrives as "Ã©".
     for stream in (sys.stdin, sys.stdout, sys.stderr):
         stream.reconfigure(encoding="utf-8")
+    # A person's own account (CLAUDE_CONFIG_DIR): signed in once a sign-in left its mark there.
+    config_dir = os.environ.get("CLAUDE_CONFIG_DIR")
+    mark = os.path.join(config_dir, "fake-account.txt") if config_dir else None
     if sys.argv[1:3] == ["auth", "status"]:
-        logged_in = os.environ.get("FAKE_CLAUDE_LOGGED_IN") == "1"
+        logged_in = os.path.exists(mark) if mark else os.environ.get("FAKE_CLAUDE_LOGGED_IN") == "1"
         print(json.dumps({"loggedIn": logged_in,
                           "authMethod": "claude.ai" if logged_in else "none"}, indent=2))
         sys.exit(0 if logged_in else 1)
+    if sys.argv[1:3] == ["auth", "login"]:
+        # Like the real CLI (measured on 2.1.293): a page, then a prompt without an end of line.
+        log["browser"] = os.environ.get("BROWSER")
+        save()
+        print("Opening browser to sign in…")
+        print("If the browser didn't open, visit: https://example.test/oauth/authorize?code=true&state=abc")
+        print("Paste code here if prompted > ", end="", flush=True)
+        code = sys.stdin.readline().strip()
+        if code == "bon-code" and mark:
+            with open(mark, "w", encoding="utf-8") as fh:
+                fh.write("signed in")
+            print("\nLogin successful.")
+            sys.exit(0)
+        print("\nOAuth error: Invalid code")
+        sys.exit(1)
+    if sys.argv[1:3] == ["auth", "logout"]:
+        if mark and os.path.exists(mark):
+            os.remove(mark)
+        print("Successfully logged out.")
+        sys.exit(0)
     global SCENARIO
+    log["config_dir"] = config_dir  # whose account runs the request
+    if mark and not os.path.exists(mark):
+        SCENARIO = "not_logged_in"
     first = sys.stdin.readline()
     message = json.loads(first) if first.strip() else None
     if message and message.get("type") == "control_request" \
             and message.get("request", {}).get("subtype") == "get_usage":
+        log["usage_config_dir"] = config_dir  # whose quota is read
+        save()
         answer_usage(message["request_id"])
         return
     log["user_message"] = message

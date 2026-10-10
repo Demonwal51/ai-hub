@@ -15,7 +15,11 @@ const state = {
   agents: [],                // enabled agents, for plan assignments
   subtaskLive: new Map(),    // subtask id -> text streamed so far
   refreshTimer: null,
+  me: null,                  // { name, is_owner } on a server with accounts; null otherwise (the owner)
 };
+
+// The owner of the server (or a server without accounts): settings, people, sharing.
+const isOwner = () => !state.me || state.me.is_owner;
 
 const $ = (id) => document.getElementById(id);
 const MODE_LABELS = { manual: "Manuel", plan: "Plan", bypass: "Sans permission" };
@@ -179,12 +183,12 @@ function renderList() {
         el("span", { class: "chevron", "aria-hidden": "true", text: open ? "▾" : "▸" }),
         el("span", { text: project.name }),
         el("span", { class: "project-count", text: String(convs.length) })),
-      el("button", { class: "btn btn-ghost btn-small", type: "button", text: "+",
+      isOwner() ? el("button", { class: "btn btn-ghost btn-small", type: "button", text: "+",
         title: "Nouvelle conversation dans ce projet", "aria-label": `Nouvelle conversation dans ${project.name}`,
-        onclick: () => openNewDialog(project.id) }),
-      el("button", { class: "btn btn-ghost btn-small", type: "button", text: "…",
-        title: "Modifier ou supprimer le projet", "aria-label": `Modifier le projet ${project.name}`,
-        onclick: () => openProjectDialog(project) })));
+        onclick: () => openNewDialog(project.id) }) : null,
+      isOwner() ? el("button", { class: "btn btn-ghost btn-small", type: "button", text: "…",
+        title: "Modifier, partager ou supprimer le projet", "aria-label": `Modifier le projet ${project.name}`,
+        onclick: () => openProjectDialog(project) }) : null));
     if (open) {
       if (!convs.length) group.append(el("p", { class: "list-empty", text: "Aucune conversation dans ce projet." }));
       for (const conv of convs) group.append(conversationItem(conv));
@@ -373,6 +377,17 @@ function renderConversation() {
   $("obsidian").classList.toggle("hidden", !vault);
   $("obsidian").classList.toggle("on", Boolean(conv.obsidian_note));
   $("obsidian").textContent = conv.obsidian_note ? "Obsidian ✓" : "Obsidian";
+  // Shared with someone: what is the owner's stays hidden, and reading only means no composer.
+  const role = conv.my_role || "owner";
+  for (const id of ["conv-project", "conv-assignment", "conv-model", "conv-mode", "obsidian", "tools",
+    "schedules", "rename", "delete", "conv-shared"]) {
+    if (role !== "owner") $(id).classList.add("hidden");
+  }
+  $("share").classList.toggle("hidden", role !== "owner" || !state.me);
+  $("share").textContent = (state.data.shared_with || []).length ? `Partagée (${state.data.shared_with.length})` : "Partager";
+  $("composer").classList.toggle("hidden", role === "read");
+  $("readonly-note").classList.toggle("hidden", role !== "read");
+  $("fresh").classList.toggle("hidden", role === "read");
   renderFresh(conv);
   renderMessages(messages);
   renderRunning();
@@ -397,6 +412,10 @@ function renderMessages(messages) {
       { run, round: r, last: i === run.round_list.length - 1 }));
   }
   const shown = new Set();
+  // Who wrote each request, once several people can write here.
+  const conv = state.data.conversation;
+  const authors = (state.data.shared_with || []).length > 0 || (conv.my_role && conv.my_role !== "owner")
+    || messages.some((m) => m.author && state.me && m.author !== state.me.name);
   let waitingPlan = null;
   const flushPlan = () => {
     if (waitingPlan && !shown.has(waitingPlan.id)) { box.append(planCard(waitingPlan)); shown.add(waitingPlan.id); }
@@ -405,7 +424,10 @@ function renderMessages(messages) {
   for (const m of messages) {
     if (m.role === "user") {
       flushPlan();
-      box.append(el("div", { class: "msg user", text: m.content, "data-id": m.id }));
+      box.append(authors && m.author
+        ? el("div", { class: "msg user", "data-id": m.id },
+          el("div", { class: "msg-author", text: m.author }), el("div", { text: m.content }))
+        : el("div", { class: "msg user", text: m.content, "data-id": m.id }));
       waitingPlan = plans.get(m.id) || null;
       continue;
     }
@@ -722,6 +744,8 @@ function handleEvent(ev) {
       else if (ev.offset > state.live.content.length) refreshConversation();  // a piece was missed
       break;
     case "permission":
+      // A guest answers only their own requests' prompts: the server says which (can_answer).
+      if (!isOwner()) { refreshConversation(); break; }
       state.pending.set(ev.id, ev);
       renderMessages(state.data.messages);
       renderRunning();
@@ -999,6 +1023,12 @@ function permissionCard(request) {
     }
   };
   const deny = el("button", { class: "btn btn-danger-ghost", type: "button", text: "Refuser", onclick: () => send(false) });
+  if (request.can_answer === false) {
+    // Someone else's request: only they say yes or no (it runs on their accounts).
+    card.append(...heading(`L'agent attend un accord pour « ${request.tool_name} »`),
+      el("p", { class: "quota-note", text: "Cette demande n'est pas la vôtre : seule la personne qui l'a envoyée peut répondre." }));
+    return card;
+  }
 
   if (request.tool_name === "AskUserQuestion") {
     card.append(...heading("L'agent vous pose une question"));
@@ -1116,9 +1146,15 @@ function setupProjectDialog() {
     $("project-workdir").value = project ? project.workdir || "" : "";
     $("project-delete").classList.toggle("hidden", !project);
     $("project-delete-all").classList.toggle("hidden", !project || !project.conversations);
+    $("project-share").classList.toggle("hidden", !project || !state.me);
     $("project-error").textContent = "";
     dialog.showModal();
   };
+  $("project-share").addEventListener("click", () => {
+    if (!editing) return;
+    dialog.close();
+    openShareDialog({ project_id: editing.id }, `le projet « ${editing.name} »`);
+  });
   $("new-project").addEventListener("click", () => openProjectDialog(null));
   $("project-cancel").addEventListener("click", () => dialog.close());
   $("project-form").addEventListener("submit", async (event) => {
@@ -1460,7 +1496,7 @@ function setupLogin() {
     event.preventDefault();
     $("login-submit").disabled = true;
     try {
-      await api("POST", "/api/auth/login", { password: $("login-password").value });
+      await api("POST", "/api/auth/login", { name: $("login-name").value.trim(), password: $("login-password").value });
       $("login").classList.add("hidden");
       $("login-password").value = "";
       if (loginDone) { loginDone(); loginDone = null; }
@@ -1890,9 +1926,269 @@ async function ensureLoggedIn() {
     await new Promise(() => {});  // nothing else can work
   }
   $("account-actions").classList.toggle("hidden", !session.required);
-  if (session.logged_in) return;
-  showLogin();
-  await new Promise((resolve) => { loginDone = resolve; });
+  const invitation = new URLSearchParams(location.search).get("invitation");
+  if (!session.logged_in) {
+    if (invitation) showInvitation(invitation);
+    else showLogin();
+    await new Promise((resolve) => { loginDone = resolve; });
+    session = await api("GET", "/api/auth/session");
+  } else if (invitation) {
+    history.replaceState(null, "", "/");  // already in: the link is of no use here
+  }
+  state.me = session.user;
+  if (state.me) {
+    $("account-box").classList.remove("hidden");
+    $("me-name").textContent = `Connecté : ${state.me.name}`;
+    $("people").classList.toggle("hidden", !state.me.is_owner);
+    $("my-accounts").classList.toggle("hidden", state.me.is_owner);
+  }
+  // What is the owner's alone: hidden for the others (the server refuses it anyway).
+  for (const id of ["new-conversation", "new-project"]) $(id).classList.toggle("hidden", !isOwner());
+}
+
+function showInvitation(token) {
+  $("login").classList.remove("hidden");
+  $("login-form").classList.add("hidden");
+  $("invite-form").classList.remove("hidden");
+  $("invite-name").focus();
+  $("invite-form").onsubmit = async (event) => {
+    event.preventDefault();
+    $("invite-error").textContent = "";
+    if ($("invite-password").value !== $("invite-password2").value) {
+      $("invite-error").textContent = "Les deux mots de passe ne sont pas les mêmes.";
+      return;
+    }
+    $("invite-submit").disabled = true;
+    try {
+      await api("POST", "/api/invitations/accept", { invitation: token, name: $("invite-name").value.trim(),
+        password: $("invite-password").value });
+      history.replaceState(null, "", "/");
+      $("login").classList.add("hidden");
+      $("invite-form").classList.add("hidden");
+      $("login-form").classList.remove("hidden");
+      if (loginDone) { loginDone(); loginDone = null; }
+      toast("Bienvenue ! Connectez vos comptes d'IA dans « Mes comptes IA ».");
+    } catch (err) {
+      $("invite-error").textContent = err.message;
+    } finally {
+      $("invite-submit").disabled = false;
+    }
+  };
+}
+
+// --- people, sharing, own AI accounts (version 0.2) -----------------------------------
+
+const ROLE_LABELS = { read: "Lecture", write: "Lecture et écriture" };
+
+function setupPeopleDialog() {
+  const dialog = $("people-dialog");
+  const error = (err) => { $("people-error").textContent = err.message; };
+  const render = async () => {
+    $("people-error").textContent = "";
+    let data;
+    try { data = await api("GET", "/api/users"); } catch (err) { error(err); return; }
+    $("people-list").replaceChildren(...data.users.map((u) => el("div", { class: "device" },
+      el("div", { class: "device-text" },
+        el("span", { class: "conv-item-title", text: u.name + (u.is_owner ? " — vous" : "") + (u.disabled ? " (désactivée)" : "") }),
+        el("span", { class: "conv-item-sub", text: u.is_owner ? "propriétaire du serveur (ou nom laissé vide à la connexion)" : `depuis le ${formatDate(u.created_at)}` })),
+      el("button", { class: "btn btn-ghost btn-small", type: "button", text: "Renommer",
+        title: "Le nom pour se connecter",
+        onclick: async () => {
+          const name = prompt(`Nouveau nom pour se connecter (au lieu de « ${u.name} ») :`, u.name);
+          if (!name || name.trim() === u.name) return;
+          try {
+            const r = await api("PATCH", `/api/users/${u.id}`, { name: name.trim() });
+            if (u.is_owner) { state.me.name = r.user.name; $("me-name").textContent = `Connecté : ${r.user.name}`; }
+            toast(`Nom changé : « ${r.user.name} ».`);
+            await render();
+          } catch (err) { error(err); }
+        } }),
+      u.is_owner ? null : el("button", { class: "btn btn-ghost btn-small", type: "button",
+        text: u.disabled ? "Réactiver" : "Désactiver",
+        title: u.disabled ? "Elle pourra se reconnecter" : "Elle est déconnectée tout de suite et ne peut plus entrer",
+        onclick: async () => { try { await api("PATCH", `/api/users/${u.id}`, { disabled: !u.disabled }); await render(); } catch (err) { error(err); } } }),
+      u.is_owner ? null : el("button", { class: "btn btn-danger-ghost btn-small", type: "button", text: "Supprimer",
+        onclick: async () => {
+          const ok = await confirmDialog({ title: `Supprimer ${u.name} ?`,
+            text: "Son accès, ses partages et ses comptes d'IA enregistrés ici sont effacés. Ses messages restent dans les conversations.",
+            okText: "Supprimer" });
+          if (!ok) return;
+          try { await api("DELETE", `/api/users/${u.id}`); await render(); } catch (err) { error(err); }
+        } }))));
+    const waiting = data.invitations.filter((i) => !i.used_at);
+    $("invitation-list").replaceChildren(...waiting.map((i) => el("div", { class: "device" },
+      el("div", { class: "device-text" },
+        el("span", { class: "conv-item-title", text: `Invitation${i.note ? " · " + i.note : ""}` }),
+        el("span", { class: "conv-item-sub", text: `valable jusqu'au ${formatDate(i.expires_at)}` })),
+      el("button", { class: "btn btn-danger-ghost btn-small", type: "button", text: "Annuler",
+        onclick: async () => { try { await api("DELETE", `/api/invitations/${i.id}`); await render(); } catch (err) { error(err); } } }))));
+  };
+  $("people").addEventListener("click", async () => {
+    $("invite-link-box").classList.add("hidden");
+    await render();
+    dialog.showModal();
+  });
+  $("people-close").addEventListener("click", () => dialog.close());
+  $("new-user-make").addEventListener("click", async () => {
+    $("people-error").textContent = "";
+    try {
+      const r = await api("POST", "/api/users", { name: $("new-user-name").value.trim(), password: $("new-user-password").value });
+      $("new-user-name").value = "";
+      $("new-user-password").value = "";
+      toast(`Compte « ${r.user.name} » créé : donnez-lui ce nom et ce mot de passe.`);
+      await render();
+    } catch (err) { error(err); }
+  });
+  $("invite-make").addEventListener("click", async () => {
+    try {
+      const r = await api("POST", "/api/invitations", { note: $("invite-note").value.trim() || null });
+      $("invite-link").value = r.link;
+      $("invite-link-box").classList.remove("hidden");
+      $("invite-note").value = "";
+      await render();
+    } catch (err) { error(err); }
+  });
+  $("invite-copy").addEventListener("click", async () => {
+    $("invite-link").select();
+    try { await navigator.clipboard.writeText($("invite-link").value); toast("Lien copié."); }
+    catch { document.execCommand("copy"); toast("Lien copié."); }
+  });
+}
+
+// Share a conversation ({conversation_id}) or a whole project ({project_id}) with people.
+async function openShareDialog(target, title) {
+  const dialog = $("share-dialog");
+  const error = (err) => { $("share-error").textContent = err.message; };
+  $("share-title").textContent = `Partager ${title}`;
+  $("share-text").textContent = target.project_id
+    ? "Tout le projet : ses conversations, celles d'aujourd'hui et celles à venir."
+    : "Cette conversation seulement. « Lecture et écriture » : la personne peut envoyer des demandes, qui utilisent ses propres comptes d'IA.";
+  const render = async () => {
+    $("share-error").textContent = "";
+    let people, shared;
+    try {
+      people = (await api("GET", "/api/users")).users.filter((u) => !u.is_owner);
+      shared = target.project_id
+        ? (await api("GET", `/api/projects/${target.project_id}`)).shared_with || []
+        : (await api("GET", `/api/conversations/${target.conversation_id}`)).shared_with || [];
+    } catch (err) { error(err); return; }
+    if (!people.length) {
+      $("share-list").replaceChildren(el("p", { class: "list-empty", text: "Personne à qui partager : invitez d'abord quelqu'un (bouton « Personnes »)." }));
+      return;
+    }
+    $("share-list").replaceChildren(...people.map((u) => {
+      const mine = shared.find((s) => s.user_id === u.id && (target.project_id || s.through === "conversation"));
+      const viaProject = !target.project_id && shared.find((s) => s.user_id === u.id && s.through === "projet");
+      const select = el("select", { "aria-label": `Accès de ${u.name}` },
+        el("option", { value: "", text: "Pas d'accès", selected: !mine }),
+        ...Object.entries(ROLE_LABELS).map(([v, t]) => el("option", { value: v, text: t, selected: mine && mine.role === v })));
+      select.addEventListener("change", async () => {
+        try {
+          if (select.value) await api("POST", "/api/shares", { user_id: u.id, role: select.value, ...target });
+          else await api("POST", "/api/shares/remove", { user_id: u.id, ...target });
+          await render();
+          if (state.data) await refreshConversation();
+        } catch (err) { error(err); await render(); }
+      });
+      return el("div", { class: "device" },
+        el("div", { class: "device-text" },
+          el("span", { class: "conv-item-title", text: u.name + (u.disabled ? " (désactivée)" : "") }),
+          viaProject ? el("span", { class: "conv-item-sub", text: `par le projet : ${ROLE_LABELS[viaProject.role]}` }) : null),
+        select);
+    }));
+  };
+  await render();
+  dialog.showModal();
+}
+
+function setupShareDialog() {
+  $("share-close").addEventListener("click", () => $("share-dialog").close());
+  $("share").addEventListener("click", () => {
+    const conv = state.data.conversation;
+    openShareDialog({ conversation_id: conv.id }, `« ${conv.title} »`);
+  });
+}
+
+function setupAccountsDialog() {
+  const dialog = $("accounts-dialog");
+  let timer = null;
+  const error = (err) => { $("accounts-error").textContent = err ? err.message : ""; };
+  const render = async () => {
+    let data;
+    try { data = await api("GET", "/api/accounts"); } catch (err) { error(err); return; }
+    if (!data.own) { dialog.close(); return; }
+    let waiting = false;
+    $("accounts-list").replaceChildren(...Object.entries(data.providers).map(([provider, a]) => {
+      const login = a.login && a.login.state === "waiting" ? a.login : null;
+      if (login) waiting = true;
+      const row = el("div", { class: "account" },
+        el("div", { class: "device-text" },
+          el("span", { class: "conv-item-title", text: a.name }),
+          el("span", { class: "conv-item-sub", text: a.error ? a.error : a.signed_in ? "connecté : vos demandes l'utilisent" : "pas connecté" })));
+      if (a.signed_in) {
+        row.append(el("button", { class: "btn btn-ghost btn-small", type: "button", text: "Se déconnecter",
+          onclick: async () => { try { await api("POST", `/api/accounts/${provider}/logout`); await render(); } catch (err) { error(err); } } }));
+      } else if (!login) {
+        row.append(el("button", { class: "btn btn-primary btn-small", type: "button", text: "Se connecter",
+          onclick: async (e) => {
+            e.target.disabled = true;
+            error(null);
+            try {
+              const view = await api("POST", `/api/accounts/${provider}/login`);
+              if (view.state === "error") error(new Error(view.error));
+            } catch (err) { error(err); }
+            await render();
+          } }));
+      }
+      if (a.login && a.login.state === "error") row.append(el("p", { class: "form-error", text: a.login.error }));
+      if (login) {
+        const steps = el("div", { class: "account-steps" },
+          el("p", {}, "1. Ouvrez ", el("a", { href: login.url, target: "_blank", rel: "noopener noreferrer", text: "la page de connexion" }),
+            " et connectez-vous avec votre compte."));
+        if (login.code) {
+          steps.append(el("p", {}, "2. Tapez ce code sur la page : ", el("strong", { class: "account-code", text: login.code })),
+            el("p", { class: "quota-note", text: "Cette fenêtre se met à jour toute seule une fois fait." }));
+        } else if (login.needs_code) {
+          const input = el("input", { type: "text", placeholder: "Code affiché par la page", "aria-label": "Code de connexion",
+            autocomplete: "off" });
+          steps.append(el("p", { text: "2. La page affiche un code : copiez-le ici." }),
+            el("div", { class: "share-add" }, input,
+              el("button", { class: "btn btn-primary btn-small", type: "button", text: "Valider", onclick: async (e) => {
+                e.target.disabled = true;
+                try {
+                  const view = await api("POST", `/api/accounts/${provider}/code`, { code: input.value.trim() });
+                  if (view.state === "ok") toast(`${a.name} connecté.`);
+                  else error(new Error(view.error || "connexion refusée"));
+                } catch (err) { error(err); }
+                await render();
+              } })));
+        }
+        steps.append(el("button", { class: "btn btn-ghost btn-small", type: "button", text: "Annuler",
+          onclick: async () => { await api("POST", `/api/accounts/${provider}/cancel`).catch(() => {}); await render(); } }));
+        row.append(steps);
+      }
+      return row;
+    }));
+    // A Codex sign-in ends on OpenAI's page: look again until it is done.
+    clearTimeout(timer);
+    if (waiting && dialog.open) timer = setTimeout(render, 3000);
+  };
+  $("my-accounts").addEventListener("click", async () => { error(null); dialog.showModal(); await render(); });
+  $("accounts-close").addEventListener("click", () => { clearTimeout(timer); dialog.close(); loadQuota(true); });
+}
+
+function setupPasswordDialog() {
+  const dialog = $("password-dialog");
+  $("my-password").addEventListener("click", () => { $("password-form").reset(); $("password-error").textContent = ""; dialog.showModal(); });
+  $("password-cancel").addEventListener("click", () => dialog.close());
+  $("password-form").addEventListener("submit", async (event) => {
+    event.preventDefault();
+    try {
+      await api("POST", "/api/me/password", { current: $("password-current").value, new: $("password-new").value });
+      dialog.close();
+      toast("Mot de passe changé. Vos autres appareils sont déconnectés.");
+    } catch (err) { $("password-error").textContent = err.message; }
+  });
 }
 
 // --- start ---------------------------------------------------------------------------
@@ -1911,6 +2207,10 @@ async function main() {
     navigator.serviceWorker.register("/sw.js").catch(() => { /* not installable here (plain http) */ });
   }
   await ensureLoggedIn();
+  setupPeopleDialog();
+  setupShareDialog();
+  setupAccountsDialog();
+  setupPasswordDialog();
   setupNewDialog();
   setupProjectDialog();
   setupProjectActions();

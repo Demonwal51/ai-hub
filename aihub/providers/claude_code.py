@@ -300,7 +300,8 @@ def describe_error(text, *, api_error_status=None, quota=None, model=None):
     low = (text or "").lower()
     if "not logged in" in low or "please run /login" in low:
         return (f"{DISPLAY_NAME} n'est connecté à aucun compte. "
-                "Lancez « claude auth login » dans un terminal, puis réessayez.")
+                "Lancez « claude auth login » dans un terminal, puis réessayez "
+                "(une personne invitée : menu « Mes comptes IA »).")
     quota_hit = (
         api_error_status == 429
         or (quota is not None and quota.status == "rejected")

@@ -10,7 +10,7 @@ import os
 import threading
 from pathlib import Path
 
-from . import config, memory, project_access, providers, routing, store, tools
+from . import access, accounts, config, memory, project_access, providers, routing, store, tools
 from .providers import claude_code
 from .providers.claude_code import ProviderError
 
@@ -85,7 +85,8 @@ class Request:
     def __init__(self, conn, conversation_id, agent_id, prompt, *, ask_permission=None,
                  on_text=None, on_start=None, command=None, timeout_s=None, env=None,
                  record_prompt=True, resume=True, tools=None, json_schema=None,
-                 format_content=None, check_result=None, settings=None, on_quota=None):
+                 format_content=None, check_result=None, settings=None, on_quota=None, user_id=None,
+                 account_id=None):
         """`record_prompt=False` and `resume=False` serve the conductor: its
         planning and synthesis prompts are built by the hub, not typed by the
         user, and each starts a fresh session. `tools` and `json_schema` are
@@ -112,6 +113,8 @@ class Request:
         self.check_result = check_result
         self.settings = settings or config.Settings()  # summary AI, cap and exchanges of a fresh start
         self.on_quota = on_quota  # on_quota(provider, QuotaInfo) after it is recorded (phone alerts)
+        self.user_id = user_id    # who sends it (None: the owner)
+        self.account_id = account_id  # whose own AI accounts `env` names (None: the computer's)
         self.message_id = None
         self._run = None
         self._stopped = threading.Event()
@@ -147,7 +150,7 @@ class Request:
         command = providers.command_for(self.command, self.provider)
         self.request_id = None
         if self.record_prompt:
-            self.request_id = store.add_user_message(self.conn, self.conversation_id, self.prompt)
+            self.request_id = store.add_user_message(self.conn, self.conversation_id, self.prompt, self.user_id)
         self.message_id = store.start_request(self.conn, self.conversation_id, self.agent_id)
         try:
             store.mark_message_running(self.conn, self.message_id)
@@ -213,7 +216,9 @@ class Request:
     def _attempt(self, conversation, agent, command, resume_id, package):
         # Passages of the conversations the request names, joined to what
         # is sent (not to what is recorded): no tool round trip for them.
-        joined = project_access.prefetch(self.conn, conversation, self.prompt, automatic=self.record_prompt)
+        project = access.reads_project(self.conn, self.user_id, conversation)
+        joined = project_access.prefetch(self.conn, conversation, self.prompt, automatic=self.record_prompt,
+                                         project=project)
         if package is not None:
             used = memory.package_tokens(package)
             # Already in the package, or the request itself (indexed as soon as recorded).
@@ -223,7 +228,8 @@ class Request:
             sent = memory.render(package, found, self.prompt) + joined
         else:
             sent = self.prompt + joined
-        given = tools.for_run(self.conn, conversation, self.settings, own=package is not None, commands=self.command)
+        given = tools.for_run(self.conn, conversation, self.settings, own=package is not None, commands=self.command,
+                              project=project, account_env=accounts.account_vars(self.env))
         env = self.env
         if given.env:
             env = {**(env if env is not None else claude_code.clean_env(os.environ)), **given.env}
@@ -248,7 +254,7 @@ class Request:
             mcp_config=given.mcp_config,
             auto_allow=given.auto_allow,
             web=given.web,
-            instructions=project_access.instructions(self.conn, conversation),
+            instructions=project_access.instructions(self.conn, conversation, project=project),
         )
         with self._lock:
             self._run = run
@@ -292,6 +298,7 @@ class Request:
             limit_type=quota.limit_type, utilization=quota.utilization,
             resets_at=quota.resets_at,
             windows_json=json.dumps(quota.windows) if quota.windows else None,
+            user_id=self.account_id,
         )
         if self.on_quota:
             self.on_quota(self.provider, quota)

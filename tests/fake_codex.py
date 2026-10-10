@@ -18,7 +18,9 @@ import uuid
 
 SCENARIO = os.environ.get("FAKE_CODEX_SCENARIO", "hello")
 LOG = os.environ.get("FAKE_CODEX_LOG")
-state = {"args": sys.argv[1:], "pid": os.getpid(), "answers": [], "requests": []}
+# A person's own account (CODEX_HOME): its sign-in mark.
+MARK = os.path.join(os.environ["CODEX_HOME"], "fake-account.txt") if os.environ.get("CODEX_HOME") else None
+state ={"args": sys.argv[1:], "pid": os.getpid(), "answers": [], "requests": []}
 _next = [100]
 
 
@@ -179,6 +181,25 @@ def app_server():
         state["requests"].append(method)
         if method == "initialize":
             send({"id": rid, "result": {"userAgent": "fake", "platformOs": "windows"}})
+        elif method == "account/login/start":
+            # Like the real app server (measured on 0.162): the page and the code, then
+            # account/login/completed once the person typed it there.
+            send({"id": rid, "result": {"type": "chatgptDeviceCode", "loginId": "login-1",
+                                        "verificationUrl": "https://example.test/codex/device",
+                                        "userCode": "ABCD-1234"}})
+            if os.environ.get("FAKE_CODEX_LOGIN") == "wait":
+                continue  # nobody types the code: only a cancel ends it
+            time.sleep(0.3)
+            if os.environ.get("FAKE_CODEX_LOGIN") == "fail":
+                notify("account/login/completed", {"loginId": "login-1", "success": False, "error": "code expiré"})
+            else:
+                if MARK:
+                    with open(MARK, "w", encoding="utf-8") as fh:
+                        fh.write("signed in")
+                notify("account/login/completed", {"loginId": "login-1", "success": True})
+        elif method == "account/login/cancel":
+            state["cancelled"] = params.get("loginId")
+            send({"id": rid, "result": {}})
         elif method == "account/rateLimits/read":
             send({"id": rid, "result": {"rateLimits": limits(42)}})
         elif method == "model/list" and "params" not in message:
@@ -213,12 +234,21 @@ def main():
     for stream in (sys.stdin, sys.stdout, sys.stderr):
         stream.reconfigure(encoding="utf-8")  # like the real CLI, whatever the console's code page
     if sys.argv[1:3] == ["login", "status"]:
+        if MARK:  # a person's own account: signed in once a sign-in left its mark there
+            print("Logged in using ChatGPT" if os.path.exists(MARK) else "Not logged in")
+            return 0 if os.path.exists(MARK) else 1
         if os.environ.get("FAKE_CODEX_LOGGED_OUT"):
             print("Not logged in")
             return 1
         print("Logged in using ChatGPT")
         return 0
+    if sys.argv[1:2] == ["logout"]:
+        if MARK and os.path.exists(MARK):
+            os.remove(MARK)
+        print("Successfully logged out")
+        return 0
     if sys.argv[1:2] == ["app-server"]:
+        state["codex_home"] = os.environ.get("CODEX_HOME")  # whose account runs the request
         save()
         app_server()
     print(f"commande inconnue : {sys.argv[1:]}", file=sys.stderr)

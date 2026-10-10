@@ -1,0 +1,70 @@
+"""AI providers: each one runs an agent and reports text, permissions and quota.
+
+Claude Code and Codex share one interface (a run with `run()` and `stop()`,
+returning a RunResult). This module picks the right one for an agent.
+"""
+
+from . import claude_code, codex, ollama
+from .claude_code import ProviderError
+
+MODULES = {claude_code.PROVIDER: claude_code, codex.PROVIDER: codex, ollama.PROVIDER: ollama}
+NAMES = {claude_code.PROVIDER: claude_code.DISPLAY_NAME, codex.PROVIDER: codex.DISPLAY_NAME,
+         "ollama": "l'IA locale"}
+
+
+def module(provider):
+    try:
+        return MODULES[provider]
+    except KeyError:
+        raise ProviderError(f"le fournisseur « {NAMES.get(provider, provider)} » n'est pas encore branché") from None
+
+
+def command_for(commands, provider):
+    """The command that starts this provider's CLI.
+
+    `commands` is what the hub was given: None (each CLI is searched for),
+    a list (the Claude Code command, as before Codex), or a dict by
+    provider, where False means "not offered here".
+    """
+    if isinstance(commands, dict):
+        given = commands.get(provider)
+    elif commands is not None and provider == claude_code.PROVIDER:
+        given = commands
+    else:
+        given = None
+    if given is False:
+        raise ProviderError(f"{NAMES.get(provider, provider)} n'est pas branché sur ce serveur")
+    return list(given) if given else module(provider).find_cli()
+
+
+def default_model(provider, model):
+    """None when the agent's model means "the CLI's own default" (no model sent)."""
+    return None if model in (None, module(provider).DEFAULT_MODEL) else model
+
+
+def new_run(provider, command, *, instructions=None, warning_from=None, web=True, **options):
+    """A run of this provider. `instructions`: text added to the agent's system prompt;
+    `web`: the AI's own web search (off: taken away)."""
+    if provider == codex.PROVIDER:
+        extra = {"warning_from": warning_from} if warning_from is not None else {}
+        return codex.CodexRun(command, instructions=instructions, web=web, **extra, **options)
+    if provider == ollama.PROVIDER:
+        return ollama.OllamaRun(command, instructions=instructions, web=web, **options)
+    module(provider)  # an unknown provider is refused here
+    return claude_code.ClaudeCodeRun(
+        command, extra_args=["--append-system-prompt", instructions] if instructions else [],
+        disallowed=() if web else claude_code.WEB_TOOLS, **options)
+
+
+def lost_session(provider, error):
+    """The CLI no longer has the session to resume (deleted, other account, other PC)."""
+    if provider == codex.PROVIDER:
+        return codex.lost_session(error)
+    if provider == ollama.PROVIDER:
+        return False  # no session at all
+    return "no conversation found" in (error or "").lower()
+
+
+def stateless(provider):
+    """True for a provider that keeps no session: the memory goes with every request."""
+    return getattr(module(provider), "STATELESS", False)

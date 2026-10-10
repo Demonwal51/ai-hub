@@ -1,0 +1,481 @@
+<!doctype html>
+<html lang="fr">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <meta name="color-scheme" content="light dark">
+  <title>AI Hub</title>
+  <meta name="theme-color" content="#2f5bd3">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-title" content="AI Hub">
+  <link rel="manifest" href="/manifest.webmanifest">
+  <link rel="icon" type="image/png" sizes="192x192" href="/static/icon-192.png">
+  <link rel="apple-touch-icon" href="/static/apple-touch-icon.png">
+  <link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+  <div class="login hidden" id="login">
+    <form class="login-card" id="login-form">
+      <img src="/static/icon-192.png" alt="" width="64" height="64">
+      <h1>AI Hub</h1>
+      <p class="login-text" id="login-text">Entrez votre mot de passe.</p>
+      <input type="password" id="login-password" autocomplete="current-password" required
+             aria-label="Mot de passe" placeholder="Mot de passe">
+      <p class="form-error" id="login-error" role="alert"></p>
+      <button class="btn btn-primary btn-block" id="login-submit">Se connecter</button>
+    </form>
+  </div>
+
+  <div class="app" id="app" data-view="list">
+    <aside class="sidebar">
+      <header class="brand">
+        <span class="brand-name">AI Hub <small class="brand-version" id="version"></small></span>
+        <span class="pill" id="status-pill" title="État de Claude Code">…</span>
+      </header>
+      <div class="sidebar-actions">
+        <button class="btn btn-primary" id="new-conversation">Nouvelle conversation</button>
+        <button class="btn btn-ghost" id="new-project" title="Nouveau projet : il regroupe plusieurs conversations" aria-label="Nouveau projet">+ Projet</button>
+      </div>
+      <input type="search" id="search" class="search" placeholder="Chercher dans les conversations…"
+             aria-label="Chercher dans les conversations" autocomplete="off">
+      <nav class="conversation-list" id="conversation-list" aria-label="Conversations"></nav>
+      <section class="quota" id="quota" aria-label="Quota de Claude Code"></section>
+      <button class="btn btn-ghost btn-block" id="notifications" title="Alertes sur cet appareil">Notifications</button>
+      <button class="btn btn-ghost btn-block hidden" id="settings" title="Réglages de l'appli">Réglages</button>
+      <div class="sidebar-actions hidden" id="account-actions">
+        <button class="btn btn-ghost" id="devices" title="Les appareils où une session est ouverte">Appareils</button>
+        <button class="btn btn-ghost" id="logout">Se déconnecter</button>
+      </div>
+    </aside>
+
+    <main class="main" id="main">
+      <div class="empty" id="empty">
+        <p>Choisissez une conversation, ou créez-en une.</p>
+      </div>
+
+      <section class="conversation hidden" id="conversation">
+        <header class="conv-header">
+          <button class="btn btn-ghost back" id="back" aria-label="Retour à la liste">←</button>
+          <div class="conv-title-wrap">
+            <h1 class="conv-title" id="conv-title"></h1>
+            <div class="conv-meta" id="conv-meta"></div>
+          </div>
+          <div class="conv-actions">
+            <select id="conv-project" aria-label="Projet de la conversation" title="Projet de la conversation"></select>
+            <button class="btn btn-ghost hidden" id="conv-shared"
+                    title="Partagée : elle peut lire les autres conversations partagées du projet, et elles peuvent la lire">Partagée</button>
+            <select id="conv-assignment" class="hidden" aria-label="Choix des IA pour les sous-tâches"
+                    title="Comment les sous-tâches reçoivent leur IA">
+              <option value="auto">IA : automatique</option>
+              <option value="manual">IA : manuel</option>
+            </select>
+            <select id="conv-model" aria-label="IA de la conversation"
+                    title="Changer d'IA : la suivante repart de la mémoire de la conversation (résumé, derniers échanges)"></select>
+            <select id="conv-mode" aria-label="Mode de permission">
+              <option value="manual">Manuel</option>
+              <option value="plan">Plan</option>
+              <option value="bypass">Sans permission</option>
+            </select>
+            <button class="btn btn-ghost hidden" id="obsidian" title="Note de projet dans Obsidian">Obsidian</button>
+            <button class="btn btn-ghost" id="fresh"
+                    title="La prochaine demande ouvre une nouvelle session : un résumé et les passages utiles au lieu de tout l'historique">Repartir de zéro</button>
+            <button class="btn btn-ghost" id="tools" title="Les outils de l'IA dans cette conversation">Outils</button>
+            <button class="btn btn-ghost" id="schedules" title="Demandes qui se relancent seules (chaque jour, chaque heure…)">Planifier</button>
+            <button class="btn btn-ghost" id="rename" title="Renommer">Renommer</button>
+            <button class="btn btn-danger-ghost" id="delete" title="Supprimer définitivement">Supprimer</button>
+          </div>
+        </header>
+
+        <div class="messages" id="messages" aria-live="polite"></div>
+
+        <div class="running hidden" id="running">
+          <span class="spinner" aria-hidden="true"></span>
+          <span id="running-text">L'agent travaille…</span>
+          <span class="elapsed" id="elapsed"></span>
+          <button class="btn btn-stop" id="stop">Arrêter</button>
+        </div>
+
+        <div class="fresh-banner hidden" id="fresh-banner">
+          <span id="fresh-text"></span>
+          <button class="btn btn-ghost btn-small" type="button" id="fresh-view">Voir</button>
+          <button class="btn btn-ghost btn-small" type="button" id="fresh-cancel">Annuler</button>
+        </div>
+
+        <form class="composer" id="composer">
+          <textarea id="prompt" rows="2" placeholder="Votre demande…" aria-label="Votre demande"></textarea>
+          <div class="composer-buttons">
+            <button class="btn btn-ghost hidden" id="cite" type="button"
+                    title="Citer une autre conversation du projet : l'IA ira la lire">Citer…</button>
+            <button class="btn btn-ghost hidden" id="discuss" type="submit" value="discuss"
+                    title="Parler au chef d'orchestre : il répond et ne modifie rien">Discuter avec le chef</button>
+            <button class="btn btn-ghost" id="autonomous" type="button"
+                    title="L'IA travaille seule vers un objectif, tour après tour, jusqu'à ce que ce soit fini">Autonome…</button>
+            <button class="btn btn-primary" id="send" type="submit" value="plan">Envoyer</button>
+          </div>
+        </form>
+      </section>
+    </main>
+  </div>
+
+  <dialog id="new-dialog" class="dialog">
+    <form method="dialog" id="new-form">
+      <h2>Nouvelle conversation</h2>
+      <label>Titre
+        <input name="title" required maxlength="120" placeholder="ex. Refonte du site">
+      </label>
+      <label>Projet
+        <select name="project_id" id="new-project-select"></select>
+      </label>
+      <label>Dossier de travail (chemin complet)
+        <input name="workdir" id="new-workdir" placeholder="D:\projets\mon-projet">
+      </label>
+      <label>Fonctionnement
+        <select name="mode" id="new-kind">
+          <option value="single">Une IA : un agent répond</option>
+          <option value="orchestration">Orchestration : un chef découpe le travail entre plusieurs agents</option>
+        </select>
+      </label>
+      <label id="new-model-wrap">Modèle
+        <select name="model" id="new-model"></select>
+      </label>
+      <label id="new-conductor-wrap" class="hidden">Modèle du chef d'orchestre
+        <select name="conductor_model" id="new-conductor"></select>
+      </label>
+      <label id="new-assignment-wrap" class="hidden">Choix des IA pour les sous-tâches
+        <select name="assignment_mode" id="new-assignment">
+          <option value="auto">Automatique : la meilleure IA selon les benchmarks</option>
+          <option value="manual">Manuel : je choisis moi-même</option>
+        </select>
+      </label>
+      <label>Mode de permission
+        <select name="permission_mode" id="new-mode">
+          <option value="manual">Manuel : chaque action demande votre accord</option>
+          <option value="plan">Plan : l'agent propose un plan avant d'agir</option>
+          <option value="bypass">Sans permission : l'agent agit sans demander</option>
+        </select>
+      </label>
+      <div class="warning hidden" id="new-bypass-warning">
+        <p id="new-bypass-text"></p>
+        <label class="check"><input type="checkbox" name="confirm_bypass"> J'ai compris, j'active ce mode</label>
+      </div>
+      <p class="form-error" id="new-error" role="alert"></p>
+      <div class="dialog-actions">
+        <button class="btn btn-ghost" value="cancel" formnovalidate>Annuler</button>
+        <button class="btn btn-primary" value="ok" id="new-submit">Créer</button>
+      </div>
+    </form>
+  </dialog>
+
+  <dialog id="obsidian-dialog" class="dialog">
+    <form method="dialog" id="obsidian-form">
+      <h2>Note de projet dans Obsidian</h2>
+      <p id="obsidian-state"></p>
+      <p class="quota-note">Coffre : <span id="obsidian-vault"></span>. La note reçoit la création du projet puis
+        une mise à jour après chaque plan exécuté. Les conversations n'y vont pas : une réponse n'y va que si
+        vous cliquez « Noter dans Obsidian » sous elle.</p>
+      <label>Chemin de la note dans le coffre
+        <input id="obsidian-path" placeholder="Projets AI Hub/Mon projet.md">
+      </label>
+      <p class="form-error" id="obsidian-error" role="alert"></p>
+      <div class="dialog-actions">
+        <button class="btn btn-danger-ghost" type="button" id="obsidian-rewrite"
+                title="Reconstruit toute la note ; l'ancienne version est sauvegardée">Réécrire la note</button>
+        <button class="btn btn-ghost" type="button" id="obsidian-off">Désactiver</button>
+        <button class="btn btn-ghost" type="button" id="obsidian-close">Fermer</button>
+        <button class="btn btn-primary" type="button" id="obsidian-on">Activer</button>
+      </div>
+    </form>
+  </dialog>
+
+  <dialog id="project-dialog" class="dialog">
+    <form method="dialog" id="project-form">
+      <h2 id="project-dialog-title">Nouveau projet</h2>
+      <label>Nom
+        <input name="name" id="project-name" required maxlength="120" placeholder="ex. Site de la boutique">
+      </label>
+      <label>Description (facultative)
+        <textarea name="description" id="project-description" rows="3" maxlength="2000"
+                  placeholder="De quoi parle ce projet"></textarea>
+      </label>
+      <label>Dossier de travail par défaut (facultatif)
+        <input name="workdir" id="project-workdir" placeholder="D:\projets\boutique">
+      </label>
+      <p class="quota-note">Les conversations d'un même projet peuvent se consulter entre elles : l'IA d'une
+        conversation peut lister, chercher et lire les autres (en lecture seule). Une conversation dont le
+        partage est coupé ne lit pas les autres et n'est pas lue.</p>
+      <p class="form-error" id="project-error" role="alert"></p>
+      <div class="dialog-actions">
+        <button class="btn btn-danger-ghost hidden" type="button" id="project-delete"
+                title="Ses conversations restent, sans projet">Supprimer le projet</button>
+        <button class="btn btn-danger-ghost hidden" type="button" id="project-delete-all"
+                title="Le projet et toutes ses conversations, définitivement">Supprimer avec ses conversations</button>
+        <button class="btn btn-ghost" type="button" id="project-cancel">Annuler</button>
+        <button class="btn btn-primary" type="submit" id="project-save">Enregistrer</button>
+      </div>
+    </form>
+  </dialog>
+
+  <dialog id="settings-dialog" class="dialog dialog-wide">
+    <form id="settings-form">
+      <h2>Réglages</h2>
+      <p class="quota-note" id="settings-file"></p>
+      <fieldset>
+        <legend>Dossiers</legend>
+        <label>Dossiers de travail autorisés, un par ligne (vide : tous)
+          <textarea id="set-allowed_roots" rows="3" placeholder="D:\projets"></textarea>
+        </label>
+        <label>Coffre Obsidian des notes de projet (vide : pas de notes)
+          <input id="set-obsidian_vault" placeholder="D:\notes\coffre">
+        </label>
+      </fieldset>
+      <fieldset>
+        <legend>IA</legend>
+        <div class="check-row" id="set-models"></div>
+        <div class="field-row">
+          <label>Modèle par défaut <select id="set-default_model"></select></label>
+          <label>Chef d'orchestre par défaut <select id="set-default_conductor"></select></label>
+        </div>
+        <label>Seuil d'alerte du quota (%)
+          <input id="set-quota_warning" type="number" min="50" max="99" step="1">
+        </label>
+      </fieldset>
+      <fieldset>
+        <legend>Sauvegardes</legend>
+        <label class="check"><input type="checkbox" id="set-backup_enabled"> Sauvegarde quotidienne de la base</label>
+        <div class="field-row">
+          <label>Dossier (vide : data/sauvegardes) <input id="set-backup_dir"></label>
+          <label>Gardées <input id="set-backup_keep" type="number" min="1" max="365" step="1"></label>
+        </div>
+      </fieldset>
+      <fieldset>
+        <legend>Accès et PC</legend>
+        <div class="field-row">
+          <label>Session fermée après (jours sans usage) <input id="set-idle_days" type="number" min="1" max="3650" step="1"></label>
+          <label>Essais avant blocage <input id="set-max_failures" type="number" min="3" max="20" step="1"></label>
+          <label>Premier blocage (minutes) <input id="set-lock_minutes" type="number" min="1" max="1440" step="1"></label>
+        </div>
+        <label class="check"><input type="checkbox" id="set-keep_awake"> Empêcher la mise en veille pendant qu'un agent travaille</label>
+      </fieldset>
+      <fieldset>
+        <legend>Mémoire (repartir de zéro)</legend>
+        <div class="field-row">
+          <label>IA du résumé
+            <select id="set-summary_model">
+              <option value="haiku">Haiku (léger)</option>
+              <option value="sonnet">Sonnet</option>
+              <option value="opus">Opus</option>
+              <option value="fable">Fable</option>
+              <option value="gpt-6-luna">GPT-6 Luna (Codex, léger)</option>
+              <option value="gpt-5.6-luna">GPT-5.6 Luna (Codex, léger)</option>
+              <option value="codex">Codex (modèle par défaut)</option>
+              <option value="aucun">Aucun résumé</option>
+            </select>
+          </label>
+          <label>Plafond du paquet (tokens) <input id="set-rag_budget" type="number" min="1000" max="200000" step="500"></label>
+          <label>Derniers échanges gardés <input id="set-rag_exchanges" type="number" min="0" max="10" step="1"></label>
+        </div>
+      </fieldset>
+      <fieldset>
+        <legend>Serveurs d'outils (MCP)</legend>
+        <p class="quota-note">Des serveurs MCP qu'une conversation peut choisir dans « Outils ». Une liste JSON :
+          <code>[{"name": "fichiers", "command": "npx", "args": ["…"], "description": "…", "read_only": false}]</code>.
+          Pas de clé ici : ce fichier ne garde aucun secret.</p>
+        <textarea id="set-tool_servers" rows="4" spellcheck="false"></textarea>
+      </fieldset>
+      <fieldset>
+        <legend>Alertes par ntfy (appli de notifications externe, facultatif)</legend>
+        <p class="quota-note">Les notifications du navigateur se règlent sur chaque appareil (« Notifications »).
+          ntfy est une autre appli : le texte de l'alerte passe en clair par son serveur, et quiconque connaît
+          le sujet la reçoit. Choisissez un sujet long et impossible à deviner.</p>
+        <label>Adresse ntfy <input id="set-ntfy_url" placeholder="https://ntfy.sh/un-sujet-long-et-secret"
+                                   autocomplete="off" spellcheck="false"></label>
+        <div class="check-row" id="set-ntfy_events"></div>
+        <label>Ce que disent les alertes
+          <select id="set-ntfy_detail">
+            <option value="minimal">Seulement ce qui s'est passé</option>
+            <option value="titre">Avec le titre de la conversation</option>
+          </select>
+        </label>
+      </fieldset>
+      <p class="warning hidden" id="settings-overridden"></p>
+      <label id="settings-password-wrap" class="hidden">Mot de passe, pour confirmer
+        <input type="password" id="settings-password" autocomplete="current-password">
+      </label>
+      <p class="form-error" id="settings-error" role="alert"></p>
+      <div class="dialog-actions">
+        <button class="btn btn-ghost" type="button" id="settings-cancel">Annuler</button>
+        <button class="btn btn-primary" type="submit" id="settings-save">Enregistrer</button>
+      </div>
+    </form>
+  </dialog>
+
+  <dialog id="rag-dialog" class="dialog dialog-wide">
+    <form id="rag-form">
+      <h2 id="rag-title">Paquet de départ</h2>
+      <p id="rag-text"></p>
+      <div id="rag-choices" class="rag-choices">
+        <div class="rag-choice">
+          <label>Nouveau plafond (tokens) <input type="number" id="rag-budget" min="1000" step="500"></label>
+          <label class="check"><input type="checkbox" id="rag-remember"> Pour toute cette conversation</label>
+          <button class="btn btn-primary" type="button" id="rag-raise">Augmenter le plafond</button>
+        </div>
+        <div class="rag-choice">
+          <p class="quota-note">L'IA de résumé raccourcit le résumé, puis les derniers échanges sont abrégés. Cela consomme un peu de son quota.</p>
+          <button class="btn btn-primary" type="button" id="rag-auto">Compresser automatiquement</button>
+        </div>
+        <div class="rag-choice">
+          <p class="quota-note">Vous retouchez le résumé et choisissez les échanges gardés.</p>
+          <button class="btn btn-ghost" type="button" id="rag-edit">Compresser moi-même</button>
+        </div>
+      </div>
+      <div id="rag-editor" class="hidden rag-editor">
+        <label>Résumé <textarea id="rag-summary" rows="8"></textarea></label>
+        <div id="rag-exchanges" class="rag-exchanges"></div>
+        <p class="rag-count" id="rag-count"></p>
+      </div>
+      <p class="form-error" id="rag-error" role="alert"></p>
+      <div class="dialog-actions">
+        <button class="btn btn-ghost" type="button" id="rag-close">Fermer</button>
+        <button class="btn btn-primary hidden" type="button" id="rag-send">Utiliser ce paquet</button>
+      </div>
+    </form>
+  </dialog>
+
+  <dialog id="devices-dialog" class="dialog">
+    <form method="dialog">
+      <h2>Appareils connectés</h2>
+      <p class="quota-note">Chaque ligne est une session ouverte. Un téléphone perdu : déconnectez-le ici,
+        ou « Déconnecter tous les autres ».</p>
+      <div class="devices-list" id="devices-list"></div>
+      <p class="form-error" id="devices-error" role="alert"></p>
+      <div class="dialog-actions">
+        <button class="btn btn-danger-ghost" type="button" id="devices-others">Déconnecter tous les autres</button>
+        <button class="btn btn-ghost" type="button" id="devices-close">Fermer</button>
+      </div>
+    </form>
+  </dialog>
+
+  <dialog id="autonomous-dialog" class="dialog">
+    <form id="autonomous-form">
+      <h2>Travail autonome</h2>
+      <p class="quota-note">L'IA travaille seule vers l'objectif : à chaque tour elle avance, vérifie, puis dit si
+        c'est fini. Elle s'arrête quand c'est fini (et que la vérification passe), ou à une limite. Le mode de
+        permission de la conversation reste appliqué : en manuel, chaque action vous sera demandée.</p>
+      <label>Objectif <textarea id="auto-goal" rows="4" required></textarea></label>
+      <div class="field-row">
+        <label>Tours au plus <input id="auto-rounds" type="number" min="1" max="50" value="5"></label>
+        <label>Minutes au plus <input id="auto-minutes" type="number" min="1" max="1440" value="60"></label>
+      </div>
+      <label>Commande de vérification (facultatif)
+        <input id="auto-check" placeholder="ex. python -m pytest" autocomplete="off" spellcheck="false"></label>
+      <label class="check hidden" id="auto-confirm-wrap"><input type="checkbox" id="auto-confirm">
+        <span id="auto-confirm-text"></span></label>
+      <p class="form-error" id="auto-error" role="alert"></p>
+      <div class="dialog-actions">
+        <button class="btn btn-ghost" type="button" id="auto-cancel">Annuler</button>
+        <button class="btn btn-primary" type="submit" id="auto-start">Lancer</button>
+      </div>
+    </form>
+  </dialog>
+
+  <dialog id="tools-dialog" class="dialog">
+    <form id="tools-form">
+      <h2>Outils de l'IA dans cette conversation</h2>
+      <p class="quota-note">Un outil « lecture seule » est utilisé sans vous demander. Les autres suivent le mode de
+        permission de la conversation. Les serveurs d'outils se déclarent dans « Réglages ».</p>
+      <div class="tools-list" id="tools-list"></div>
+      <p class="form-error" id="tools-error" role="alert"></p>
+      <div class="dialog-actions">
+        <button class="btn btn-ghost" type="button" id="tools-cancel">Annuler</button>
+        <button class="btn btn-primary" type="submit" id="tools-save">Enregistrer</button>
+      </div>
+    </form>
+  </dialog>
+
+  <dialog id="schedule-dialog" class="dialog dialog-wide">
+    <form id="schedule-form">
+      <h2>Tâches planifiées de cette conversation</h2>
+      <p class="quota-note">Une tâche se relance seule, dans cette conversation (son dossier, son IA, son mode de
+        permission). Le serveur doit tourner : une heure manquée pendant que le PC dormait est rattrapée une fois.</p>
+      <div class="schedule-list" id="schedule-list"></div>
+      <fieldset>
+        <legend>Nouvelle tâche</legend>
+        <label>Demande <textarea id="sched-prompt" rows="3" required></textarea></label>
+        <div class="field-row">
+          <label>Genre
+            <select id="sched-kind">
+              <option value="single">Une réponse</option>
+              <option value="autonomous">Travail autonome</option>
+            </select>
+          </label>
+          <label>Répétition
+            <select id="sched-every">
+              <option value="daily">Chaque jour</option>
+              <option value="weekly">Certains jours</option>
+              <option value="interval">Toutes les N minutes</option>
+            </select>
+          </label>
+          <label id="sched-at-wrap">Heure <input id="sched-at" type="time" value="08:00"></label>
+          <label id="sched-interval-wrap" class="hidden">Minutes <input id="sched-interval" type="number" min="5" max="10080" value="60"></label>
+        </div>
+        <div class="check-row hidden" id="sched-days"></div>
+        <div id="sched-auto" class="hidden">
+          <div class="field-row">
+            <label>Tours au plus <input id="sched-rounds" type="number" min="1" max="50" value="5"></label>
+            <label>Minutes au plus <input id="sched-minutes" type="number" min="1" max="1440" value="60"></label>
+          </div>
+          <label>Commande de vérification (facultatif)
+            <input id="sched-check" autocomplete="off" spellcheck="false" placeholder="ex. python -m pytest"></label>
+          <label class="check hidden" id="sched-confirm-wrap"><input type="checkbox" id="sched-confirm">
+            <span id="sched-confirm-text"></span></label>
+        </div>
+      </fieldset>
+      <p class="form-error" id="sched-error" role="alert"></p>
+      <div class="dialog-actions">
+        <button class="btn btn-ghost" type="button" id="sched-close">Fermer</button>
+        <button class="btn btn-primary" type="submit" id="sched-add">Ajouter la tâche</button>
+      </div>
+    </form>
+  </dialog>
+
+  <dialog id="push-dialog" class="dialog">
+    <form method="dialog">
+      <h2>Notifications sur cet appareil</h2>
+      <p class="quota-note" id="push-status"></p>
+      <div class="check-row" id="push-events"></div>
+      <p class="form-error" id="push-error" role="alert"></p>
+      <div class="dialog-actions">
+        <button class="btn btn-ghost" type="button" id="push-close">Fermer</button>
+        <button class="btn btn-ghost hidden" type="button" id="push-test">Essayer</button>
+        <button class="btn btn-danger-ghost hidden" type="button" id="push-off">Désactiver</button>
+        <button class="btn btn-primary" type="button" id="push-on">Activer</button>
+      </div>
+    </form>
+  </dialog>
+
+  <dialog id="cite-dialog" class="dialog">
+    <form method="dialog">
+      <h2>Citer une conversation du projet</h2>
+      <p class="quota-note">La référence est ajoutée à votre demande ; l'IA ira lire la conversation citée.</p>
+      <div class="cite-list" id="cite-list"></div>
+      <div class="dialog-actions">
+        <button class="btn btn-ghost" type="button" id="cite-close">Fermer</button>
+      </div>
+    </form>
+  </dialog>
+
+  <dialog id="confirm-dialog" class="dialog">
+    <form method="dialog">
+      <h2 id="confirm-title"></h2>
+      <p id="confirm-text"></p>
+      <label class="check hidden" id="confirm-check-wrap"><input type="checkbox" id="confirm-check"> <span id="confirm-check-text"></span></label>
+      <div class="dialog-actions">
+        <button class="btn btn-ghost" type="button" id="confirm-cancel">Annuler</button>
+        <button class="btn btn-danger" type="button" id="confirm-ok">Confirmer</button>
+      </div>
+    </form>
+  </dialog>
+
+  <script src="/static/app.js"></script>
+</body>
+</html>

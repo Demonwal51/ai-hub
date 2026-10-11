@@ -383,7 +383,7 @@ class CodexRun:
                  resume_session=None, ask_permission=None, on_text=None, on_quota=None,
                  timeout_s=None, env=None, tools=None, json_schema=None,
                  mcp_config=None, auto_allow=(), instructions=None, home=None,
-                 warning_from=_WARNING_FROM, web=True):
+                 warning_from=_WARNING_FROM, web=True, images=()):
         if permission_mode not in PERMISSION_MODES:
             raise ProviderError(f"mode de permission inconnu : {permission_mode!r}")
         if not isinstance(prompt, str) or not prompt.strip():
@@ -405,6 +405,7 @@ class CodexRun:
         self.auto_allow = list(auto_allow)
         self.instructions = instructions
         self.web = web  # Codex searches the web by default (0.162): off unless chosen
+        self.images = list(images)  # pictures sent with the request: seen by the model itself
         self.home = home
         self.warning_from = warning_from
         self._lock = threading.Lock()
@@ -498,7 +499,8 @@ class CodexRun:
                 thread = reply.get("thread") or {}
                 result.session_id = thread.get("id") or self.resume_session
                 result.model = reply.get("model") or result.model
-                turn = {"threadId": result.session_id, "input": [{"type": "text", "text": self.prompt}]}
+                turn = {"threadId": result.session_id, "input": [{"type": "text", "text": self.prompt}]
+                        + [{"type": "localImage", "path": p} for p in self.images]}
                 if self.json_schema is not None:
                     turn["outputSchema"] = self.json_schema
                 ids["turn"] = server.request("turn/start", turn)

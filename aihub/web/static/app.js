@@ -59,6 +59,9 @@ async function api(method, path, body) {
   const headers = { "X-AIHub": "1" };
   if (body) headers["Content-Type"] = "application/json";
   const res = await fetch(path, { method, headers, body: body ? JSON.stringify(body) : undefined });
+  // Served by this device's copy (« Hors connexion »), or by the PC again.
+  if (res.headers.get("X-AIHub-Hors-Ligne") === "1") setOffline(true);
+  else if (res.ok) setOffline(false);
   const data = await res.json().catch(() => ({}));
   if (res.status === 401 && data.code === "auth_required") {
     // The session has ended (expired, or closed from another device).
@@ -470,6 +473,9 @@ async function openConversation(id, messageId = null) {
   state.live = null;
   state.subtaskLive = new Map();
   state.shown = SHOWN_FIRST;
+  state.pendingFiles = [];  // files belong to their conversation
+  if (SPEECH && speaking !== null) { window.speechSynthesis.cancel(); speaking = null; }  // another conversation: quiet
+  renderPending();
   markSeen(state.conversations.filter((c) => c.id === id));
   renderList();
   setView("chat");
@@ -561,7 +567,7 @@ function renderConversation() {
   $("obsidian").textContent = conv.obsidian_note ? "Obsidian ✓" : "Obsidian";
   // Shared with someone: what is the owner's stays hidden, and reading only means no composer.
   const role = conv.my_role || "owner";
-  for (const id of ["conv-project", "conv-assignment", "conv-model", "conv-mode", "obsidian", "tools",
+  for (const id of ["conv-project", "conv-assignment", "conv-model", "conv-mode", "obsidian", "tools", "instructions",
     "schedules", "rename", "delete", "conv-shared"]) {
     if (role !== "owner") ($(id).closest(".menu-field") || $(id)).classList.add("hidden");
   }
@@ -570,12 +576,20 @@ function renderConversation() {
   $("composer").classList.toggle("hidden", role === "read");
   $("readonly-note").classList.toggle("hidden", role !== "read");
   $("fresh").classList.toggle("hidden", role === "read");
+  fillCompareChoices();
+  // Files go to a conversation with one AI (not to a conductor yet).
+  $("attach").classList.toggle("hidden", role === "read" || conv.mode === "orchestration");
   if (!isAdmin()) {
     // A member's own conversation: never without permission, nor the owner's vault.
     $("obsidian").classList.add("hidden");
     const bypass = $("conv-mode").querySelector('option[value="bypass"]');
     if (bypass) bypass.disabled = true;
   }
+  // The exports: whoever sees the conversation may take it away.
+  $("instructions").textContent = conv.instructions ? "Consignes ✓" : "Consignes…";
+  $("export-md").href = `/api/conversations/${conv.id}/export?format=md`;
+  $("export-json").href = `/api/conversations/${conv.id}/export?format=json`;
+  $("export-print").href = `/api/conversations/${conv.id}/export?format=html`;
   // Nothing left in the menu (reading only): no menu button.
   $("conv-menu-button").classList.toggle("hidden",
     ![...$("conv-menu").children].some((c) => !c.classList.contains("hidden")));
@@ -627,13 +641,14 @@ function renderMessages(messages) {
     if (waitingPlan && !shown.has(waitingPlan.id)) { box.append(planCard(waitingPlan)); shown.add(waitingPlan.id); }
     waitingPlan = null;
   };
+  let request = null;  // the request the next reply answers (its compared answers go beside it)
   for (const m of messages) {
     if (m.role === "user") {
+      request = m;
       flushPlan();
-      box.append(authors && m.author
-        ? el("div", { class: "msg user", "data-id": m.id },
-          el("div", { class: "msg-author", text: m.author }), el("div", { text: m.content }))
-        : el("div", { class: "msg user", text: m.content, "data-id": m.id }));
+      box.append(el("div", { class: "msg user", "data-id": m.id },
+        authors && m.author ? el("div", { class: "msg-author", text: m.author }) : null,
+        el("div", { text: m.content }), messageFiles(m.attachments), editButton(m)));
       waitingPlan = plans.get(m.id) || null;
       continue;
     }
@@ -650,6 +665,8 @@ function renderMessages(messages) {
       const cost = m.tokens_in !== null ? `${m.tokens_in} tokens envoyés, ${m.tokens_out} reçus` : null;
       node.append(el("div", { class: "msg-meta", title: cost },
         el("span", { text: meta.filter(Boolean).join(" · ") }),
+        ...regenerateButtons(m, messages),
+        speakButton(m),
         m.content ? el("button", { class: "msg-copy", type: "button", text: "Copier", title: "Copier la réponse",
           onclick: async (e) => {
             try { await navigator.clipboard.writeText(m.content); } catch { fallbackCopy(m.content); }
@@ -677,7 +694,10 @@ function renderMessages(messages) {
     for (const d of state.data.delegations || []) {
       if (d.created_at >= m.created_at && (!next || d.created_at < next.created_at)) node.append(delegationNote(d));
     }
-    box.append(node);
+    // Another AI answered the same request: side by side.
+    const variants = request && request.variants && request.variants.length ? request.variants : null;
+    box.append(variants ? el("div", { class: "compare-row" }, node, ...variants.map(variantCard)) : node);
+    request = null;
     flushPlan();
   }
   flushPlan();
@@ -971,6 +991,9 @@ function handleEvent(ev) {
       renderMessages(state.data.messages);
       renderRunning();
       notify("L'agent attend votre réponse", ev.tool_name);
+      break;
+    case "variant_done":
+      scheduleRefresh();  // the other AI has answered: its text, beside the reply
       break;
     case "permission_answered":
       state.pending.delete(ev.id);
@@ -1365,6 +1388,7 @@ function setupProjectDialog() {
     $("project-name").value = project ? project.name : "";
     $("project-description").value = project ? project.description || "" : "";
     $("project-workdir").value = project ? project.workdir || "" : "";
+    $("project-instructions").value = project ? project.instructions || "" : "";
     $("project-delete").classList.toggle("hidden", !project);
     $("project-delete-all").classList.toggle("hidden", !project || !project.conversations);
     $("project-share").classList.toggle("hidden", !project || !state.me);
@@ -1381,7 +1405,7 @@ function setupProjectDialog() {
   $("project-form").addEventListener("submit", async (event) => {
     event.preventDefault();
     const body = { name: $("project-name").value.trim(), description: $("project-description").value,
-      workdir: $("project-workdir").value.trim() };
+      workdir: $("project-workdir").value.trim(), instructions: $("project-instructions").value };
     try {
       if (editing) await api("PATCH", `/api/projects/${editing.id}`, body);
       else await api("POST", "/api/projects", body);
@@ -1606,19 +1630,40 @@ function setupObsidianDialog() {
 
 // --- conversation actions ---------------------------------------------------------------
 
+function setupInstructions() {
+  $("instructions").addEventListener("click", async () => {
+    const conv = state.data.conversation;
+    const text = await askText("Consignes de cette conversation",
+      "L'IA les reçoit à chaque demande (après celles du projet, s'il en a). Ex. : « Réponds en français, sois bref », "
+      + "« Tu es relecteur de code : pointe les bugs, ne réécris pas tout ». Vide : aucune.", conv.instructions || "");
+    if (text === null) return;
+    try {
+      await api("PATCH", `/api/conversations/${conv.id}`, { instructions: text });
+      await refreshConversation();
+      toast(text.trim() ? "Consignes enregistrées." : "Consignes retirées.");
+    } catch (err) { toast(err.message); }
+  });
+}
+
 function setupActions() {
   $("composer").addEventListener("submit", async (event) => {
     event.preventDefault();
-    const prompt = $("prompt").value.trim();
+    const files = state.pendingFiles || [];
+    if (files.some((f) => f.uploading)) { toast("Attendez la fin de l'envoi des fichiers."); return; }
+    // Files alone: a request that says so.
+    const prompt = $("prompt").value.trim() || (files.length ? "Voici les fichiers joints." : "");
     if (!prompt || state.currentId === null) return;
     const kind = (event.submitter || primaryButton()).value || "plan";
     $("send").disabled = true;
     $("discuss").disabled = true;
     const sentTo = state.currentId;  // another conversation may be open when the answer comes
     try {
-      await api("POST", `/api/conversations/${sentTo}/messages`, { prompt, kind });
+      const compareWith = $("compare-with").classList.contains("hidden") ? null : $("compare-with").value || null;
+      await api("POST", `/api/conversations/${sentTo}/messages`, { prompt, kind, attachments: files.map((f) => f.id),
+        compare_with: compareWith });
+      $("compare-with").value = "";  // one comparison at a time: chosen again for the next
       saveDraft(sentTo, "");
-      if (state.currentId === sentTo) { $("prompt").value = ""; fitPrompt(); }
+      if (state.currentId === sentTo) { $("prompt").value = ""; fitPrompt(); state.pendingFiles = []; renderPending(); }
       if ("Notification" in window && Notification.permission === "default") Notification.requestPermission();
       await refreshConversation();
     } catch (err) {
@@ -1772,6 +1817,9 @@ function setupLogin() {
   });
   $("logout").addEventListener("click", async () => {
     try { await api("POST", "/api/auth/logout"); } catch (err) { /* already out */ }
+    // Logged out: nothing of the conversations stays on this device.
+    try { localStorage.setItem(OFFLINE_KEY, "0"); } catch { /* storage off */ }
+    await tellWorker("offline-off");
     location.reload();
   });
 }
@@ -2256,6 +2304,8 @@ async function ensureLoggedIn() {
   // What a guest may not do: hidden (the server refuses it anyway).
   for (const id of ["new-conversation", "new-project", "empty-new", "import"]) $(id).classList.toggle("hidden", !canCreate());
   $("import-local").classList.toggle("hidden", !isOwner());  // the sessions of the owner's PC
+  $("consumption").classList.toggle("hidden", !isAdmin());  // also on a server without accounts
+  $("server").classList.toggle("hidden", !isOwner());
 }
 
 const ROLE_NAMES = { owner: "propriétaire", admin: "admin", membre: "membre", invite: "invité" };
@@ -2314,6 +2364,525 @@ function showInvitation(token) {
       $("invite-submit").disabled = false;
     }
   };
+}
+
+// --- reading without the PC (« Hors connexion », a choice of this device) -------------------
+
+const OFFLINE_KEY = "aihub-hors-ligne";
+
+function offlineChosen() {
+  try { return localStorage.getItem(OFFLINE_KEY) === "1"; } catch { return false; }
+}
+
+// Resolves once the message is given (a logout waits for it before reloading); never longer than 2 s.
+function tellWorker(type) {
+  if (!("serviceWorker" in navigator)) return Promise.resolve();
+  const given = navigator.serviceWorker.ready.then((reg) => reg.active && reg.active.postMessage({ type })).catch(() => {});
+  return Promise.race([given, new Promise((resolve) => setTimeout(resolve, 2000))]);
+}
+
+function setOffline(on) {
+  if (state.offline === on) return;
+  const was = state.offline;
+  state.offline = on;
+  $("offline-banner").classList.toggle("hidden", !on);
+  document.body.classList.toggle("offline", on);
+  $("send").disabled = on || $("send").disabled;
+  $("prompt").readOnly = on;
+  if (was && !on && state.currentId !== null) refreshConversation();  // back: the PC's fresh state
+  if (!on && was) renderRunning();
+}
+
+function setupOffline() {
+  const button = $("offline-toggle");
+  const show = () => { button.textContent = `Hors connexion : ${offlineChosen() ? "oui" : "non"}`; };
+  if (!("serviceWorker" in navigator) || !window.isSecureContext) { button.classList.add("hidden"); return; }
+  if (offlineChosen()) tellWorker("offline-on");
+  show();
+  button.addEventListener("click", async () => {
+    const on = !offlineChosen();
+    if (on) {
+      const ok = await confirmDialog({ title: "Garder les conversations sur cet appareil ?",
+        text: "La liste et les conversations que vous ouvrez restent lisibles ici quand le PC est éteint ou Tailscale coupé "
+          + "(écrire attend le retour du réseau). Elles sont effacées si vous retirez ce choix ou vous déconnectez. "
+          + "À ne pas faire sur un appareil prêté.", okText: "Garder" });
+      if (!ok) return;
+    }
+    try { localStorage.setItem(OFFLINE_KEY, on ? "1" : "0"); } catch { /* storage off: not kept */ }
+    tellWorker(on ? "offline-on" : "offline-off");
+    show();
+    toast(on ? "Les conversations ouvertes restent lisibles hors connexion." : "Copie hors connexion effacée.");
+  });
+  window.addEventListener("online", () => { if (state.offline) loadConversations().catch(() => {}); });
+}
+
+// --- the server's dashboard (the owner's) ------------------------------------------------
+
+function bytes(n) {
+  if (n >= 1024 ** 3) return `${(n / 1024 ** 3).toFixed(1).replace(".", ",")} Go`;
+  if (n >= 1024 ** 2) return `${(n / 1024 ** 2).toFixed(1).replace(".", ",")} Mo`;
+  return `${Math.ceil(n / 1024)} Ko`;
+}
+
+function duration(seconds) {
+  const d = Math.floor(seconds / 86400), h = Math.floor(seconds % 86400 / 3600), m = Math.floor(seconds % 3600 / 60);
+  return d ? `${d} j ${h} h` : h ? `${h} h ${m} min` : `${m} min`;
+}
+
+function setupServerDialog() {
+  const dialog = $("server-dialog");
+  const render = async () => {
+    $("server-error").textContent = "";
+    let s;
+    try { s = await api("GET", "/api/server"); } catch (err) { $("server-error").textContent = err.message; return; }
+    const lowDisk = s.disk.free < 5 * 1024 ** 3;
+    const card = (title, value, sub, warn) => el("div", { class: "server-card" + (warn ? " warn" : "") },
+      el("span", { class: "quota-note", text: title }), el("strong", { text: value }), sub ? el("span", { class: "quota-note", text: sub }) : null);
+    const ai = (name, on) => `${name} ${on ? "✓" : "✗"}`;
+    $("server-cards").replaceChildren(
+      card("Version", s.version, `lancé il y a ${duration(s.uptime_s)}`),
+      card("Disque des données", `${bytes(s.disk.free)} libres`, `sur ${bytes(s.disk.total)}`, lowDisk),
+      card("Base", bytes(s.base), `${s.counts.conversations} conversations, ${s.counts.messages} messages`),
+      card("Dernière sauvegarde", s.backups.newest ? formatDate(s.backups.newest) : "aucune",
+        s.backups.folder ? `${s.backups.count} fichier(s), ${bytes(s.backups.size)}` : "sauvegardes désactivées", !s.backups.newest),
+      card("IA", [ai("Claude", s.ais.claude), ai("Codex", s.ais.codex), ai("Locale", s.ais.local)].join(" · ")),
+      card("Personnes et appareils", `${s.counts.people} · ${s.counts.devices}`, "comptes · sessions ouvertes"),
+      card("Pièces jointes", bytes(s.attachments.size), `${s.attachments.count} fichier(s)`));
+    $("server-log").textContent = s.log.length ? s.log.join("\n")
+      : (s.log_file ? "Journal vide pour l'instant." : "Pas de journal : le serveur a été lancé dans une fenêtre (ses messages y sont).");
+    $("server-log").scrollTop = $("server-log").scrollHeight;
+  };
+  $("server").addEventListener("click", async () => { dialog.showModal(); await render(); });
+  $("server-refresh").addEventListener("click", render);
+  $("server-close").addEventListener("click", () => dialog.close());
+}
+
+// --- keyboard shortcuts -----------------------------------------------------------------
+
+function setupShortcuts() {
+  const jump = $("jump-dialog");
+  let shown = [];
+  let at = 0;
+  const render = () => {
+    const words = $("jump-input").value.trim().toLowerCase();
+    shown = state.conversations.filter((c) => !words || c.title.toLowerCase().includes(words)).slice(0, 12);
+    at = Math.min(at, Math.max(0, shown.length - 1));
+    $("jump-list").replaceChildren(...(shown.length ? shown.map((c, i) => el("button", {
+      class: "conv-item" + (i === at ? " active" : ""), type: "button", role: "option", "aria-selected": String(i === at),
+      onclick: () => { jump.close(); openConversation(c.id); } },
+    el("span", { class: "conv-item-title", text: c.title }),
+    el("span", { class: "conv-item-sub", text: sinceDate(c.updated_at) }))) : [el("p", { class: "list-empty", text: "Aucune conversation ne correspond." })]));
+  };
+  $("jump-input").addEventListener("input", () => { at = 0; render(); });
+  $("jump-input").addEventListener("keydown", (event) => {
+    if (event.key === "ArrowDown") { at = Math.min(at + 1, shown.length - 1); render(); event.preventDefault(); }
+    if (event.key === "ArrowUp") { at = Math.max(at - 1, 0); render(); event.preventDefault(); }
+    if (event.key === "Enter") {
+      event.preventDefault();
+      if (shown[at]) { jump.close(); openConversation(shown[at].id); }
+    }
+  });
+  const typing = (target) => target && (target.isContentEditable || ["INPUT", "TEXTAREA", "SELECT"].includes(target.tagName));
+  document.addEventListener("keydown", async (event) => {
+    const open = document.querySelector("dialog[open]") || document.querySelector(".menu-wrap.open");
+    if ((event.ctrlKey || event.metaKey) && !event.shiftKey && event.key.toLowerCase() === "k") {
+      event.preventDefault();
+      if (open) return;
+      $("jump-input").value = "";
+      at = 0;
+      render();
+      jump.showModal();
+      $("jump-input").focus();
+      return;
+    }
+    if ((event.ctrlKey || event.metaKey) && event.shiftKey && event.key.toLowerCase() === "n") {
+      if (open || !canCreate()) return;
+      event.preventDefault();
+      openNewDialog(null);
+      return;
+    }
+    if (event.key === "Escape" && !open && state.data && state.data.running) {
+      event.preventDefault();
+      const ok = await confirmDialog({ title: "Arrêter l'IA ?", text: "Elle s'arrête tout de suite ; ce qu'elle a déjà écrit reste.", okText: "Arrêter" });
+      if (ok) $("stop").click();
+      return;
+    }
+    if (event.key === "?" && !open && !typing(event.target)) {
+      event.preventDefault();
+      $("keys-dialog").showModal();
+    }
+  });
+}
+
+// --- read a reply aloud (the browser's voice) --------------------------------------------
+
+const SPEECH = "speechSynthesis" in window && "SpeechSynthesisUtterance" in window;
+let speaking = null;  // the message being read
+
+// What a voice should say: the text without the Markdown signs; code is announced, not read.
+function speakable(text) {
+  return String(text || "")
+    .replace(/```[\s\S]*?```/g, " (bloc de code) ")
+    .replace(/`([^`]*)`/g, "$1")
+    .replace(/!\[[^\]]*\]\([^)]*\)/g, " ")
+    .replace(/\[([^\]]+)\]\([^)]*\)/g, "$1")
+    .replace(/^\s{0,3}#{1,6}\s+/gm, "")
+    .replace(/^\s*[-*+]\s+/gm, "")
+    .replace(/[*_~]{1,3}([^*_~]+)[*_~]{1,3}/g, "$1")
+    .replace(/\|/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+function speakButton(m) {
+  if (!SPEECH || !m.content) return null;
+  return el("button", { class: "msg-copy", type: "button", text: speaking === m.id ? "⏹ Arrêter" : "🔊 Écouter",
+    title: "Lire la réponse à voix haute (la voix du navigateur)",
+    onclick: (e) => {
+      window.speechSynthesis.cancel();
+      if (speaking === m.id) { speaking = null; e.target.textContent = "🔊 Écouter"; return; }
+      const utterance = new SpeechSynthesisUtterance(speakable(m.content));
+      utterance.lang = "fr-FR";
+      const voice = window.speechSynthesis.getVoices().find((v) => v.lang && v.lang.toLowerCase().startsWith("fr"));
+      if (voice) utterance.voice = voice;
+      utterance.onend = utterance.onerror = () => {
+        if (speaking === m.id) speaking = null;
+        e.target.textContent = "🔊 Écouter";
+      };
+      speaking = m.id;
+      e.target.textContent = "⏹ Arrêter";
+      window.speechSynthesis.speak(utterance);
+    } });
+}
+
+// --- compare two AIs: the other one's answer, beside the reply ---------------------------
+
+function variantCard(v) {
+  const body = el("div", { class: "msg-body" });
+  body.innerHTML = v.status === "running" ? "<p><em>Elle répond…</em></p>" : renderMarkdown(v.content || "");
+  const card = el("div", { class: "msg assistant variant" + (v.status === "running" ? " cursor" : "") },
+    el("div", { class: "variant-head", text: `Comparaison · ${MODEL_LABELS[v.model] || v.model}` }), body);
+  if (v.status === "error") card.append(el("div", { class: "msg-error", text: v.error || "erreur" }));
+  const meta = [formatDuration(v.duration_ms)].filter(Boolean).join(" · ");
+  card.append(el("div", { class: "msg-meta", title: v.tokens_in !== null ? `${v.tokens_in} tokens envoyés, ${v.tokens_out} reçus` : null },
+    el("span", { text: meta }),
+    v.status === "ok" && canWrite() && !state.data.running ? el("button", { class: "msg-copy", type: "button",
+      text: "Garder celle-ci", title: "Elle prend la place de la réponse ; la suivante repart de la mémoire",
+      onclick: async () => {
+        try { await api("POST", `/api/variants/${v.id}/keep`); await refreshConversation(); toast("Réponse gardée."); }
+        catch (err) { toast(err.message); }
+      } }) : null));
+  return card;
+}
+
+function fillCompareChoices() {
+  const select = $("compare-with");
+  const conv = state.data && state.data.conversation;
+  const show = canWrite() && conv && conv.mode === "single";
+  select.classList.toggle("hidden", !show);
+  if (!show) return;
+  const keep = select.value;
+  const others = state.options.models.filter((x) => x !== conv.model && x !== "default");
+  select.replaceChildren(el("option", { value: "", text: "Comparer avec…" }),
+    ...others.map((x) => el("option", { value: x, text: `Comparer avec ${MODEL_LABELS[x] || x}` })));
+  select.value = others.includes(keep) ? keep : "";
+}
+
+// --- regenerate the last reply, edit a request (a branch) --------------------------------
+
+function canWrite() {
+  const conv = state.data && state.data.conversation;
+  return Boolean(conv) && conv.mode === "single" && (conv.my_role || "owner") !== "read";
+}
+
+// Under the last reply: send its request again, with the same AI or another one.
+function regenerateButtons(m, messages) {
+  if (!canWrite() || state.data.running || messages[messages.length - 1] !== m) return [];
+  const prev = messages[messages.length - 2];
+  if (!prev || prev.role !== "user") return [];
+  const go = async (model) => {
+    try {
+      await api("POST", `/api/conversations/${state.currentId}/regenerate`, model ? { model } : {});
+      await refreshConversation();
+    } catch (err) { toast(err.message); }
+  };
+  const buttons = [el("button", { class: "msg-copy", type: "button", text: "Régénérer",
+    title: "Renvoyer la même demande : la réponse actuelle est remplacée", onclick: () => go(null) })];
+  if ((state.data.conversation.my_role || "owner") === "owner") {
+    const others = state.options.models.filter((x) => x !== state.data.conversation.model);
+    const select = el("select", { class: "msg-regen-select", "aria-label": "Régénérer avec une autre IA",
+      title: "Régénérer avec une autre IA (elle devient l'IA de la conversation)" },
+      el("option", { value: "", text: "Avec une autre IA…" }),
+      ...others.map((x) => el("option", { value: x, text: MODEL_LABELS[x] || x })));
+    select.addEventListener("change", () => { if (select.value) go(select.value); });
+    buttons.push(select);
+  }
+  return buttons;
+}
+
+// On a request: correct it in a new conversation that starts from there (the original stays).
+function editButton(m) {
+  if (!canWrite() || !canCreate()) return null;
+  return el("button", { class: "msg-edit", type: "button", text: "Modifier",
+    title: "Corriger cette demande : une nouvelle conversation repart de là, l'originale ne change pas",
+    onclick: async () => {
+      const prompt = await askText("Modifier la demande", "Une nouvelle conversation (une branche) reprend tout ce qui précède, puis envoie la demande corrigée.", m.content);
+      if (prompt === null) return;
+      try {
+        const r = await api("POST", `/api/messages/${m.id}/branch`, { prompt });
+        await loadConversations();
+        await openConversation(r.conversation);
+        toast("Branche créée : l'originale n'a pas changé.");
+      } catch (err) { toast(err.message); }
+    } });
+}
+
+// A dialog with a text to write (longer than prompt() allows). Resolves to the text, or null.
+function askText(title, help, value = "") {
+  return new Promise((resolve) => {
+    const dialog = $("ask-dialog");
+    $("ask-title").textContent = title;
+    $("ask-help").textContent = help;
+    $("ask-text").value = value;
+    const done = (result) => { dialog.close(); resolve(result); };
+    $("ask-ok").onclick = () => done($("ask-text").value);
+    $("ask-cancel").onclick = () => done(null);
+    dialog.oncancel = () => resolve(null);
+    dialog.showModal();
+    $("ask-text").focus();
+  });
+}
+
+// --- one-click update (the owner's) ----------------------------------------------------
+
+async function checkUpdate() {
+  if (!isOwner()) return;
+  let data;
+  try { data = await api("GET", "/api/update"); } catch { return; }
+  const banner = $("update-banner");
+  if (!data.latest) { banner.classList.add("hidden"); return; }
+  banner.classList.remove("hidden");
+  banner.textContent = `Nouvelle version ${data.latest.name} — mettre à jour`;
+  banner.title = data.can_apply ? "Télécharger et installer la nouvelle version" : data.reason;
+  banner.onclick = async () => {
+    if (!data.can_apply) { toast(`Mise à jour impossible ici : ${data.reason}.`); return; }
+    const ok = await confirmDialog({ title: `Mettre à jour vers ${data.latest.name} ?`,
+      text: `${(data.latest.notes || "").slice(0, 600)}\n\nL'appli s'arrête une minute le temps d'installer, puis revient `
+        + "toute seule. L'ancienne version est gardée dans data\\mise-a-jour.", okText: "Mettre à jour" });
+    if (!ok) return;
+    try {
+      await api("POST", "/api/update/apply");
+      toast("Mise à jour en cours : l'appli revient dans une minute.");
+      banner.disabled = true;
+      banner.textContent = "Mise à jour en cours…";
+      // Back when the server answers again: the new page.
+      const was = state.options.version;
+      const poll = setInterval(async () => {
+        try {
+          const options = await api("GET", "/api/options");
+          if (options.version !== was) { clearInterval(poll); location.reload(); }
+        } catch { /* still restarting */ }
+      }, 5000);
+    } catch (err) { toast(err.message); }
+  };
+}
+
+// --- files and images sent with a request ------------------------------------------------
+
+const MAX_FILE = 20 * 1024 * 1024;
+
+function renderPending() {
+  const box = $("pending-files");
+  const files = state.pendingFiles || [];
+  box.classList.toggle("hidden", !files.length);
+  box.replaceChildren(...files.map((f) => el("span", { class: "file-chip" + (f.uploading ? " uploading" : "") },
+    f.image && f.id ? el("img", { src: `/api/attachments/${f.id}`, alt: "" }) : el("span", { text: "📄" }),
+    el("span", { class: "file-name", text: f.name, title: `${f.name} · ${Math.ceil(f.size / 1024)} Ko` }),
+    f.uploading ? el("span", { class: "quota-note", text: "envoi…" }) : el("button", {
+      type: "button", class: "fav-remove", text: "✕", title: "Retirer", "aria-label": `Retirer ${f.name}`,
+      onclick: async () => {
+        state.pendingFiles = state.pendingFiles.filter((x) => x !== f);
+        renderPending();
+        if (f.id) api("DELETE", `/api/attachments/${f.id}`).catch(() => {});
+      } }))));
+}
+
+async function uploadFiles(fileList) {
+  const cid = state.currentId;
+  if (cid === null) return;
+  for (const file of fileList) {
+    if (file.size > MAX_FILE) { toast(`« ${file.name} » : 20 Mo au plus.`); continue; }
+    const entry = { name: file.name || "image.png", size: file.size, image: file.type.startsWith("image/"), uploading: true };
+    state.pendingFiles = [...(state.pendingFiles || []), entry];
+    renderPending();
+    try {
+      const res = await fetch(`/api/conversations/${cid}/attachments`, { method: "POST", body: file,
+        headers: { "X-AIHub": "1", "X-Filename": encodeURIComponent(entry.name),
+          "Content-Type": file.type || "application/octet-stream" } });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(typeof data.detail === "string" ? data.detail : `erreur ${res.status}`);
+      Object.assign(entry, data, { uploading: false });
+    } catch (err) {
+      toast(`« ${entry.name} » : ${err.message}`);
+      state.pendingFiles = state.pendingFiles.filter((x) => x !== entry);
+    }
+    if (state.currentId === cid) renderPending();
+  }
+}
+
+function setupAttachments() {
+  $("attach").addEventListener("click", () => $("attach-input").click());
+  $("attach-input").addEventListener("change", async () => {
+    await uploadFiles([...$("attach-input").files]);
+    $("attach-input").value = "";
+  });
+  // A screenshot pasted in the composer, or files dropped on it.
+  $("prompt").addEventListener("paste", (event) => {
+    const files = [...(event.clipboardData?.files || [])];
+    if (files.length && !$("attach").classList.contains("hidden")) { event.preventDefault(); uploadFiles(files); }
+  });
+  const zone = $("composer");
+  zone.addEventListener("dragover", (event) => {
+    if ([...(event.dataTransfer?.types || [])].includes("Files")) { event.preventDefault(); zone.classList.add("dropping"); }
+  });
+  zone.addEventListener("dragleave", () => zone.classList.remove("dropping"));
+  zone.addEventListener("drop", (event) => {
+    zone.classList.remove("dropping");
+    const files = [...(event.dataTransfer?.files || [])];
+    if (files.length && !$("attach").classList.contains("hidden")) { event.preventDefault(); uploadFiles(files); }
+  });
+}
+
+// The files a request took, under it: pictures shown, the others to download.
+function messageFiles(files) {
+  if (!files || !files.length) return null;
+  return el("div", { class: "msg-files" }, ...files.map((f) => f.image
+    ? el("a", { href: `/api/attachments/${f.id}`, target: "_blank", rel: "noopener", title: f.name },
+      el("img", { src: `/api/attachments/${f.id}`, alt: f.name, loading: "lazy" }))
+    : el("a", { class: "file-chip", href: `/api/attachments/${f.id}`, download: f.name, title: "Télécharger" },
+      el("span", { text: "📄" }), el("span", { class: "file-name", text: f.name }))));
+}
+
+// --- consumption: who used how much (the owner's and the admins') -------------------------
+
+const PROVIDER_NAMES = { claude_code: "Claude", codex: "Codex", ollama: "IA locale" };
+
+function setupConsumption() {
+  const dialog = $("consumption-dialog");
+  const number = (n) => n.toLocaleString("fr-FR");
+  const render = async () => {
+    $("consumption-error").textContent = "";
+    let data;
+    try { data = await api("GET", `/api/usage?days=${$("consumption-days").value}`); }
+    catch (err) { $("consumption-error").textContent = err.message; return; }
+    if (!data.people.length) {
+      $("consumption-table").replaceChildren(el("p", { class: "list-empty", text: "Aucune demande sur cette période." }));
+      return;
+    }
+    const head = el("tr", {}, ...["Personne", "Demandes", "Réponses d'IA", "Tokens envoyés", "Tokens reçus", "Par IA"]
+      .map((t) => el("th", { text: t })));
+    const rows = data.people.map((p) => el("tr", {},
+      el("td", { text: p.name }), el("td", { text: number(p.requests) }), el("td", { text: number(p.runs) }),
+      el("td", { text: number(p.tokens_in) }), el("td", { text: number(p.tokens_out) }),
+      el("td", { text: Object.entries(p.by_provider).map(([k, v]) =>
+        `${PROVIDER_NAMES[k] || k} : ${number(v.runs)}`).join(" · ") })));
+    $("consumption-table").replaceChildren(el("table", {}, el("thead", {}, head), el("tbody", {}, ...rows)));
+  };
+  $("consumption").addEventListener("click", async () => { dialog.showModal(); await render(); });
+  $("consumption-days").addEventListener("change", render);
+  $("consumption-close").addEventListener("click", () => dialog.close());
+}
+
+// --- favorite requests: kept on the server, for each person -------------------------------
+
+function setupFavorites() {
+  const menu = $("favorites-menu");
+  let list = [];
+  const render = () => {
+    const box = $("prompt");
+    const rows = list.map((f) => el("div", { class: "fav-row" },
+      el("button", { class: "menu-item", type: "button", title: f.text,
+        onclick: () => {
+          // Inserted where the cursor is: read, change it if needed, then send.
+          const at = box.selectionStart ?? box.value.length;
+          box.value = box.value.slice(0, at) + f.text + box.value.slice(box.selectionEnd ?? at);
+          box.focus();
+          box.selectionStart = box.selectionEnd = at + f.text.length;
+          fitPrompt();
+          saveDraft(state.currentId, box.value);
+        } }, f.title, f.title !== f.text ? el("small", { text: f.text }) : null),
+      el("button", { class: "fav-remove", type: "button", text: "✕", title: "Retirer des favoris",
+        "aria-label": `Retirer « ${f.title} » des favoris`,
+        onclick: async (event) => {
+          event.stopPropagation();
+          try { list = (await api("DELETE", `/api/favorites/${f.id}`)).favorites; render(); } catch (err) { toast(err.message); }
+        } })));
+    menu.replaceChildren(
+      ...(rows.length ? rows : [el("p", { class: "quota-note", text: "Aucune demande favorite pour l'instant." })]),
+      el("button", { class: "menu-item", type: "button", text: "★ Garder la demande écrite en favori",
+        onclick: async () => {
+          const text = box.value.trim();
+          if (!text) { toast("Écrivez d'abord la demande à garder."); return; }
+          const title = prompt("Nom de cette demande favorite :", text.split("\n")[0].slice(0, 60));
+          if (title === null) return;
+          try { list = (await api("POST", "/api/favorites", { title, text })).favorites; toast("Demande gardée en favori."); }
+          catch (err) { toast(err.message); }
+        } }));
+  };
+  $("favorites-button").addEventListener("click", async () => {
+    try { list = (await api("GET", "/api/favorites")).favorites; } catch (err) { toast(err.message); }
+    render();
+  });
+}
+
+// --- dictation: the browser's speech recognition, into the composer ---------------------
+
+function setupDictation() {
+  const Recognition = window.SpeechRecognition || window.webkitSpeechRecognition;
+  // Unknown to this browser (Firefox), or a page in plain http on the network: no button.
+  if (!Recognition || !window.isSecureContext) return;
+  const button = $("dictate");
+  button.classList.remove("hidden");
+  let recognition = null;
+  let base = "";      // the text before the dictation started
+  const stop = () => { if (recognition) recognition.stop(); };
+  button.addEventListener("click", () => {
+    if (recognition) { stop(); return; }
+    recognition = new Recognition();
+    recognition.lang = "fr-FR";
+    recognition.interimResults = true;
+    recognition.continuous = true;
+    const box = $("prompt");
+    base = box.value && !/\s$/.test(box.value) ? box.value + " " : box.value;
+    recognition.onresult = (event) => {
+      let said = "";
+      for (const result of event.results) said += result[0].transcript;
+      box.value = base + said;
+      fitPrompt();
+      saveDraft(state.currentId, box.value);
+    };
+    recognition.onerror = (event) => {
+      if (event.error === "not-allowed" || event.error === "service-not-allowed") toast("Micro refusé : autorisez-le pour ce site.");
+      else if (event.error !== "aborted" && event.error !== "no-speech") toast(`Dictée interrompue (${event.error}).`);
+    };
+    recognition.onend = () => {
+      recognition = null;
+      button.classList.remove("listening");
+      button.setAttribute("aria-pressed", "false");
+      $("prompt").focus();
+    };
+    try {
+      recognition.start();
+      button.classList.add("listening");
+      button.setAttribute("aria-pressed", "true");
+    } catch (err) {
+      recognition = null;
+      toast(err.message);
+    }
+  });
+  // Sent, or another conversation: the dictation stops.
+  $("composer").addEventListener("submit", stop);
+  document.addEventListener("visibilitychange", () => { if (document.hidden) stop(); });
 }
 
 // --- import: ChatGPT, Claude, Claude Code, Codex (aihub/importer.py) ---------------------
@@ -2751,6 +3320,7 @@ function setupPasswordDialog() {
 
 async function main() {
   setupLogin();
+  setupOffline();
   setupMenus();
   setupQuotaDialog();
   setupDevicesDialog();
@@ -2767,6 +3337,13 @@ async function main() {
   await ensureLoggedIn();
   setupPeopleDialog();
   setupImportDialog();
+  setupDictation();
+  setupFavorites();
+  setupConsumption();
+  setupAttachments();
+  setupInstructions();
+  setupShortcuts();
+  setupServerDialog();
   setupShareDialog();
   setupAccountsDialog();
   setupPasswordDialog();
@@ -2783,6 +3360,7 @@ async function main() {
   applyOptions();
   await Promise.all([loadConversations(), loadStatus(), loadQuota(true), loadAgents()]);
   askForAnAI();  // no AI connected yet (a first login): one before going on
+  checkUpdate();  // a newer version on GitHub: said to the owner
   // Opened from an alert: straight to its conversation.
   const asked = Number(new URLSearchParams(location.search).get("conversation"));
   if (asked && state.conversations.some((c) => c.id === asked)) {

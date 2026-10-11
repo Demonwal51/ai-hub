@@ -5,6 +5,8 @@ Sources:
   sent by mail, with `conversations.json` inside; a bare conversations.json
   works too). The person downloads it and gives it to the hub: no password
   goes through the hub;
+- AI Hub's own export (« Exporter » in a conversation, JSON), to bring a
+  conversation back, here or on another server;
 - the sessions Claude Code and Codex keep on this computer
   (~/.claude/projects/*/*.jsonl, ~/.codex/sessions/**/*.jsonl), read as they
   are, without the tool calls, the tool results, nor the context the CLIs
@@ -25,7 +27,7 @@ from pathlib import Path
 
 from . import db
 
-SOURCES = {"chatgpt": "ChatGPT", "claude": "Claude", "claude_code": "Claude Code", "codex": "Codex"}
+SOURCES = {"chatgpt": "ChatGPT", "claude": "Claude", "claude_code": "Claude Code", "codex": "Codex", "aihub": "AI Hub"}
 MAX_UPLOAD = 300 * 1024 * 1024        # an export, compressed
 MAX_JSON = 800 * 1024 * 1024          # its conversations.json, once read
 MAX_MESSAGES = 20000                  # in one import
@@ -181,6 +183,8 @@ def parse_export(data):
                 found.append(_chatgpt(conv, index))
             elif "chat_messages" in conv:
                 found.append(_claude(conv, index))
+            elif "aihub_export" in conv:
+                found.append(_aihub(conv, index))
     if not found:
         raise ImportFailed("aucune conversation reconnue : ni l'export de ChatGPT, ni celui de Claude")
     return sorted((c for c in found if c.messages), key=lambda c: c.created_at, reverse=True)
@@ -306,3 +310,24 @@ def write_messages(conn, conversation_id, items, *, merged):
              for role, text, at, source in rows])
         conn.execute("UPDATE conversations SET updated_at = ? WHERE id = ?", (now, conversation_id))
     return len(rows)
+
+
+# --- out of the hub (the export) ----------------------------------------------------------
+
+EXPORT_FORMAT = 1
+
+
+def export_json(conversation, messages, author_of):
+    """A conversation as AI Hub's own export: the import reads it back (« recharger ailleurs »)."""
+    return {"aihub_export": EXPORT_FORMAT, "title": conversation["title"], "created_at": conversation["created_at"],
+            "messages": [{"role": m["role"], "content": m["content"], "created_at": m["created_at"],
+                          "author": author_of(m), "model": m["model"]}
+                         for m in messages if m["status"] == "ok" and m["content"]]}
+
+
+def _aihub(conv, index):
+    messages = [(m.get("role"), str(m.get("content") or ""), _iso(m.get("created_at")))
+                for m in conv.get("messages") or [] if isinstance(m, dict) and m.get("role") in ("user", "assistant")]
+    created = _iso(conv.get("created_at")) or _now()
+    return Imported(f"aihub-{index}", "aihub", _title(conv.get("title"), "Conversation AI Hub"), created,
+                    _merge_turns(messages))

@@ -10,7 +10,7 @@ import sqlite3
 from contextlib import contextmanager
 from datetime import datetime, timezone
 
-SCHEMA_VERSION = 17
+SCHEMA_VERSION = 19
 
 # One statement per string: triggers contain semicolons, so the schema
 # cannot be split on ";" and executescript() would commit mid-migration.
@@ -695,6 +695,65 @@ _SCHEMA_V17 = [
 ]
 
 
+_SCHEMA_V18 = [
+    # A person's favorite requests (« fais le point du jour »), to insert in a click.
+    # NULL user: the owner of a server without accounts.
+    """
+    CREATE TABLE favorites (
+        id         INTEGER PRIMARY KEY,
+        user_id    INTEGER REFERENCES users(id) ON DELETE CASCADE,
+        title      TEXT NOT NULL,
+        text       TEXT NOT NULL,
+        created_at TEXT NOT NULL
+    )
+    """,
+    "CREATE INDEX favorites_by_user ON favorites(user_id, id)",
+    # Files and images sent with a request. The file itself lives next to the base
+    # (<base>-pieces/<conversation>/), and goes with its conversation when it is deleted.
+    """
+    CREATE TABLE attachments (
+        id              INTEGER PRIMARY KEY,
+        conversation_id INTEGER NOT NULL REFERENCES conversations(id) ON DELETE CASCADE,
+        message_id      INTEGER REFERENCES messages(id) ON DELETE CASCADE,
+        user_id         INTEGER REFERENCES users(id) ON DELETE SET NULL,
+        name            TEXT NOT NULL,
+        stored          TEXT NOT NULL,
+        mime            TEXT NOT NULL,
+        size            INTEGER NOT NULL CHECK (size >= 0),
+        created_at      TEXT NOT NULL
+    )
+    """,
+    "CREATE INDEX attachments_by_conversation ON attachments(conversation_id, id)",
+]
+
+
+_SCHEMA_V19 = [
+    # Instructions the AI always gets (« réponds en français, sois bref »), for a conversation
+    # and for a project (the project's first, then the conversation's).
+    "ALTER TABLE conversations ADD COLUMN instructions TEXT",
+    "ALTER TABLE projects ADD COLUMN instructions TEXT",
+    # Another AI's answer to the same request (« Comparer avec… »), read only, kept beside
+    # the conversation's own reply; « Garder celle-ci » swaps them.
+    """
+    CREATE TABLE variants (
+        id              INTEGER PRIMARY KEY,
+        conversation_id INTEGER NOT NULL REFERENCES conversations(id) ON DELETE CASCADE,
+        request_id      INTEGER NOT NULL REFERENCES messages(id) ON DELETE CASCADE,
+        provider        TEXT,
+        model           TEXT,
+        content         TEXT NOT NULL DEFAULT '',
+        status          TEXT NOT NULL CHECK (status IN ('running', 'ok', 'error', 'stopped')),
+        error           TEXT,
+        tokens_in       INTEGER,
+        tokens_out      INTEGER,
+        duration_ms     INTEGER,
+        created_at      TEXT NOT NULL
+    )
+    """,
+    "CREATE INDEX variants_by_conversation ON variants(conversation_id, id)",
+]
+
+
 class SchemaError(Exception):
     """The database file cannot be used by this version of the code."""
 
@@ -801,6 +860,12 @@ def migrate(conn: sqlite3.Connection) -> None:
                 conn.execute(statement)
         if version < 17:
             for statement in _SCHEMA_V17:
+                conn.execute(statement)
+        if version < 18:
+            for statement in _SCHEMA_V18:
+                conn.execute(statement)
+        if version < 19:
+            for statement in _SCHEMA_V19:
                 conn.execute(statement)
         # PRAGMA does not accept bound parameters; SCHEMA_VERSION is an int constant.
         conn.execute(f"PRAGMA user_version = {SCHEMA_VERSION}")

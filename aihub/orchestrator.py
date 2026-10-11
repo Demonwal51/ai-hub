@@ -522,7 +522,9 @@ class PlanExecution:
                 ask_permission=lambda request: self._ask(journal, conversation, subtask, request),
                 on_text=on_text, timeout_s=self.timeout_s, env=env,
                 mcp_config=given.mcp_config, auto_allow=given.auto_allow, web=given.web,
-                instructions=project_access.instructions(journal, conversation, project=project),
+                instructions=store.join_instructions(store.person_instructions(journal, conversation),
+                                                     project_access.instructions(journal, conversation,
+                                                                                 project=project)),
             )
             with self._lock:
                 self._runs[subtask["id"]] = run

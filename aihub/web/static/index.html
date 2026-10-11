@@ -66,6 +66,9 @@
     </form>
   </div>
 
+  <div class="offline-banner hidden" id="offline-banner" role="status">Hors connexion : le PC ne répond pas.
+    Lecture seule de ce qui est gardé sur cet appareil ; l'appli repasse en ligne toute seule.</div>
+
   <div class="app" id="app" data-view="list">
     <aside class="sidebar">
       <header class="brand">
@@ -81,6 +84,7 @@
       <input type="search" id="search" class="search" placeholder="Chercher dans les conversations…"
              aria-label="Chercher dans les conversations" autocomplete="off">
       <nav class="conversation-list" id="conversation-list" aria-label="Conversations"></nav>
+      <button class="update-banner hidden" id="update-banner" type="button"></button>
       <button class="quota-mini" id="quota-mini" type="button" title="Quota de vos IA : le détail">Quota…</button>
       <div class="sidebar-foot">
         <span class="me-name" id="me-name"></span>
@@ -88,8 +92,12 @@
           <button class="btn btn-ghost" id="app-menu-button" type="button" aria-haspopup="menu" aria-expanded="false">Menu ▴</button>
           <div class="menu menu-up" id="app-menu" role="menu">
             <button class="menu-item" id="notifications" type="button" title="Alertes sur cet appareil">Notifications</button>
+            <button class="menu-item" id="offline-toggle" type="button"
+                    title="Garder les conversations lisibles sur cet appareil quand le PC ne répond pas">Hors connexion : non</button>
             <button class="menu-item hidden" id="settings" type="button" title="Réglages de l'appli">Réglages</button>
             <button class="menu-item hidden" id="people" type="button" title="Inviter des personnes, gérer leurs accès">Personnes</button>
+            <button class="menu-item hidden" id="consumption" type="button" title="Qui a utilisé combien d'IA">Consommation</button>
+            <button class="menu-item hidden" id="server" type="button" title="État du serveur : disque, sauvegardes, journal">Serveur</button>
             <button class="menu-item hidden" id="my-accounts" type="button" title="Vos comptes Claude et ChatGPT : vos demandes les utilisent">Mes comptes IA</button>
             <button class="menu-item hidden" id="my-password" type="button" title="Changer votre mot de passe">Mot de passe</button>
             <button class="menu-item hidden" id="devices" type="button" title="Les appareils où une session est ouverte">Appareils</button>
@@ -140,9 +148,16 @@
                 <button class="menu-item hidden" id="share" type="button" title="Partager avec des personnes de ce serveur">Partager</button>
                 <button class="menu-item" id="fresh" type="button"
                         title="La prochaine demande ouvre une nouvelle session : un résumé et les passages utiles au lieu de tout l'historique">Repartir de zéro</button>
+                <button class="menu-item" id="instructions" type="button"
+                        title="Un texte que l'IA reçoit à chaque demande de cette conversation">Consignes…</button>
                 <button class="menu-item" id="tools" type="button" title="Les outils de l'IA dans cette conversation">Outils</button>
                 <button class="menu-item" id="schedules" type="button" title="Demandes qui se relancent seules (chaque jour, chaque heure…)">Planifier</button>
                 <button class="menu-item hidden" id="obsidian" type="button" title="Note de projet dans Obsidian">Obsidian</button>
+                <a class="menu-item" id="export-md" download title="Le texte de la conversation, lisible partout">Exporter (Markdown)</a>
+                <a class="menu-item" id="export-json" download
+                   title="Pour la recharger, ici ou sur un autre serveur (« Importer… »)">Exporter (JSON, réimportable)</a>
+                <a class="menu-item" id="export-print" target="_blank" rel="noopener"
+                   title="Une page à imprimer, ou à enregistrer en PDF">Imprimer ou PDF</a>
                 <button class="menu-item" id="rename" type="button">Renommer</button>
                 <button class="menu-item menu-danger" id="delete" type="button" title="Supprimer définitivement">Supprimer</button>
               </div>
@@ -167,7 +182,20 @@
 
         <p class="readonly-note hidden" id="readonly-note">Lecture seule : cette conversation vous est partagée
           pour la lire, pas pour y écrire.</p>
+        <div class="pending-files hidden" id="pending-files" aria-label="Pièces jointes à envoyer"></div>
         <form class="composer" id="composer">
+          <div class="composer-tools">
+            <button class="btn btn-ghost tool-icon" id="attach" type="button" aria-label="Joindre un fichier ou une image"
+                    title="Joindre un fichier, une image ou une photo (20 Mo au plus)">📎</button>
+            <input type="file" id="attach-input" multiple hidden>
+            <button class="btn btn-ghost tool-icon hidden" id="dictate" type="button" aria-label="Dicter"
+                    title="Dicter au lieu de taper (la reconnaissance vocale du navigateur ; Chrome l'envoie à Google)">🎤</button>
+            <div class="menu-wrap">
+              <button class="btn btn-ghost tool-icon" id="favorites-button" type="button" aria-haspopup="menu"
+                      aria-expanded="false" aria-label="Demandes favorites" title="Vos demandes favorites">★</button>
+              <div class="menu menu-up menu-left" id="favorites-menu" role="menu"></div>
+            </div>
+          </div>
           <textarea id="prompt" rows="2" placeholder="Votre demande…" aria-label="Votre demande"></textarea>
           <div class="composer-buttons">
             <button class="btn btn-ghost hidden" id="cite" type="button"
@@ -176,6 +204,8 @@
                     title="Parler au chef d'orchestre : il répond et ne modifie rien">Discuter avec le chef</button>
             <button class="btn btn-ghost" id="autonomous" type="button"
                     title="L'IA travaille seule vers un objectif, tour après tour, jusqu'à ce que ce soit fini">Autonome…</button>
+            <select id="compare-with" class="hidden" aria-label="Comparer avec une autre IA"
+                    title="Une autre IA répond aussi, en lecture seule, à côté de la réponse"></select>
             <button class="btn btn-primary" id="send" type="submit" value="plan">Envoyer</button>
           </div>
         </form>
@@ -265,6 +295,10 @@
       </label>
       <label>Dossier de travail par défaut (facultatif)
         <input name="workdir" id="project-workdir" placeholder="D:\projets\boutique">
+      </label>
+      <label>Consignes pour l'IA (facultatives, pour toutes les conversations du projet)
+        <textarea id="project-instructions" rows="3" maxlength="4000"
+                  placeholder="ex. Réponds en français, sois bref, le code est en Python 3.12"></textarea>
       </label>
       <p class="quota-note">Les conversations d'un même projet peuvent se consulter entre elles : l'IA d'une
         conversation peut lister, chercher et lire les autres (en lecture seule). Une conversation dont le
@@ -454,6 +488,77 @@
       <div class="dialog-actions">
         <button class="btn btn-ghost" type="button" id="import-cancel">Annuler</button>
         <button class="btn btn-primary" type="submit" id="import-go" disabled>Importer</button>
+      </div>
+    </form>
+  </dialog>
+
+  <dialog id="consumption-dialog" class="dialog dialog-wide">
+    <form method="dialog">
+      <h2>Consommation</h2>
+      <label class="consumption-period">Période
+        <select id="consumption-days">
+          <option value="1">Dernières 24 heures</option>
+          <option value="7" selected>7 derniers jours</option>
+          <option value="30">30 derniers jours</option>
+          <option value="365">Cette année</option>
+        </select>
+      </label>
+      <div class="consumption-table" id="consumption-table"></div>
+      <p class="quota-note">Chaque réponse, sous-tâche ou avis d'une autre IA compte pour la personne qui a fait
+        la demande. Les tokens sont ceux que les IA disent avoir utilisés (l'IA locale n'en compte pas toujours).
+        Chacun paie avec ses propres comptes : ce tableau dit qui a demandé quoi, pas qui a payé.</p>
+      <p class="form-error" id="consumption-error" role="alert"></p>
+      <div class="dialog-actions">
+        <button class="btn btn-ghost" type="button" id="consumption-close">Fermer</button>
+      </div>
+    </form>
+  </dialog>
+
+  <dialog id="server-dialog" class="dialog dialog-wide">
+    <form method="dialog">
+      <h2>Serveur</h2>
+      <div class="server-cards" id="server-cards"></div>
+      <h3>Fin du journal</h3>
+      <pre class="server-log" id="server-log"></pre>
+      <p class="form-error" id="server-error" role="alert"></p>
+      <div class="dialog-actions">
+        <button class="btn btn-ghost" type="button" id="server-refresh">Actualiser</button>
+        <button class="btn btn-ghost" type="button" id="server-close">Fermer</button>
+      </div>
+    </form>
+  </dialog>
+
+  <dialog id="jump-dialog" class="dialog">
+    <form method="dialog" id="jump-form">
+      <input type="search" id="jump-input" placeholder="Aller à la conversation…" autocomplete="off"
+             aria-label="Aller à la conversation">
+      <div class="jump-list" id="jump-list" role="listbox"></div>
+      <p class="quota-note">↑ ↓ pour choisir, Entrée pour ouvrir, Échap pour fermer.</p>
+    </form>
+  </dialog>
+
+  <dialog id="keys-dialog" class="dialog">
+    <form method="dialog">
+      <h2>Raccourcis clavier</h2>
+      <table class="keys">
+        <tr><td><kbd>Ctrl</kbd> + <kbd>K</kbd></td><td>Aller à une conversation</td></tr>
+        <tr><td><kbd>Ctrl</kbd> + <kbd>Maj</kbd> + <kbd>N</kbd></td><td>Nouvelle conversation</td></tr>
+        <tr><td><kbd>Entrée</kbd></td><td>Envoyer la demande (<kbd>Maj</kbd> + <kbd>Entrée</kbd> : aller à la ligne)</td></tr>
+        <tr><td><kbd>Échap</kbd></td><td>Arrêter l'IA qui travaille (après confirmation)</td></tr>
+        <tr><td><kbd>?</kbd></td><td>Cette liste</td></tr>
+      </table>
+      <div class="dialog-actions"><button class="btn btn-ghost" type="submit">Fermer</button></div>
+    </form>
+  </dialog>
+
+  <dialog id="ask-dialog" class="dialog dialog-wide">
+    <form method="dialog">
+      <h2 id="ask-title"></h2>
+      <p class="quota-note" id="ask-help"></p>
+      <textarea id="ask-text" rows="8" aria-labelledby="ask-title"></textarea>
+      <div class="dialog-actions">
+        <button class="btn btn-ghost" type="button" id="ask-cancel">Annuler</button>
+        <button class="btn btn-primary" type="button" id="ask-ok">Valider</button>
       </div>
     </form>
   </dialog>

@@ -282,7 +282,8 @@ class MigrationTest(TempDirMixin, unittest.TestCase):
     def test_the_single_password_becomes_the_owners(self):
         path = str(self.make_tempdir() / "hub.db")
         with mock.patch.object(db, "SCHEMA_VERSION", 14), mock.patch.object(db, "_SCHEMA_V15", []), \
-                mock.patch.object(db, "_SCHEMA_V16", []), mock.patch.object(db, "_SCHEMA_V17", []):
+                mock.patch.object(db, "_SCHEMA_V16", []), mock.patch.object(db, "_SCHEMA_V17", []), \
+                mock.patch.object(db, "_SCHEMA_V18", []), mock.patch.object(db, "_SCHEMA_V19", []):
             db.connect(path).close()  # a base as version 14 left it
         raw = sqlite3.connect(path)
         raw.execute("PRAGMA user_version = 14")

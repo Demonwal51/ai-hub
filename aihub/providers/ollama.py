@@ -10,6 +10,7 @@ The hub does not install or start Ollama: it uses the one already running
 (`ollama serve`). Models are « local:<name> » in the hub.
 """
 
+import base64
 import json
 import os
 import re
@@ -170,7 +171,7 @@ class OllamaRun:
 
     def __init__(self, command, *, prompt, workdir, permission_mode, model=None, resume_session=None,
                  ask_permission=None, on_text=None, on_quota=None, timeout_s=None, env=None, tools=None,
-                 json_schema=None, mcp_config=None, auto_allow=(), instructions=None, web=True):
+                 json_schema=None, mcp_config=None, auto_allow=(), instructions=None, web=True, images=()):
         if not isinstance(prompt, str) or not prompt.strip():
             raise ProviderError("demande vide")
         if not model:
@@ -184,6 +185,7 @@ class OllamaRun:
         self.json_schema = json_schema
         self.instructions = instructions
         self.read_files = tools is None or bool(tools)  # tools=[]: nothing at all (a summary)
+        self.images = list(images)  # pictures: a vision model sees them, another one ignores them
         self._lock = threading.Lock()
         self._stop_reason = None
         self._response = None
@@ -216,6 +218,8 @@ class OllamaRun:
         folder = Folder(self.workdir)
         system = SYSTEM + (f"\n\n{self.instructions}" if self.instructions else "")
         messages = [{"role": "system", "content": system}, {"role": "user", "content": self.prompt}]
+        if self.images:
+            messages[1]["images"] = [base64.b64encode(Path(p).read_bytes()).decode("ascii") for p in self.images]
         result.usage = {"input_tokens": 0, "output_tokens": 0}
         text = ""
         try:

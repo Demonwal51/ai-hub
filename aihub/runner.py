@@ -10,7 +10,7 @@ import os
 import threading
 from pathlib import Path
 
-from . import access, accounts, config, memory, project_access, providers, routing, store, tools
+from . import access, accounts, attachments, config, memory, project_access, providers, routing, store, tools
 from .providers import claude_code
 from .providers.claude_code import ProviderError
 
@@ -86,7 +86,7 @@ class Request:
                  on_text=None, on_start=None, command=None, timeout_s=None, env=None,
                  record_prompt=True, resume=True, tools=None, json_schema=None,
                  format_content=None, check_result=None, settings=None, on_quota=None, user_id=None,
-                 account_id=None):
+                 account_id=None, attachments=()):
         """`record_prompt=False` and `resume=False` serve the conductor: its
         planning and synthesis prompts are built by the hub, not typed by the
         user, and each starts a fresh session. `tools` and `json_schema` are
@@ -115,6 +115,7 @@ class Request:
         self.on_quota = on_quota  # on_quota(provider, QuotaInfo) after it is recorded (phone alerts)
         self.user_id = user_id    # who sends it (None: the owner)
         self.account_id = account_id  # whose own AI accounts `env` names (None: the computer's)
+        self.attachments = list(attachments)  # files sent with the request (aihub/attachments.py)
         self.message_id = None
         self._run = None
         self._stopped = threading.Event()
@@ -151,6 +152,7 @@ class Request:
         self.request_id = None
         if self.record_prompt:
             self.request_id = store.add_user_message(self.conn, self.conversation_id, self.prompt, self.user_id)
+            attachments.attach(self.conn, self.attachments, self.request_id)
         self.message_id = store.start_request(self.conn, self.conversation_id, self.agent_id)
         try:
             store.mark_message_running(self.conn, self.message_id)
@@ -235,6 +237,9 @@ class Request:
             sent = memory.render(package, found, self.prompt) + joined
         else:
             sent = self.prompt + joined
+        # The files sent with it: a text file's text in the request, the others by their path.
+        files_text, files = attachments.for_request(self.attachments)
+        sent += files_text
         given = tools.for_run(self.conn, conversation, self.settings, own=package is not None, commands=self.command,
                               project=project, account_env=accounts.account_vars(self.env))
         env = self.env
@@ -261,7 +266,9 @@ class Request:
             mcp_config=given.mcp_config,
             auto_allow=given.auto_allow,
             web=given.web,
-            instructions=project_access.instructions(self.conn, conversation, project=project),
+            instructions=store.join_instructions(store.person_instructions(self.conn, conversation),
+                                                 project_access.instructions(self.conn, conversation, project=project)),
+            attachments=files,
         )
         with self._lock:
             self._run = run

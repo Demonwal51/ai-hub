@@ -208,7 +208,8 @@ def cmd_serve(args, out, command):
             codex_cli = None  # not installed: the app says so in its status
     app = create_app(args.db, command=command or (claude_code.find_cli(args.claude) if args.claude else None),
                      auth_policy=policy, local_only=policy is None, settings=settings,
-                     config_path=config_path, overridden=sorted(overrides), codex_command=codex_cli)
+                     config_path=config_path, overridden=sorted(overrides), codex_command=codex_cli,
+                     journal_path=args.journal)
     backup_dir = app.state.backup.folder if app.state.backup else None
     if app.state.jobs.recovered:
         out(f"{app.state.jobs.recovered} requête(s) interrompue(s) par un arrêt précédent ont été closes.")

@@ -1084,3 +1084,106 @@ def stop_plan(conn, plan_id):
             "UPDATE plans SET status = 'stopped', finished_at = ? WHERE id = ?", (now, plan_id)
         )
     return running
+
+
+# --- favorite requests (« Demandes favorites ») -------------------------------------
+
+FAVORITE_TITLE_MAX = 80
+FAVORITE_TEXT_MAX = 20000
+FAVORITES_MAX = 100  # per person
+
+
+def list_favorites(conn, user_id):
+    return [dict(r) for r in conn.execute(
+        "SELECT id, title, text, created_at FROM favorites WHERE user_id IS ? ORDER BY title COLLATE NOCASE, id",
+        (user_id,))]
+
+
+def add_favorite(conn, user_id, title, text):
+    """A request kept to be inserted again in a click; the title shows in the list."""
+    text = str(text or "").strip()
+    if not text:
+        raise StoreError("une demande favorite ne peut pas être vide")
+    if len(text) > FAVORITE_TEXT_MAX:
+        raise StoreError(f"demande trop longue ({FAVORITE_TEXT_MAX} caractères au plus)")
+    title = " ".join(str(title or "").split()) or " ".join(text.split())[:FAVORITE_TITLE_MAX]
+    title = title[:FAVORITE_TITLE_MAX]
+    count = conn.execute("SELECT COUNT(*) FROM favorites WHERE user_id IS ?", (user_id,)).fetchone()[0]
+    if count >= FAVORITES_MAX:
+        raise StoreError(f"déjà {FAVORITES_MAX} demandes favorites : retirez-en une d'abord")
+    return conn.execute("INSERT INTO favorites (user_id, title, text, created_at) VALUES (?, ?, ?, ?)",
+                        (user_id, title, text, utc_now())).lastrowid
+
+
+def delete_favorite(conn, user_id, favorite_id):
+    """Only one's own: someone else's is as unknown as one that does not exist."""
+    if conn.execute("DELETE FROM favorites WHERE id = ? AND user_id IS ?", (favorite_id, user_id)).rowcount == 0:
+        raise NotFound("demande favorite introuvable")
+
+
+# --- regenerate the last reply, branch at a request ----------------------------------
+
+def last_exchange(conn, conversation_id):
+    """(request, reply) when the conversation ends with a request and its reply, both finished; else None."""
+    rows = conn.execute("SELECT * FROM messages WHERE conversation_id = ? ORDER BY id DESC LIMIT 2",
+                        (conversation_id,)).fetchall()
+    if len(rows) != 2:
+        return None
+    reply, request = rows
+    if request["role"] != "user" or reply["role"] != "assistant" or reply["status"] in ("pending", "running"):
+        return None
+    return dict(request), dict(reply)
+
+
+def forget_exchange(conn, request_id, reply_id):
+    """The last exchange goes, for its request to be sent again (« Régénérer »)."""
+    with transaction(conn):
+        conn.execute("DELETE FROM messages WHERE id IN (?, ?)", (reply_id, request_id))
+
+
+def copy_messages(conn, source_id, target_id, before_id):
+    """The finished messages of a conversation before `before_id`, copied into another (a branch).
+    Returns how many. The copies have no session: the branch starts from the memory."""
+    rows = conn.execute(
+        "SELECT role, provider, model, content, status, user_id, created_at, finished_at, tokens_in, tokens_out, "
+        "duration_ms FROM messages WHERE conversation_id = ? AND id < ? AND content <> '' "
+        "AND status IN ('ok', 'stopped') ORDER BY id", (source_id, before_id)).fetchall()
+    with transaction(conn):
+        conn.executemany(
+            "INSERT INTO messages (conversation_id, role, provider, model, content, status, user_id, created_at, "
+            "finished_at, tokens_in, tokens_out, duration_ms) VALUES (?, ?, ?, ?, ?, 'ok', ?, ?, ?, NULL, NULL, ?)",
+            # No provider: a copy cost nothing (the consumption counts the original once).
+            [(target_id, r["role"], None, r["model"], r["content"], r["user_id"], r["created_at"],
+              r["finished_at"], r["duration_ms"]) for r in rows])
+    return len(rows)
+
+
+# --- instructions the AI always gets (« Consignes ») --------------------------------------
+
+INSTRUCTIONS_MAX = 4000
+
+
+def check_instructions(text):
+    text = str(text or "").strip()
+    if len(text) > INSTRUCTIONS_MAX:
+        raise StoreError(f"consignes trop longues ({INSTRUCTIONS_MAX} caractères au plus)")
+    return text or None
+
+
+def person_instructions(conn, conversation):
+    """The project's instructions, then the conversation's, as one text for the AI; None without any."""
+    parts = []
+    if conversation["project_id"] is not None:
+        project = conn.execute("SELECT instructions FROM projects WHERE id = ?", (conversation["project_id"],)).fetchone()
+        if project is not None and project["instructions"]:
+            parts.append(f"Pour tout le projet :\n{project['instructions']}")
+    own = conversation["instructions"] if "instructions" in conversation.keys() else None
+    if own:
+        parts.append(f"Pour cette conversation :\n{own}")
+    if not parts:
+        return None
+    return "Consignes de la personne, à suivre à chaque réponse.\n\n" + "\n\n".join(parts)
+
+
+def join_instructions(*texts):
+    return "\n\n".join(t for t in texts if t) or None

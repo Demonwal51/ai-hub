@@ -1,5 +1,29 @@
 # Changelog
 
+## 0.5.0 beta — not published yet
+
+- Regenerate the last reply (with the same AI or another one); edit a request
+  in a new conversation that starts from there (a branch).
+- Compare two AIs: another one answers the same request, read only, beside the
+  reply; « Garder celle-ci ».
+- Instructions for a conversation and for a project, at each request.
+- Read a reply aloud; keyboard shortcuts (Ctrl+K, Ctrl+Shift+N, Échap, ?).
+- The server's dashboard (the owner's); reading without the PC on a device
+  that chose it.
+
+## 0.4.0 beta — not published (part of 0.5)
+
+- Files and images with a request (📎, a pasted screenshot, files dropped):
+  a text file's text in the request, images seen by Codex and the local AI,
+  read by Claude Code; shown under the request.
+- Dictation (🎤), favorite requests (★) kept on the server for each person.
+- Export of a conversation: Markdown, AI Hub's JSON (read back by the
+  import), a page to print or save as PDF.
+- Consumption per person and per AI (owner and admins).
+- One-click update from GitHub's releases, the old version kept, undone if
+  anything fails.
+- Installation: one .zip and installer.bat (a Desktop shortcut).
+
 ## 0.3.0 beta — 2026-10-11
 
 - A new server is created from its page, on its own computer: the owner's

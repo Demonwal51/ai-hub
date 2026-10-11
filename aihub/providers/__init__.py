@@ -4,6 +4,8 @@ Claude Code and Codex share one interface (a run with `run()` and `stop()`,
 returning a RunResult). This module picks the right one for an agent.
 """
 
+from pathlib import Path
+
 from . import claude_code, codex, ollama
 from .claude_code import ProviderError
 
@@ -42,18 +44,23 @@ def default_model(provider, model):
     return None if model in (None, module(provider).DEFAULT_MODEL) else model
 
 
-def new_run(provider, command, *, instructions=None, warning_from=None, web=True, **options):
+def new_run(provider, command, *, instructions=None, warning_from=None, web=True, attachments=(), **options):
     """A run of this provider. `instructions`: text added to the agent's system prompt;
-    `web`: the AI's own web search (off: taken away)."""
+    `web`: the AI's own web search (off: taken away). `attachments`: files sent with the
+    request, [{"path", "image"}] (their names and paths are in the prompt already): Claude
+    Code may read their folder, Codex and the local AI get the images themselves."""
+    images = [a["path"] for a in attachments if a.get("image")]
     if provider == codex.PROVIDER:
         extra = {"warning_from": warning_from} if warning_from is not None else {}
-        return codex.CodexRun(command, instructions=instructions, web=web, **extra, **options)
+        return codex.CodexRun(command, instructions=instructions, web=web, images=images, **extra, **options)
     if provider == ollama.PROVIDER:
-        return ollama.OllamaRun(command, instructions=instructions, web=web, **options)
+        return ollama.OllamaRun(command, instructions=instructions, web=web, images=images, **options)
     module(provider)  # an unknown provider is refused here
-    return claude_code.ClaudeCodeRun(
-        command, extra_args=["--append-system-prompt", instructions] if instructions else [],
-        disallowed=() if web else claude_code.WEB_TOOLS, **options)
+    extra = ["--append-system-prompt", instructions] if instructions else []
+    for folder in sorted({str(Path(a["path"]).parent) for a in attachments}):
+        extra += ["--add-dir", folder]  # outside the working folder: read without a prompt
+    return claude_code.ClaudeCodeRun(command, extra_args=extra,
+                                     disallowed=() if web else claude_code.WEB_TOOLS, **options)
 
 
 def lost_session(provider, error):

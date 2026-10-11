@@ -40,13 +40,25 @@ NO_WINDOW = 0x08000000 if os.name == "nt" else 0
 log = {"args": sys.argv[1:], "cwd": os.getcwd(), "answers": []}
 
 
+def _write(path):
+    # Whole or not at all: a test reading it meanwhile never sees it empty (written aside, then swapped).
+    aside = f"{path}.{os.getpid()}.tmp"
+    with open(aside, "w", encoding="utf-8") as fh:
+        json.dump(log, fh)
+    for _ in range(50):
+        try:
+            os.replace(aside, path)
+            return
+        except PermissionError:  # Windows: the test has it open for reading this instant
+            time.sleep(0.01)
+    os.replace(aside, path)
+
+
 def save():
     if LOG:
-        with open(LOG, "w", encoding="utf-8") as fh:
-            json.dump(log, fh)
+        _write(LOG)
     if LOG_DIR:
-        with open(os.path.join(LOG_DIR, f"run-{os.getpid()}.json"), "w", encoding="utf-8") as fh:
-            json.dump(log, fh)
+        _write(os.path.join(LOG_DIR, f"run-{os.getpid()}.json"))
 
 
 def option(name):

@@ -11,22 +11,25 @@ import json
 import os
 import queue
 import secrets
+import shutil
 import subprocess
+import sys
 import threading
 import time
 from contextlib import asynccontextmanager, contextmanager
+from datetime import datetime, timezone
 from pathlib import Path
 
 import segno
 from fastapi import Depends, FastAPI, Request as HttpRequest
-from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
+from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, Response, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
 from .. import VERSION_LABEL
 from .. import (auth, autonomous, backup, config, db, eveil, memory, notify, obsidian, providers, routing, runner,
                 schedule, semantic, store, tools)
-from .. import access, accounts, importer
+from .. import access, accounts, attachments, compare, importer, updater, usage
 from ..providers import claude_code, codex, ollama
 from ..providers.claude_code import ProviderError
 from ..store import BypassConfirmationRequired, Busy, NotFound, StoreError
@@ -96,6 +99,7 @@ class ConversationChange(BaseModel):
     shared: bool | None = None        # open or close it to the project's other conversations
     model: str | None = None          # change of AI: the next request starts from the memory
     tools: list[str] | None = None    # the tools chosen for the conversation (aihub/tools.py)
+    instructions: str | None = None   # what the AI always gets ("" clears them)
 
 
 class AutonomousStart(BaseModel):
@@ -137,18 +141,22 @@ class NewProject(BaseModel):
     name: str
     description: str = ""
     workdir: str = ""
+    instructions: str = ""            # what the AI always gets in its conversations
 
 
 class ProjectChange(BaseModel):
     name: str | None = None
     description: str | None = None
     workdir: str | None = None        # "" clears it
+    instructions: str | None = None   # what the AI always gets in its conversations ("" clears them)
 
 
 class NewMessage(BaseModel):
     prompt: str
     # Orchestration only: "plan" asks the conductor for a plan, "discuss" talks with it.
     kind: str = "plan"
+    attachments: list[int] = []   # files sent first (POST …/attachments), taken by this request
+    compare_with: str | None = None  # another AI answering beside, read only (aihub/compare.py)
 
 
 class PermissionAnswer(BaseModel):
@@ -204,6 +212,19 @@ class DeviceLink(BaseModel):
 
 class DeviceAccept(BaseModel):
     link: str
+
+
+class Regenerate(BaseModel):
+    model: str | None = None      # another AI for it (the owner of the conversation only)
+
+
+class Branch(BaseModel):
+    prompt: str | None = None     # the corrected request (empty: the same, sent again)
+
+
+class NewFavorite(BaseModel):
+    title: str | None = None
+    text: str
 
 
 class SessionChange(BaseModel):
@@ -422,12 +443,18 @@ def create_app(db_path, *, command=None, env=None, allowed_roots=(), permission_
                request_timeout_s=None, sse_ping_s=15, obsidian_vault=None, auth_policy=None,
                local_only=False, backup_dir=None, backup_keep=14, clock=None, keep_awake=False,
                awake_setter=None, settings=None, config_path=None, overridden=(), codex_command=None,
-               push_post=None, run_scheduler=True, schedule_clock=None, ollama_url=None, local_home=None):
+               push_post=None, run_scheduler=True, schedule_clock=None, ollama_url=None, local_home=None,
+               update_hooks=None, journal_path=None):
     """Build the application. `command` overrides the Claude Code CLI (tests).
 
     `codex_command` is the Codex CLI. Left to None, Codex is searched for
     only when `command` is too: a test that gives its own Claude Code does
     not start the real Codex of the computer by surprise.
+
+    `journal_path`: the server's log (serve --journal), whose end the dashboard shows.
+
+    `update_hooks`: tests replace what the update touches (get, spawn, stop,
+    restart, root, why_not); the real ones go to GitHub and restart the server.
 
     `local_home`: where the Claude Code and Codex sessions to import are
     (the person's home folder by default; tests give their own).
@@ -502,6 +529,8 @@ def create_app(db_path, *, command=None, env=None, allowed_roots=(), permission_
 
     @asynccontextmanager
     async def lifespan(app):
+        with database() as conn:
+            attachments.purge_unsent(conn)  # files of requests never sent, a day old
         with settings_lock:
             running["started"] = True
             for helper in (app.state.backup, app.state.awake):
@@ -887,6 +916,120 @@ def create_app(db_path, *, command=None, env=None, allowed_roots=(), permission_
         with database() as conn:
             return {"sessions": authority.sessions(conn, request.cookies.get(auth.COOKIE)), "required": True}
 
+    # --- the server's dashboard (the owner's): it only reads ---------------------
+
+    started_at = db.utc_now()
+    started_clock = time.monotonic()
+
+    def folder_size(path):
+        total, count, newest = 0, 0, None
+        root = Path(path) if path else None
+        if root is None or not root.is_dir():
+            return {"size": 0, "count": 0, "newest": None}
+        for item in root.rglob("*"):
+            if item.is_file():
+                stat = item.stat()
+                total, count = total + stat.st_size, count + 1
+                newest = max(newest or stat.st_mtime, stat.st_mtime)
+        when = datetime.fromtimestamp(newest, timezone.utc).isoformat(timespec="seconds") if newest else None
+        return {"size": total, "count": count, "newest": when}
+
+    @app.get("/api/server")
+    def server_dashboard():
+        """Version, uptime, disk, base, backups, AIs, how many people and conversations, the log's end."""
+        access.require_owner(me())
+        data_dir = Path(db_path).resolve().parent
+        disk = shutil.disk_usage(data_dir)
+        base = sum(p.stat().st_size for p in data_dir.glob(Path(db_path).name + "*") if p.is_file())
+        with database() as conn:
+            counts = {name: conn.execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0]
+                      for name, table in (("people", "users"), ("devices", "sessions"),
+                                          ("conversations", "conversations"), ("messages", "messages"))}
+        log = []
+        if journal_path and Path(journal_path).is_file():
+            with open(journal_path, encoding="utf-8", errors="replace") as fh:
+                log = [line.rstrip("\n") for line in fh.readlines()[-50:]]
+        state = provider_status()
+        return {"version": VERSION_LABEL, "started_at": started_at,
+                "uptime_s": int(time.monotonic() - started_clock),
+                "disk": {"free": disk.free, "total": disk.total, "folder": str(data_dir)},
+                "base": base, "backups": {"folder": backup_folder(), **folder_size(backup_folder())},
+                "attachments": folder_size(pieces), "counts": counts,
+                "ais": {"claude": bool(state.get("logged_in")), "codex": bool((state.get("codex") or {}).get("logged_in")),
+                        "local": bool((state.get("local") or {}).get("running"))},
+                "log": log, "log_file": str(journal_path) if journal_path else None}
+
+    # --- one-click update (aihub/updater.py), the owner's -------------------------
+
+    app.state.update_hooks = update_hooks or {}  # tests replace them there
+
+    def stop_server():
+        """After the answer is sent: the server stops like on Ctrl+C (the helper waits for it)."""
+        import signal
+        threading.Timer(1.0, signal.raise_signal, args=(signal.SIGINT,)).start()
+        threading.Timer(20.0, os._exit, args=(0,)).start()  # had it not stopped by then
+
+    @app.get("/api/update")
+    def update_state(refresh: bool = False):
+        access.require_owner(me())
+        if refresh:
+            updater._cache.clear()
+        hooks = app.state.update_hooks
+        found = updater.check(**({"get": hooks["get"]} if "get" in hooks else {}))
+        reason = hooks["why_not"]() if "why_not" in hooks else updater.why_not_here()
+        return {**found, "can_apply": reason is None, "reason": reason}
+
+    @app.post("/api/update/apply", status_code=202)
+    def apply_update():
+        """Download the newest version, check it, then let the helper put it in place and restart."""
+        access.require_owner(me())
+        if jobs.busy():
+            raise Busy("une IA travaille : attendez qu'elle ait fini avant de mettre à jour")
+        hooks = app.state.update_hooks
+        found = updater.check(**({"get": hooks["get"]} if "get" in hooks else {}))
+        if not found["latest"]:
+            raise StoreError(found["error"] or "AI Hub est déjà à jour")
+        restart = [sys.executable, "-m", "aihub"] + sys.argv[1:] if "restart" not in hooks else hooks["restart"]
+        try:
+            updater.start(found["latest"], server_pid=os.getpid(), restart=restart,
+                          **{k: hooks[k] for k in ("root", "get", "spawn") if k in hooks})
+        except updater.UpdateError as exc:
+            raise StoreError(str(exc)) from None
+        (hooks.get("stop") or stop_server)()
+        return {"updating": found["latest"]["version"]}
+
+    @app.get("/api/usage")
+    def consumption(days: int = 7):
+        """Who used how much (requests, AI runs, tokens, by AI): the owner's and the admins' to see."""
+        access.require_admin(me())
+        if days not in usage.PERIODS:
+            raise StoreError(f"période : {', '.join(map(str, usage.PERIODS))} jours")
+        with database() as conn:
+            return {"days": days, "people": usage.usage(conn, days)}
+
+    # --- favorite requests (each person's own) --------------------------------
+
+    def my_id():
+        user = me()
+        return user["id"] if user else None
+
+    @app.get("/api/favorites")
+    def favorites():
+        with database() as conn:
+            return {"favorites": store.list_favorites(conn, my_id())}
+
+    @app.post("/api/favorites", status_code=201)
+    def add_favorite(body: NewFavorite):
+        with database() as conn:
+            store.add_favorite(conn, my_id(), body.title, body.text)
+            return {"favorites": store.list_favorites(conn, my_id())}
+
+    @app.delete("/api/favorites/{fid}")
+    def delete_favorite(fid: int):
+        with database() as conn:
+            store.delete_favorite(conn, my_id(), fid)
+            return {"favorites": store.list_favorites(conn, my_id())}
+
     @app.patch("/api/sessions/{sid}")
     def rename_session(sid: int, body: SessionChange, request: HttpRequest):
         """Name one of one's devices (« Téléphone de Lou », « PC du salon »)."""
@@ -1239,6 +1382,7 @@ def create_app(db_path, *, command=None, env=None, allowed_roots=(), permission_
         workdir = check_workdir(body.workdir) if body.workdir.strip() and access.trusted(user) else None
         with database() as conn:
             pid = store.create_project(conn, body.name, description=body.description, workdir=workdir)
+            conn.execute("UPDATE projects SET instructions = ? WHERE id = ?", (store.check_instructions(body.instructions), pid))
             set_owner(conn, "projects", pid, user)
             return {"project": dict(store.get_project(conn, pid))}
 
@@ -1279,6 +1423,9 @@ def create_app(db_path, *, command=None, env=None, allowed_roots=(), permission_
         with database() as conn:
             require_project(conn, user, pid)
             store.update_project(conn, pid, name=body.name, description=body.description, workdir=workdir)
+            if body.instructions is not None:
+                conn.execute("UPDATE projects SET instructions = ? WHERE id = ?",
+                             (store.check_instructions(body.instructions), pid))
             return {"project": dict(store.get_project(conn, pid))}
 
     @app.delete("/api/projects/{pid}")
@@ -1292,6 +1439,7 @@ def create_app(db_path, *, command=None, env=None, allowed_roots=(), permission_
         errors = {}
         folder = purge_folder()
         for cid in deleted:
+            attachments.forget_conversation(pieces, cid)
             errors.update(backup.purge_conversation(folder, cid))
         errors.update(backup.purge_project(folder, pid))
         return {"deleted": pid, "conversations": deleted, "backup_errors": errors}
@@ -1421,6 +1569,47 @@ def create_app(db_path, *, command=None, env=None, allowed_roots=(), permission_
         set_owner(conn, "conversations", cid, user)
         return cid
 
+    @app.get("/api/conversations/{cid}/export")
+    def export_conversation(cid: int, format: str = "md"):
+        """A conversation to keep or to send: Markdown, AI Hub's JSON (the import reads it back), or a page
+        to print (« Enregistrer en PDF »). Whoever sees the conversation may export it."""
+        if format not in ("md", "json", "html"):
+            raise StoreError("format : md, json ou html")
+        with database() as conn:
+            conv = dict(access.require(conn, me(), cid))
+            names = {u["id"]: u["name"] for u in auth.list_users(conn)}
+            messages = [dict(m) for m in store.list_messages(conn, cid)]
+        author = lambda m: (names.get(m["user_id"]) or "Vous") if m["role"] == "user" else (m["model"] or "IA")
+        safe = "".join(c if c.isalnum() or c in " -_" else "-" for c in conv["title"]).strip()[:80] or "conversation"
+        if format == "json":
+            body = json.dumps(importer.export_json(conv, messages, author), ensure_ascii=False, indent=2)
+            return export_response(body, "application/json", f"{safe}.json")
+        shown = [m for m in messages if m["content"] and m["status"] in ("ok", "stopped")]
+        if format == "md":
+            parts = [f"# {conv['title']}", "", f"_Exporté d'AI Hub le {db.utc_now()[:10]}._", ""]
+            for m in shown:
+                parts += [f"## {author(m)} — {m['created_at'][:16].replace('T', ' ')}", "", m["content"], ""]
+            return export_response("\n".join(parts), "text/markdown", f"{safe}.md")
+        import html
+        rows = "".join(f'<section class="{m["role"]}"><h2>{html.escape(author(m))} '
+                       f'<small>{html.escape(m["created_at"][:16].replace("T", " "))}</small></h2>'
+                       f'<div>{html.escape(m["content"])}</div></section>' for m in shown)
+        page = (f'<!doctype html><html lang="fr"><meta charset="utf-8"><title>{html.escape(conv["title"])}</title>'
+                '<style>body{font:15px/1.5 system-ui,sans-serif;max-width:760px;margin:24px auto;padding:0 16px;color:#1d1d1b}'
+                'h1{font-size:22px}h2{font-size:14px;margin:0 0 4px;color:#555}small{font-weight:400}'
+                'section{padding:10px 14px;border-radius:10px;margin:10px 0;break-inside:avoid}'
+                '.user{background:#e6ecfb}.assistant{border:1px solid #ddd}div{white-space:pre-wrap;overflow-wrap:anywhere}'
+                '.print{margin:12px 0}@media print{.print{display:none}}</style>'
+                f'<h1>{html.escape(conv["title"])}</h1>'
+                '<p class="print"><button onclick="print()">Imprimer ou enregistrer en PDF</button></p>'
+                f'{rows}</html>')
+        return HTMLResponse(page)
+
+    def export_response(body, mime, filename):
+        from urllib.parse import quote
+        return Response(body, media_type=f"{mime}; charset=utf-8", headers={
+            "Content-Disposition": f"attachment; filename*=UTF-8''{quote(filename)}"})
+
     @app.get("/api/conversations/{cid}")
     def conversation(cid: int, request: HttpRequest, last: int | None = None):
         """`last`: only the last messages (`older` says how many come before them)."""
@@ -1443,6 +1632,11 @@ def create_app(db_path, *, command=None, env=None, allowed_roots=(), permission_
             delegations = [dict(r) for r in conn.execute(
                 "SELECT * FROM delegations WHERE conversation_id = ? ORDER BY id", (cid,))]
             shared_with = access.shares_of(conn, conversation_id=cid) if conv["my_role"] == "owner" else None
+            files = attachments.of_conversation(conn, cid)
+            others = compare.of_conversation(conn, cid)
+            for m in messages:  # the files each request took, the other AIs' answers to it
+                m["attachments"] = files.get(m["id"], [])
+                m["variants"] = others.get(m["id"], [])
         conv["model"] = agent["model"] if agent else None
         conv["conductor_model"] = conductor["model"] if conductor else None
         conv["tools"] = tools.chosen(conv)
@@ -1617,6 +1811,9 @@ def create_app(db_path, *, command=None, env=None, allowed_roots=(), permission_
                     raise access.Forbidden("une conversation va dans un projet à soi")
             if body.title is not None:
                 store.rename_conversation(conn, cid, body.title)
+            if body.instructions is not None:
+                conn.execute("UPDATE conversations SET instructions = ? WHERE id = ?",
+                             (store.check_instructions(body.instructions), cid))
             if body.permission_mode is not None:
                 if jobs.running(cid):
                     raise Busy("une requête est en cours : arrêtez-la avant de changer de mode")
@@ -1692,6 +1889,7 @@ def create_app(db_path, *, command=None, env=None, allowed_roots=(), permission_
         with database() as conn:
             access.require(conn, me(), cid, "owner")
             store.delete_conversation(conn, cid)
+        attachments.forget_conversation(pieces, cid)  # its files go with it
         # Deleted for good means from the backups too.
         errors = backup.purge_conversation(purge_folder(), cid)
         return {"deleted": cid, "backup_errors": errors}
@@ -1706,6 +1904,14 @@ def create_app(db_path, *, command=None, env=None, allowed_roots=(), permission_
             if not conv["agent_id"]:
                 raise StoreError("aucun agent n'est choisi pour cette conversation")
             agent_id = conv["agent_id"]
+            files = attachments.pending(conn, cid, (user or {}).get("id"), body.attachments)
+        if files and conv["mode"] == "orchestration":
+            raise StoreError("les pièces jointes vont dans une conversation à une IA (pas encore à un chef d'orchestre)")
+        if body.compare_with:
+            if conv["mode"] != "single":
+                raise StoreError("on compare deux IA dans une conversation à une IA")
+            if body.compare_with not in offered_models(current()):
+                raise StoreError(f"IA non proposée ici : {body.compare_with!r}")
         if conv["mode"] == "orchestration":
             if body.kind == "discuss":
                 return {"message_id": jobs.start_discussion(cid, body.prompt, user=user)}
@@ -1713,7 +1919,123 @@ def create_app(db_path, *, command=None, env=None, allowed_roots=(), permission_
                 raise StoreError(f"genre de message inconnu : {body.kind!r} (attendu : plan, discuss)")
             # The conductor proposes a plan; nothing else runs before it is validated.
             return {"message_id": jobs.start_planning(cid, body.prompt, user=user)}
-        return {"message_id": jobs.start(cid, agent_id, body.prompt, user=user)}
+        return {"message_id": jobs.start(cid, agent_id, body.prompt, user=user, attachments=files,
+                                         compare_with=body.compare_with)}
+
+    @app.post("/api/variants/{vid}/keep")
+    def keep_variant(vid: int):
+        """« Garder celle-ci »: the other AI's answer becomes the reply (the next request starts from the memory)."""
+        with database() as conn:
+            row = conn.execute("SELECT conversation_id FROM variants WHERE id = ?", (vid,)).fetchone()
+            if row is None:
+                raise NotFound("réponse introuvable")
+            access.require(conn, me(), row["conversation_id"], "write")
+            if jobs.running(row["conversation_id"]):
+                raise Busy("une requête est en cours : attendez qu'elle ait fini")
+            compare.keep(conn, vid)
+        return {"kept": vid}
+
+    # --- regenerate the last reply, branch at a request ------------------------
+
+    @app.post("/api/conversations/{cid}/regenerate", status_code=202)
+    def regenerate(cid: int, body: Regenerate):
+        """The last request sent again (its files too), the previous reply gone; with another AI if chosen."""
+        user = me()
+        with database() as conn:
+            conv = access.require(conn, user, cid, "write")
+            if conv["mode"] != "single":
+                raise StoreError("on régénère dans une conversation à une IA")
+            if jobs.running(cid):
+                raise Busy("une requête est en cours : attendez qu'elle ait fini")
+            last = store.last_exchange(conn, cid)
+            if last is None:
+                raise StoreError("rien à régénérer : la conversation ne finit pas par une réponse")
+            request, reply = last
+            if conn.execute("SELECT 1 FROM autonomous_rounds WHERE message_id = ?", (reply["id"],)).fetchone():
+                raise StoreError("une réponse du travail autonome ne se régénère pas")
+            if body.model and body.model != (store.get_agent(conn, conv["agent_id"])["model"] if conv["agent_id"] else None):
+                if access.conversation_role(conn, user, conv) != "owner":
+                    raise access.Forbidden("seul celui qui possède la conversation change son IA")
+                store.update_conversation(conn, cid, agent_id=agent_for(conn, body.model))
+            agent_id = store.get_conversation(conn, cid)["agent_id"]
+            files = [dict(r) for r in conn.execute("SELECT * FROM attachments WHERE message_id = ?", (request["id"],))]
+            conn.execute("UPDATE attachments SET message_id = NULL, user_id = ? WHERE message_id = ?",
+                         ((user or {}).get("id"), request["id"]))
+            store.forget_exchange(conn, request["id"], reply["id"])
+            files = attachments.pending(conn, cid, (user or {}).get("id"), [f["id"] for f in files])
+        return {"message_id": jobs.start(cid, agent_id, request["content"], user=user, attachments=files)}
+
+    @app.post("/api/messages/{mid}/branch", status_code=201)
+    def branch(mid: int, body: Branch):
+        """A new conversation from a request: what came before it copied, then the corrected request sent.
+        The original stays as it was."""
+        user = me()
+        access.require_creator(user)
+        with database() as conn:
+            message = store.get_message(conn, mid)
+            conv = dict(access.require(conn, user, message["conversation_id"], "write"))
+            if message["role"] != "user":
+                raise StoreError("on modifie une demande, pas une réponse")
+            if conv["mode"] != "single":
+                raise StoreError("on modifie une demande dans une conversation à une IA")
+            model = store.get_agent(conn, conv["agent_id"])["model"] if conv["agent_id"] else "default"
+            title = f"{conv['title']} (branche)"[:120]
+            mode = conv["permission_mode"] if conv["permission_mode"] != "bypass" or access.trusted(user) else "manual"
+            cid = new_conversation(conn, NewConversation(
+                title=title, workdir=conv["workdir"], model=model, permission_mode=mode,
+                confirm_bypass=mode == "bypass",
+                project_id=conv["project_id"] if conv["project_id"] is not None
+                and access.project_role(conn, user, conv["project_id"]) == "owner" else None), user)
+            store.copy_messages(conn, message["conversation_id"], cid, mid)
+            agent_id = store.get_conversation(conn, cid)["agent_id"]
+        prompt = (body.prompt or "").strip() or message["content"]
+        jobs.start(cid, agent_id, prompt, user=user)
+        return {"conversation": cid}
+
+    # --- files and images sent with a request (aihub/attachments.py) -------------
+
+    pieces = side_folder(db_path, "pieces")
+
+    @app.post("/api/conversations/{cid}/attachments", status_code=201)
+    async def upload_attachment(cid: int, request: HttpRequest):
+        """A file for the next request (the body is the file; X-Filename its name, URL-encoded)."""
+        from urllib.parse import unquote
+        user = me(request)
+        size = int(request.headers.get("content-length") or 0)
+        if size > attachments.MAX_SIZE:
+            raise StoreError(f"fichier trop gros ({attachments.MAX_SIZE // 1024 // 1024} Mo au plus)")
+        with database() as conn:
+            access.require(conn, user, cid, "write")
+        data = await request.body()
+        name = unquote(request.headers.get("x-filename") or "fichier")
+        declared = request.headers.get("content-type")
+
+        def keep():
+            with database() as conn:
+                return attachments.view(attachments.save(conn, pieces, cid, (user or {}).get("id"), name, data,
+                                                         declared))
+        return await asyncio.to_thread(keep)
+
+    @app.delete("/api/attachments/{aid}")
+    def remove_attachment(aid: int):
+        with database() as conn:
+            attachments.remove(conn, aid, my_id())
+        return {"removed": aid}
+
+    @app.get("/api/attachments/{aid}")
+    def attachment_file(aid: int):
+        """A file, to whoever sees its conversation: a picture shown, anything else downloaded."""
+        from urllib.parse import quote
+        with database() as conn:
+            row = attachments.get(conn, aid)
+            access.require(conn, me(), row["conversation_id"])
+        if not Path(row["stored"]).is_file():
+            raise NotFound("fichier introuvable")
+        image = row["mime"] in attachments.IMAGES
+        disposition = "inline" if image else "attachment"
+        return FileResponse(row["stored"], media_type=row["mime"] if image else "application/octet-stream",
+                            headers={"Content-Disposition": f"{disposition}; filename*=UTF-8''{quote(row['name'])}",
+                                     "X-Content-Type-Options": "nosniff", "Cache-Control": "private, max-age=86400"})
 
     # --- autonomous work --------------------------------------------------------
 

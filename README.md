@@ -323,6 +323,77 @@ the owner's.
   project, not the project, never makes the agent read the other
   conversations.
 
+### In the composer: files, dictation, favorites
+
+- **Files and images** (📎, or paste a screenshot, or drop files on the
+  composer): 20 MB each, 10 per request, in a conversation with one AI. They
+  are kept next to the base (`data/aihub-pieces/<conversation>/`, gone with
+  the conversation), never in the working folder. A text file of 100 KB at
+  most goes into the request as text, so every AI reads it; an image is seen
+  by Codex (`localImage`) and the local AI (a vision model), and read by
+  Claude Code with its own tool (its folder is added with `--add-dir`); any
+  other file is given by its path. The page shows pictures; any other file is
+  downloaded, never opened as a page of the hub.
+- **Dictation** (🎤): the browser's speech recognition, in French, into the
+  composer (Chrome sends the sound to Google for that). Shown only where the
+  browser can, on HTTPS or this computer.
+- **Favorite requests** (★): each person keeps theirs on the server, and
+  inserts one where the cursor is in a click.
+
+### Export, consumption, update
+
+- **Export** (the conversation's "⋯" menu): Markdown, AI Hub's JSON (that
+  "Importer…" reads back, here or on another server), or a page to print or
+  save as PDF. Whoever sees a conversation may export it.
+- **Consumption** (Menu, for the owner and the admins): per person and per AI,
+  the requests, the AI runs (replies, subtasks, other AIs' opinions) and the
+  tokens, over a day, a week, a month or a year. Each run counts for the
+  author of the request it answers; imported conversations cost nothing.
+- **Update in one click**: on an install made from the `.zip`, the owner sees
+  "Nouvelle version … — mettre à jour" when a newer release is on GitHub
+  (checked at most every 6 hours). The click downloads it (only from AI Hub's
+  own releases), checks it (one folder `ai-hub-<version>/` of that very
+  version, nothing outside it), and a helper puts it in place once the server
+  is stopped: the old files are kept in `data/mise-a-jour/avant-<version>/`,
+  `data/` and `.venv/` are never touched, the requirements are installed, and
+  the server starts again. Anything failing puts the old version back and
+  starts it. Never while an AI works; never on a development copy (a git
+  folder), which git updates.
+
+### Regenerate, edit, compare, instructions
+
+- **Regenerate** (under the last reply): its request is sent again (its files
+  too) and the previous reply goes; "Avec une autre IA…" makes another AI the
+  conversation's for it (the owner of the conversation only), which starts
+  from the memory.
+- **Edit** (on a request): a new conversation, a branch, gets what came before
+  it, copied, then the corrected request; the original stays as it was. The
+  branch has no session: it starts from the memory. The copies cost nothing in
+  the consumption.
+- **Compare** ("Comparer avec…" beside "Envoyer"): another AI answers the same
+  request at the same time, read only (Claude Code in plan mode with its
+  reading tools, Codex in its read-only sandbox), from the conversation's
+  memory; both answers side by side. "Garder celle-ci" makes it the reply (the
+  former one stays beside), and the next request starts from the memory.
+- **Instructions** ("Consignes…" in a conversation's menu, and in a project's
+  window): a text the AI gets at each request, the project's first, then the
+  conversation's; for the subtasks of a plan and the compared answers too.
+
+### Voice, shortcuts, the server, reading without the PC
+
+- **Read aloud** (🔊 under a reply): the browser's voice, in French, without
+  the Markdown signs (code is announced, not read).
+- **Shortcuts**: Ctrl+K jumps to a conversation, Ctrl+Shift+N makes one,
+  Échap stops the AI at work (confirmed), "?" lists them.
+- **Server** (Menu, the owner): version and uptime, free disk, the base, the
+  last backup, the AIs, people and devices, attachments, and the last 50 lines
+  of the server's log (`serve --journal`). It only reads.
+- **Hors connexion** (Menu, a choice of each device, off by default): the
+  conversation list and the conversations opened are kept on the device, in a
+  cache of their own; when the PC does not answer, the app opens read only
+  with a banner, and comes back online by itself. The copy is dropped when the
+  choice is undone, and at the logout.
+
 ### From the phone (Tailscale)
 
 1. Install Tailscale on the PC and on the phone, with the same account. In
@@ -453,6 +524,12 @@ The last one runs the real Codex (GPT-5.6 Luna, a little of the ChatGPT quota).
 - `aihub/auth.py` — people, invitations, password hash, sessions, lockout
 - `aihub/access.py` — who sees and writes what: shares of conversations and projects
 - `aihub/accounts.py` — each person's own AI accounts: their folders, the sign-ins from the hub
+- `aihub/attachments.py` — files and images sent with a request
+- `aihub/compare.py` — another AI's answer to the same request (« Comparer avec… »)
+- `aihub/importer.py` — imports (ChatGPT, Claude, Claude Code, Codex, AI Hub) and the export
+- `aihub/usage.py` — who used how much (« Consommation »)
+- `aihub/updater.py` — the one-click update from GitHub's releases
+- `tools/build_release.py` — the one file to download (`dist/ai-hub-<version>.zip`)
 - `aihub/notify.py` — phone alerts: Web Push (encryption, VAPID signature, devices' choices) and ntfy
 - `aihub/backup.py` — daily backups, deletion from backups
 - `aihub/eveil.py` — holds the PC's sleep back while an agent works

@@ -15,7 +15,7 @@ import uuid
 from dataclasses import dataclass, field
 from pathlib import Path
 
-from .. import accounts, autonomous, db, obsidian, orchestrator, providers, schedule, store
+from .. import accounts, autonomous, compare, db, obsidian, orchestrator, providers, schedule, store
 from ..providers.claude_code import Decision, ProviderError
 from ..runner import Request
 from ..store import StoreError
@@ -94,6 +94,17 @@ class Job:
         self.lock = threading.Lock()
 
 
+class _Both:
+    """A request and the other AI answering it beside it: « Arrêter » stops both."""
+
+    def __init__(self, request, side):
+        self.request, self.side = request, side
+
+    def stop(self):
+        self.side.stop()
+        self.request.stop()
+
+
 def side_folder(db_path, kind):
     """A folder of one database's own, next to it: data/aihub-comptes for data/aihub.db.
     Two bases in one folder (the real one, a trial's) never share a person's accounts."""
@@ -126,16 +137,18 @@ class JobManager:
 
     # --- starting and stopping --------------------------------------------
 
-    def start(self, conversation_id, agent_id, prompt, *, wait_s=30, schedule_id=None, user=None):
+    def start(self, conversation_id, agent_id, prompt, *, wait_s=30, schedule_id=None, user=None, attachments=(),
+              compare_with=None):
         """Start a single reply; return its message id once it exists.
 
         Refusals (a request already running, no working folder...) are
         raised here as StoreError or ProviderError, before anything runs.
-        `schedule_id`: the scheduled task that launched it.
+        `schedule_id`: the scheduled task that launched it. `attachments`:
+        the files sent with it (rows of aihub/attachments.py, checked already).
         """
         def body(job, conn):
             job.schedule_id = schedule_id
-            return self._single(job, conn, agent_id, prompt)
+            return self._single(job, conn, agent_id, prompt, attachments, compare_with)
         return self._launch(conversation_id, "single", body, wait_s, user)
 
     def start_planning(self, conversation_id, prompt, *, wait_s=30, user=None):
@@ -440,10 +453,33 @@ class JobManager:
                 "duration_ms": result.duration_ms, "tokens_in": result.tokens_in,
                 "tokens_out": result.tokens_out, "fresh_start": getattr(result, "fresh_start", None)}
 
-    def _single(self, job, conn, agent_id, prompt):
-        request = Request(conn, job.conversation_id, agent_id, prompt, **self._reply_callbacks(job))
-        self._attach(job, request)
-        return self._result_event(job, request.run())
+    def _single(self, job, conn, agent_id, prompt, attachments=(), compare_with=None):
+        callbacks = self._reply_callbacks(job)
+        holder, side_thread = {}, []
+        side = None
+        if compare_with:
+            # Another AI answers the same request beside it, read only (aihub/compare.py).
+            cid = job.conversation_id
+            side = compare.SideAnswer(self.db_path, cid, compare_with, commands=self.command, env=self.env_of(job),
+                                      settings=self.settings(), files=attachments, timeout_s=self.request_timeout_s,
+                                      on_done=lambda vid: self.hub.publish(cid, {"type": "variant_done",
+                                                                                 "variant_id": vid}))
+            main_started = callbacks["on_start"]
+
+            def on_start(message_id):
+                main_started(message_id)
+                thread = threading.Thread(target=side.run, args=(holder["request"].request_id,),
+                                          name="aihub-comparaison", daemon=True)
+                side_thread.append(thread)
+                thread.start()
+            callbacks["on_start"] = on_start
+        request = holder["request"] = Request(conn, job.conversation_id, agent_id, prompt, attachments=attachments,
+                                              **callbacks)
+        self._attach(job, _Both(request, side) if side else request)
+        result = request.run()
+        for thread in side_thread:
+            thread.join()  # the job ends when both have answered
+        return self._result_event(job, result)
 
     def _planning(self, job, conn, prompt):
         plan_id, result = orchestrator.propose_plan(

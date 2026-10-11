@@ -12,6 +12,7 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import time
 from pathlib import Path
 
 SRC = Path(__file__).resolve().parents[1]
@@ -498,7 +499,8 @@ MUTATIONS = [
     ("acces: runner sans serveur", "aihub/runner.py",
      "            mcp_config=given.mcp_config,\n", "            mcp_config=None,\n"),
     ("acces: runner sans consigne", "aihub/runner.py",
-     "            instructions=project_access.instructions(self.conn, conversation, project=project),\n", ""),
+     "                                                 project_access.instructions(self.conn, conversation, project=project)),",
+     "                                                 None),"),
     ("acces: sous-taches sans serveur", "aihub/orchestrator.py",
      "mcp_config=given.mcp_config, auto_allow", "mcp_config=None, auto_allow"),
     ("cc: tout outil autorise sans demander", "aihub/providers/claude_code.py",
@@ -1100,6 +1102,124 @@ MUTATIONS = [
      "        if False:\n            # Claude Code and Codex use them outside the hub too"),
     ("roles: comptes de deux bases melanges", "aihub/web/jobs.py",
      "    return path.with_name(f\"{path.stem}-{kind}\")", "    return path.with_name(kind)"),
+    # Version 0.5: regenerate, branch, compare, instructions, dashboard.
+    ("v05: regenerer en lecture seule", "aihub/web/app.py",
+     "            conv = access.require(conn, user, cid, \"write\")\n            if conv[\"mode\"] != \"single\":\n                raise StoreError(\"on régénère",
+     "            conv = access.require(conn, user, cid, \"read\")\n            if conv[\"mode\"] != \"single\":\n                raise StoreError(\"on régénère"),
+    ("v05: IA changee par un invite", "aihub/web/app.py",
+     "                if access.conversation_role(conn, user, conv) != \"owner\":\n                    raise access.Forbidden(\"seul celui qui possède la conversation change son IA\")",
+     "                if False:\n                    raise access.Forbidden(\"seul celui qui possède la conversation change son IA\")"),
+    ("v05: fichiers perdus a la regeneration", "aihub/web/app.py",
+     "            conn.execute(\"UPDATE attachments SET message_id = NULL, user_id = ? WHERE message_id = ?\",\n"
+     "                         ((user or {}).get(\"id\"), request[\"id\"]))\n", ""),
+    ("v05: regenerer sans reponse a la fin", "aihub/store.py",
+     "    if request[\"role\"] != \"user\" or reply[\"role\"] != \"assistant\" or reply[\"status\"] in (\"pending\", \"running\"):",
+     "    if reply[\"status\"] in (\"pending\", \"running\"):"),
+    ("v05: branche par un invite", "aihub/web/app.py",
+     "        user = me()\n        access.require_creator(user)\n        with database() as conn:\n            message = store.get_message(conn, mid)",
+     "        user = me()\n        with database() as conn:\n            message = store.get_message(conn, mid)"),
+    ("v05: branche avec la demande corrigee", "aihub/store.py",
+     "\"duration_ms FROM messages WHERE conversation_id = ? AND id < ? AND content <> '' \"",
+     "\"duration_ms FROM messages WHERE conversation_id = ? AND id <= ? AND content <> '' \""),
+    ("v05: copies comptees deux fois", "aihub/store.py",
+     "            [(target_id, r[\"role\"], None, r[\"model\"],", "            [(target_id, r[\"role\"], r[\"provider\"], r[\"model\"],"),
+    ("v05: branche depuis une reponse", "aihub/web/app.py",
+     "            if message[\"role\"] != \"user\":\n                raise StoreError(\"on modifie une demande, pas une réponse\")\n", ""),
+    ("v05: comparaison qui ecrit", "aihub/compare.py",
+     "                    workdir=conversation[\"workdir\"], permission_mode=\"plan\",", "                    workdir=conversation[\"workdir\"], permission_mode=\"manual\","),
+    ("v05: garder sans oublier les sessions", "aihub/compare.py",
+     "        conn.execute(\"UPDATE messages SET session_id = NULL WHERE conversation_id = ?\", (variant[\"conversation_id\"],))\n", ""),
+    ("v05: comparer avec une IA non proposee", "aihub/web/app.py",
+     "            if body.compare_with not in offered_models(current()):", "            if False:"),
+    ("v05: garder en lecture seule", "aihub/web/app.py",
+     "            access.require(conn, me(), row[\"conversation_id\"], \"write\")\n            if jobs.running(row[\"conversation_id\"]):",
+     "            access.require(conn, me(), row[\"conversation_id\"], \"read\")\n            if jobs.running(row[\"conversation_id\"]):"),
+    ("v05: comparaison gratuite", "aihub/usage.py",
+     "    for query in (_REPLIES, _SUBTASKS, _OPINIONS, _VARIANTS):", "    for query in (_REPLIES, _SUBTASKS, _OPINIONS):"),
+    ("v05: consignes du projet oubliees", "aihub/store.py",
+     "            parts.append(f\"Pour tout le projet :\\n{project['instructions']}\")", "            pass"),
+    ("v05: consignes sans limite", "aihub/store.py",
+     "    if len(text) > INSTRUCTIONS_MAX:", "    if False:"),
+    ("v05: consignes pas envoyees", "aihub/runner.py",
+     "            instructions=store.join_instructions(store.person_instructions(self.conn, conversation),",
+     "            instructions=store.join_instructions(None,"),
+    ("v05: tableau de bord pour tous", "aihub/web/app.py",
+     "        access.require_owner(me())\n        data_dir = Path(db_path).resolve().parent", "        data_dir = Path(db_path).resolve().parent"),
+    ("v05: tout le journal", "aihub/web/app.py",
+     "                log = [line.rstrip(\"\\n\") for line in fh.readlines()[-50:]]",
+     "                log = [line.rstrip(\"\\n\") for line in fh.readlines()]"),
+    # Favorites, export, consumption, files and images, the one-click update.
+    ("extras: favori d'un autre retire", "aihub/store.py",
+     "    if conn.execute(\"DELETE FROM favorites WHERE id = ? AND user_id IS ?\", (favorite_id, user_id)).rowcount == 0:",
+     "    if conn.execute(\"DELETE FROM favorites WHERE id = ? OR ? IS NULL\", (favorite_id, user_id)).rowcount == 0:"),
+    ("extras: favoris sans limite", "aihub/store.py",
+     "    if count >= FAVORITES_MAX:", "    if False:"),
+    ("extras: export d'une conversation non vue", "aihub/web/app.py",
+     "            conv = dict(access.require(conn, me(), cid))\n            names = {u[\"id\"]: u[\"name\"] for u in auth.list_users(conn)}\n            messages = [dict(m) for m in store.list_messages(conn, cid)]\n        author",
+     "            conv = dict(store.get_conversation(conn, cid))\n            names = {u[\"id\"]: u[\"name\"] for u in auth.list_users(conn)}\n            messages = [dict(m) for m in store.list_messages(conn, cid)]\n        author"),
+    ("extras: page imprimee non echappee", "aihub/web/app.py",
+     "        page = (f'<!doctype html><html lang=\"fr\"><meta charset=\"utf-8\"><title>{html.escape(conv[\"title\"])}</title>'",
+     "        page = (f'<!doctype html><html lang=\"fr\"><meta charset=\"utf-8\"><title>{conv[\"title\"]}</title>'"),
+    ("extras: consommation pour tous", "aihub/web/app.py",
+     "        access.require_admin(me())\n        if days not in usage.PERIODS:", "        if days not in usage.PERIODS:"),
+    ("extras: import compte dans la consommation", "aihub/usage.py",
+     "WHERE a.role = 'assistant' AND a.provider IS NOT NULL AND a.created_at >= ?",
+     "WHERE a.role = 'assistant' AND a.created_at >= ?"),
+    ("extras: reponse comptee au mauvais auteur", "aihub/usage.py",
+     "SELECT (SELECT u.user_id FROM messages u WHERE u.conversation_id = a.conversation_id AND u.id < a.id\n        AND u.role = 'user' ORDER BY u.id DESC LIMIT 1) AS user_id,",
+     "SELECT NULL AS user_id,"),
+    ("pieces: fichier d'un autre envoye", "aihub/attachments.py",
+     "        row = conn.execute(\"SELECT * FROM attachments WHERE id = ? AND conversation_id = ? AND user_id IS ? \"\n"
+     "                           \"AND message_id IS NULL\", (aid, conversation_id, user_id)).fetchone()",
+     "        row = conn.execute(\"SELECT * FROM attachments WHERE id = ? AND conversation_id = ? AND ? IS ? \"\n"
+     "                           \"AND message_id IS NULL\", (aid, conversation_id, user_id, user_id)).fetchone()"),
+    ("pieces: fichier envoye deux fois", "aihub/attachments.py",
+     "                           \"AND message_id IS NULL\", (aid, conversation_id, user_id)).fetchone()",
+     "                           \"AND 1\", (aid, conversation_id, user_id)).fetchone()"),
+    ("pieces: trop de fichiers", "aihub/attachments.py",
+     "    if len(ids) > MAX_PER_REQUEST:", "    if False:"),
+    ("pieces: tout affiche dans la page", "aihub/web/app.py",
+     "        disposition = \"inline\" if image else \"attachment\"", "        disposition = \"inline\""),
+    ("pieces: type du fichier cru", "aihub/web/app.py",
+     "        return FileResponse(row[\"stored\"], media_type=row[\"mime\"] if image else \"application/octet-stream\",",
+     "        return FileResponse(row[\"stored\"], media_type=row[\"mime\"],"),
+    ("pieces: fichiers gardes apres suppression", "aihub/web/app.py",
+     "        attachments.forget_conversation(pieces, cid)  # its files go with it\n", ""),
+    ("pieces: envoi en lecture seule", "aihub/web/app.py",
+     "        with database() as conn:\n            access.require(conn, user, cid, \"write\")\n        data = await request.body()",
+     "        with database() as conn:\n            access.require(conn, user, cid, \"read\")\n        data = await request.body()"),
+    ("pieces: fichier vu sans la conversation", "aihub/web/app.py",
+     "            row = attachments.get(conn, aid)\n            access.require(conn, me(), row[\"conversation_id\"])",
+     "            row = attachments.get(conn, aid)"),
+    ("pieces: Claude Code sans le dossier", "aihub/providers/__init__.py",
+     "        extra += [\"--add-dir\", folder]", "        pass"),
+    ("pieces: Codex sans l'image", "aihub/providers/codex.py",
+     "                        + [{\"type\": \"localImage\", \"path\": p} for p in self.images]}", "}"),
+    ("pieces: IA locale sans l'image", "aihub/providers/ollama.py",
+     "        if self.images:\n            messages[1][\"images\"]", "        if False:\n            messages[1][\"images\"]"),
+    ("pieces: texte du fichier absent", "aihub/attachments.py",
+     "        if text is not None:\n            fence", "        if False:\n            fence"),
+    ("pieces: dossier dans le nom", "aihub/attachments.py",
+     "    name = str(name or \"\").replace(\"\\\\\", \"/\").rsplit(\"/\", 1)[-1]", "    name = str(name or \"\")"),
+    ("maj: fichier qui ecrit hors de son dossier", "aihub/updater.py",
+     "            if not names or any(not n.startswith(folder) or \"..\" in Path(n).parts or Path(n).is_absolute()\n                                for n in names):",
+     "            if not names:"),
+    ("maj: version annoncee non verifiee", "aihub/updater.py",
+     "    if not found or found.group(1) != version:", "    if not found:"),
+    ("maj: telechargement d'ailleurs", "aihub/updater.py",
+     "    if not url.startswith(f\"https://github.com/{REPO}/releases/download/\"):", "    if False:"),
+    ("maj: copie git mise a jour", "aihub/updater.py",
+     "    reason = why_not_here(root)\n    if reason:\n        raise UpdateError(reason)", "    reason = why_not_here(root)"),
+    ("maj: pendant qu'une IA travaille", "aihub/web/app.py",
+     "        if jobs.busy():\n            raise Busy(\"une IA travaille", "        if False:\n            raise Busy(\"une IA travaille"),
+    ("maj: lancee par un invite", "aihub/web/app.py",
+     "        access.require_owner(me())\n        if jobs.busy():", "        if jobs.busy():"),
+    ("maj: echec sans retour en arriere", "aihub/updater.py",
+     "            if name in moved:\n                target = root / name", "            if False:\n                target = root / name"),
+    ("maj: serveur pas relance", "aihub/updater.py",
+     "        if restart:\n            popen(restart,", "        if False:\n            popen(restart,"),
+    ("maj: version egale prise pour plus recente", "aihub/updater.py",
+     "            if key is None or key <= (version_key(current) or (0,)):", "            if key is None or key < (version_key(current) or (0,)):"),
     # A device connected by its QR code, devices named.
     ("appareils: lien deja utilise accepte", "aihub/auth.py",
      "        if conn.execute(\"UPDATE device_links SET used_at = ? WHERE id = ? AND used_at IS NULL\",",
@@ -1194,6 +1314,9 @@ def _kill_tree(proc):
     proc.wait()
 
 
+TIMEOUT = 900
+
+
 def run_tests(root, timeout=300):
     proc = subprocess.Popen(
         [sys.executable, "-B", "-m", "unittest", "discover", "-s", str(root / "tests"), "-t", str(root)],
@@ -1244,7 +1367,10 @@ def _try(index, mutation, base, tmp):
             return f"[{name}] FRAGMENT TROUVE {n} FOIS : mutation non appliquee", True
         target.write_text(text.replace(old, new), encoding="utf-8")
         assert target.read_text(encoding="utf-8").count(new) >= 1
-        code, fallen, _ = run_tests(work)
+        code, fallen, summary = run_tests(work, TIMEOUT)
+        if summary == "TIMEOUT":
+            # Too slow is not caught: a suite that only ran out of time proves nothing.
+            return f"[{name}] INDECISE : suite arrêtée après {TIMEOUT} s", True
         if code == 0:
             return f"[{name}] SURVIT", True
         return f"[{name}] tuee par {len(fallen)} test(s) : {', '.join(fallen)}", False
@@ -1261,12 +1387,18 @@ def main():
                         help="mutations traitées en même temps, chacune dans sa copie (défaut : 1)")
     parser.add_argument("--only", action="append", default=[], metavar="MOT",
                         help="ne lancer que les mutations dont le nom contient ce mot (répétable)")
+    parser.add_argument("--timeout", type=int, default=900,
+                        help="secondes avant d'arrêter une suite bloquée (défaut : 900)")
     args = parser.parse_args()
+    global TIMEOUT
+    TIMEOUT = args.timeout
     mutations = [m for m in MUTATIONS if not args.only or any(w in m[0] for w in args.only)]
     with tempfile.TemporaryDirectory() as tmp:
         base = Path(tmp) / "orig"
         shutil.copytree(SRC, base, ignore=shutil.ignore_patterns("__pycache__", ".git", "tools", ".venv", "data"))
-        code, fallen, summary = run_tests(base)
+        started = time.monotonic()
+        code, fallen, summary = run_tests(base, TIMEOUT)
+        print(f"[reference] {time.monotonic() - started:.0f} s", flush=True)
         print(f"[reference] code={code} {summary}", flush=True)
         if code != 0:
             print("la reference ne passe pas : arret")

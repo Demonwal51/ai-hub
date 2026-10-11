@@ -1,1 +1,3 @@
 * text=auto eol=lf
+# Windows scripts: cmd needs CRLF line endings (labels and goto break with LF alone).
+*.bat text eol=crlf

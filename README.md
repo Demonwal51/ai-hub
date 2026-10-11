@@ -49,6 +49,20 @@ the conductor instead of asking for a plan: it resumes its own session,
 may read the project, changes nothing. While a plan is proposed, it sees the
 plan as the user left it, and "Adapter le plan" then applies what was said.
 
+## Quick install (Windows)
+
+1. Download `ai-hub-<version>.zip` from the Releases page (one file, a few
+   hundred KB: the app only, no tests nor tools) and extract it.
+2. Double-click `installer.bat`. It finds Python 3.12 or later (install it
+   from python.org first if needed), prepares its environment next to it
+   (`.venv`), installs the dependencies, puts an "AI Hub" shortcut on the
+   Desktop and opens the app: a new server shows "Créer le serveur".
+3. Afterwards, the shortcut (or `Lancer AI Hub.bat`) starts the server without
+   a window and opens the app. `AIHUB_PORT` changes the port (8770 by default).
+
+To build that file from the repository: `python -B tools/build_release.py`
+(it takes the last commit, never the working tree, and writes `dist/`).
+
 ## Requirements
 
 - Python 3.12 or later

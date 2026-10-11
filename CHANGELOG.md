@@ -1,5 +1,26 @@
 # Changelog
 
+## 0.3.0 beta — 2026-10-11
+
+- A new server is created from its page, on its own computer: the owner's
+  name, and two optional passwords (the owner's, the server's).
+- Accounts without a password; the server's own password, asked once per
+  device. Adding someone: the owner (or an admin) chooses the name and the
+  password, or makes a link and the person chooses.
+- Roles: invité (what is shared), membre (also their own conversations, in a
+  folder of theirs, within limits), admin (everything but the settings). The
+  role and the accesses (projects, conversations, read or write) are chosen
+  when the person is added.
+- A phone connected to an account by a QR code (once, 15 minutes), named
+  (« Téléphone de Lou »); devices named in « Appareils ».
+- First login: connect Claude and/or ChatGPT before going on; the owner
+  signs in the computer's accounts from the hub too.
+- Import: conversations of ChatGPT and Claude (their exports) and of Claude
+  Code and Codex (this computer's sessions), one by one or merged into one.
+- Interface: the conversation list first, the quota on one line, menus,
+  Entrée to send, drafts kept, « Copier », « nouveau » marks, long
+  conversations loaded in part.
+
 ## 0.2.0 beta — 2026-10-11
 
 Several people on one server, each with their own AI accounts.

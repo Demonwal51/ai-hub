@@ -43,6 +43,11 @@ class AccountError(Exception):
     """A sign-in that cannot be done; the message is for the person."""
 
 
+def _who(user):
+    """The key of a person's sign-ins (0: the owner of a server without accounts)."""
+    return (user or {}).get("id", 0)
+
+
 def own_accounts(user):
     """True when this person has accounts of their own (not the computer's)."""
     return bool(user) and not user.get("is_owner")
@@ -142,7 +147,8 @@ class Accounts:
         return providers.command_for(self.commands, provider)
 
     def env_for(self, user):
-        return run_env(self.env, user, self.root)
+        env = run_env(self.env, user, self.root)
+        return env if env is not None else claude_code.clean_env(os.environ)
 
     def status(self, user):
         """{provider: {"signed_in", "error", "login"}} for this person's own accounts."""
@@ -165,19 +171,19 @@ class Accounts:
 
     def login_of(self, user, provider):
         with self._lock:
-            login = self._logins.get((user["id"], provider))
+            login = self._logins.get((_who(user), provider))
         if login is not None and not login.done.is_set() and time.monotonic() - login.started > LOGIN_TIMEOUT_S:
             login.cancel()
             login.error = "connexion abandonnée : trop longue"
         return login
 
     def start_login(self, user, provider, wait_s=20):
-        """Start a sign-in; returns its view once the page (and code) are known."""
-        if not own_accounts(user):
-            raise AccountError("le propriétaire utilise les comptes de l'ordinateur")
+        """Start a sign-in; returns its view once the page (and code) are known.
+
+        The owner signs in the computer's own accounts (a new server, from its page)."""
         if provider not in PROVIDERS:
             raise AccountError(f"fournisseur inconnu : {provider!r}")
-        key = (user["id"], provider)
+        key = (_who(user), provider)
         with self._lock:
             old = self._logins.get(key)
             if old is not None and not old.done.is_set():
@@ -215,7 +221,8 @@ class Accounts:
 
     def logout(self, user, provider):
         if not own_accounts(user):
-            raise AccountError("le propriétaire utilise les comptes de l'ordinateur")
+            # Claude Code and Codex use them outside the hub too: that is done in a terminal.
+            raise AccountError("les comptes de l'ordinateur se déconnectent dans un terminal, pas d'ici")
         if provider not in PROVIDERS:
             raise AccountError(f"fournisseur inconnu : {provider!r}")
         self.cancel_login(user, provider)
@@ -295,7 +302,8 @@ class Accounts:
 
     def _codex_login(self, login, command, env):
         try:
-            server = login._server = codex._Server(command, self.workdir, env, Path(env["CODEX_HOME"]))
+            home = Path(env["CODEX_HOME"]) if env and env.get("CODEX_HOME") else codex.codex_home()
+            server = login._server = codex._Server(command, self.workdir, env, home)
         except ProviderError as exc:
             login.finish("error", str(exc))
             return

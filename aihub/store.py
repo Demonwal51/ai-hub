@@ -464,11 +464,26 @@ def get_message(conn, message_id):
     return _require(_one(conn, "SELECT * FROM messages WHERE id = ?", (message_id,)), "message")
 
 
-def list_messages(conn, conversation_id):
+def list_messages(conn, conversation_id, last=None):
+    """The messages in order; `last`: only the last ones (a long conversation shown in part)."""
     get_conversation(conn, conversation_id)
+    if last is not None:
+        return conn.execute(
+            "SELECT * FROM (SELECT * FROM messages WHERE conversation_id = ? ORDER BY id DESC LIMIT ?) ORDER BY id",
+            (conversation_id, int(last))).fetchall()
     return conn.execute(
         "SELECT * FROM messages WHERE conversation_id = ? ORDER BY id", (conversation_id,)
     ).fetchall()
+
+
+def has_replies(conn, conversation_id):
+    """True when an AI already answered there (successfully)."""
+    return conn.execute("SELECT 1 FROM messages WHERE conversation_id = ? AND role = 'assistant' AND status = 'ok' "
+                        "LIMIT 1", (conversation_id,)).fetchone() is not None
+
+
+def count_messages(conn, conversation_id):
+    return conn.execute("SELECT COUNT(*) FROM messages WHERE conversation_id = ?", (conversation_id,)).fetchone()[0]
 
 
 def mark_message_running(conn, message_id):

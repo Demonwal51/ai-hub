@@ -15,27 +15,51 @@
 </head>
 <body>
   <div class="login hidden" id="login">
+    <form class="login-card hidden" id="setup-form">
+      <img src="/static/icon-192.png" alt="" width="64" height="64">
+      <h1>Créer le serveur</h1>
+      <p class="login-text">Bienvenue ! Choisissez votre nom : vous serez le propriétaire de ce serveur.
+        Les deux mots de passe sont facultatifs.</p>
+      <input type="text" id="setup-name" autocomplete="username" maxlength="40" required
+             aria-label="Votre nom" placeholder="Votre nom (ex. Wal)">
+      <input type="password" id="setup-password" autocomplete="new-password" minlength="8"
+             aria-label="Votre mot de passe" placeholder="Votre mot de passe (facultatif)">
+      <input type="password" id="setup-server-password" autocomplete="off" minlength="8"
+             aria-label="Mot de passe du serveur" placeholder="Mot de passe du serveur (facultatif)">
+      <p class="quota-note">Le mot de passe du serveur est demandé une fois par appareil, à tous, avant le
+        nom. Sans aucun des deux, quiconque joint ce serveur (Tailscale ou réseau local) entre à votre nom.</p>
+      <p class="form-error" id="setup-error" role="alert"></p>
+      <button class="btn btn-primary btn-block" id="setup-submit">Créer le serveur</button>
+    </form>
+    <div class="login-card hidden" id="setup-elsewhere">
+      <img src="/static/icon-192.png" alt="" width="64" height="64">
+      <h1>AI Hub</h1>
+      <p class="login-text">Ce serveur n'est pas encore créé. Ouvrez l'appli sur l'ordinateur où il tourne
+        pour choisir votre nom et vos mots de passe.</p>
+    </div>
     <form class="login-card" id="login-form">
       <img src="/static/icon-192.png" alt="" width="64" height="64">
       <h1>AI Hub</h1>
-      <p class="login-text" id="login-text">Entrez votre mot de passe.</p>
+      <p class="login-text" id="login-text">Entrez votre nom.</p>
+      <input type="password" id="login-server-password" class="hidden" autocomplete="off"
+             aria-label="Mot de passe du serveur" placeholder="Mot de passe du serveur">
       <input type="text" id="login-name" autocomplete="username" maxlength="40" autocapitalize="none"
-             aria-label="Nom" placeholder="Nom (vide : le propriétaire)">
-      <input type="password" id="login-password" autocomplete="current-password" required
-             aria-label="Mot de passe" placeholder="Mot de passe">
+             aria-label="Nom" placeholder="Votre nom">
+      <input type="password" id="login-password" autocomplete="current-password"
+             aria-label="Mot de passe" placeholder="Mot de passe (si votre compte en a un)">
       <p class="form-error" id="login-error" role="alert"></p>
       <button class="btn btn-primary btn-block" id="login-submit">Se connecter</button>
     </form>
     <form class="login-card hidden" id="invite-form">
       <img src="/static/icon-192.png" alt="" width="64" height="64">
       <h1>AI Hub</h1>
-      <p class="login-text">Vous êtes invité·e. Choisissez votre nom et votre mot de passe : ils vous
-        serviront à vous reconnecter. Vos demandes utiliseront vos propres comptes d'IA.</p>
+      <p class="login-text">Vous êtes invité·e. Choisissez votre nom (et un mot de passe si vous voulez) :
+        ils vous serviront à vous reconnecter. Vos demandes utiliseront vos propres comptes d'IA.</p>
       <input type="text" id="invite-name" autocomplete="username" maxlength="40" required
              aria-label="Votre nom" placeholder="Votre nom">
-      <input type="password" id="invite-password" autocomplete="new-password" required minlength="12"
-             aria-label="Mot de passe" placeholder="Mot de passe (12 caractères au moins)">
-      <input type="password" id="invite-password2" autocomplete="new-password" required
+      <input type="password" id="invite-password" autocomplete="new-password" minlength="8"
+             aria-label="Mot de passe" placeholder="Mot de passe (facultatif, 8 caractères au moins)">
+      <input type="password" id="invite-password2" autocomplete="new-password"
              aria-label="Mot de passe, encore" placeholder="Le même, encore">
       <p class="form-error" id="invite-error" role="alert"></p>
       <button class="btn btn-primary btn-block" id="invite-submit">Créer mon accès</button>
@@ -52,29 +76,35 @@
         <button class="btn btn-primary" id="new-conversation">Nouvelle conversation</button>
         <button class="btn btn-ghost" id="new-project" title="Nouveau projet : il regroupe plusieurs conversations" aria-label="Nouveau projet">+ Projet</button>
       </div>
+      <button class="btn btn-ghost btn-block" id="import" type="button"
+              title="Importer des conversations de ChatGPT, de Claude, de Claude Code ou de Codex, séparées ou fusionnées">Importer…</button>
       <input type="search" id="search" class="search" placeholder="Chercher dans les conversations…"
              aria-label="Chercher dans les conversations" autocomplete="off">
       <nav class="conversation-list" id="conversation-list" aria-label="Conversations"></nav>
-      <section class="quota" id="quota" aria-label="Quota de Claude Code"></section>
-      <button class="btn btn-ghost btn-block" id="notifications" title="Alertes sur cet appareil">Notifications</button>
-      <button class="btn btn-ghost btn-block hidden" id="settings" title="Réglages de l'appli">Réglages</button>
-      <div class="hidden" id="account-box">
-        <p class="quota-note me-name" id="me-name"></p>
-        <div class="sidebar-actions">
-          <button class="btn btn-ghost hidden" id="people" title="Inviter des personnes, gérer leurs accès">Personnes</button>
-          <button class="btn btn-ghost hidden" id="my-accounts" title="Vos comptes Claude et ChatGPT : vos demandes les utilisent">Mes comptes IA</button>
-          <button class="btn btn-ghost" id="my-password" title="Changer votre mot de passe">Mot de passe</button>
+      <button class="quota-mini" id="quota-mini" type="button" title="Quota de vos IA : le détail">Quota…</button>
+      <div class="sidebar-foot">
+        <span class="me-name" id="me-name"></span>
+        <div class="menu-wrap">
+          <button class="btn btn-ghost" id="app-menu-button" type="button" aria-haspopup="menu" aria-expanded="false">Menu ▴</button>
+          <div class="menu menu-up" id="app-menu" role="menu">
+            <button class="menu-item" id="notifications" type="button" title="Alertes sur cet appareil">Notifications</button>
+            <button class="menu-item hidden" id="settings" type="button" title="Réglages de l'appli">Réglages</button>
+            <button class="menu-item hidden" id="people" type="button" title="Inviter des personnes, gérer leurs accès">Personnes</button>
+            <button class="menu-item hidden" id="my-accounts" type="button" title="Vos comptes Claude et ChatGPT : vos demandes les utilisent">Mes comptes IA</button>
+            <button class="menu-item hidden" id="my-password" type="button" title="Changer votre mot de passe">Mot de passe</button>
+            <button class="menu-item hidden" id="devices" type="button" title="Les appareils où une session est ouverte">Appareils</button>
+            <button class="menu-item hidden" id="logout" type="button">Se déconnecter</button>
+          </div>
         </div>
-      </div>
-      <div class="sidebar-actions hidden" id="account-actions">
-        <button class="btn btn-ghost" id="devices" title="Les appareils où une session est ouverte">Appareils</button>
-        <button class="btn btn-ghost" id="logout">Se déconnecter</button>
       </div>
     </aside>
 
     <main class="main" id="main">
       <div class="empty" id="empty">
-        <p>Choisissez une conversation, ou créez-en une.</p>
+        <img src="/static/icon-192.png" alt="" width="56" height="56">
+        <p>Choisissez une conversation à gauche, ou créez-en une.</p>
+        <button class="btn btn-primary" id="empty-new" type="button">Nouvelle conversation</button>
+        <p class="quota-note">Astuce : « Chercher dans les conversations » retrouve un passage par ses mots.</p>
       </div>
 
       <section class="conversation hidden" id="conversation">
@@ -85,29 +115,38 @@
             <div class="conv-meta" id="conv-meta"></div>
           </div>
           <div class="conv-actions">
-            <select id="conv-project" aria-label="Projet de la conversation" title="Projet de la conversation"></select>
-            <button class="btn btn-ghost hidden" id="conv-shared"
-                    title="Partagée : elle peut lire les autres conversations partagées du projet, et elles peuvent la lire">Partagée</button>
-            <select id="conv-assignment" class="hidden" aria-label="Choix des IA pour les sous-tâches"
-                    title="Comment les sous-tâches reçoivent leur IA">
-              <option value="auto">IA : automatique</option>
-              <option value="manual">IA : manuel</option>
-            </select>
             <select id="conv-model" aria-label="IA de la conversation"
                     title="Changer d'IA : la suivante repart de la mémoire de la conversation (résumé, derniers échanges)"></select>
-            <select id="conv-mode" aria-label="Mode de permission">
+            <select id="conv-mode" aria-label="Mode de permission" title="Ce que l'IA peut faire sans vous demander">
               <option value="manual">Manuel</option>
               <option value="plan">Plan</option>
               <option value="bypass">Sans permission</option>
             </select>
-            <button class="btn btn-ghost hidden" id="obsidian" title="Note de projet dans Obsidian">Obsidian</button>
-            <button class="btn btn-ghost" id="fresh"
-                    title="La prochaine demande ouvre une nouvelle session : un résumé et les passages utiles au lieu de tout l'historique">Repartir de zéro</button>
-            <button class="btn btn-ghost" id="tools" title="Les outils de l'IA dans cette conversation">Outils</button>
-            <button class="btn btn-ghost" id="schedules" title="Demandes qui se relancent seules (chaque jour, chaque heure…)">Planifier</button>
-            <button class="btn btn-ghost hidden" id="share" title="Partager avec des personnes de ce serveur">Partager</button>
-            <button class="btn btn-ghost" id="rename" title="Renommer">Renommer</button>
-            <button class="btn btn-danger-ghost" id="delete" title="Supprimer définitivement">Supprimer</button>
+            <div class="menu-wrap">
+              <button class="btn btn-ghost" id="conv-menu-button" type="button" aria-haspopup="menu" aria-expanded="false"
+                      aria-label="Autres actions" title="Autres actions">⋯</button>
+              <div class="menu" id="conv-menu" role="menu">
+                <label class="menu-field">Projet
+                  <select id="conv-project" aria-label="Projet de la conversation"></select>
+                </label>
+                <label class="menu-field hidden" id="conv-assignment-row">IA des sous-tâches
+                  <select id="conv-assignment" aria-label="Choix des IA pour les sous-tâches">
+                    <option value="auto">automatique</option>
+                    <option value="manual">manuel</option>
+                  </select>
+                </label>
+                <button class="menu-item hidden" id="conv-shared" type="button"
+                        title="Partagée : elle peut lire les autres conversations partagées du projet, et elles peuvent la lire">Partagée</button>
+                <button class="menu-item hidden" id="share" type="button" title="Partager avec des personnes de ce serveur">Partager</button>
+                <button class="menu-item" id="fresh" type="button"
+                        title="La prochaine demande ouvre une nouvelle session : un résumé et les passages utiles au lieu de tout l'historique">Repartir de zéro</button>
+                <button class="menu-item" id="tools" type="button" title="Les outils de l'IA dans cette conversation">Outils</button>
+                <button class="menu-item" id="schedules" type="button" title="Demandes qui se relancent seules (chaque jour, chaque heure…)">Planifier</button>
+                <button class="menu-item hidden" id="obsidian" type="button" title="Note de projet dans Obsidian">Obsidian</button>
+                <button class="menu-item" id="rename" type="button">Renommer</button>
+                <button class="menu-item menu-danger" id="delete" type="button" title="Supprimer définitivement">Supprimer</button>
+              </div>
+            </div>
           </div>
         </header>
 
@@ -153,7 +192,7 @@
       <label>Projet
         <select name="project_id" id="new-project-select"></select>
       </label>
-      <label>Dossier de travail (chemin complet)
+      <label id="new-workdir-row">Dossier de travail (chemin complet)
         <input name="workdir" id="new-workdir" placeholder="D:\projets\mon-projet">
       </label>
       <label>Fonctionnement
@@ -370,32 +409,126 @@
     </form>
   </dialog>
 
+  <dialog id="import-dialog" class="dialog dialog-wide">
+    <form method="dialog" id="import-form">
+      <h2>Importer des conversations</h2>
+      <div class="import-sources">
+        <label class="btn btn-ghost import-file">Fichier d'export ChatGPT ou Claude…
+          <input type="file" id="import-file" accept=".zip,.json,application/zip,application/json" hidden>
+        </label>
+        <button class="btn btn-ghost" type="button" id="import-local">Sessions de ce PC (Claude Code, Codex)</button>
+      </div>
+      <details class="quota-note">
+        <summary>Comment obtenir l'export ?</summary>
+        <p><strong>ChatGPT</strong> : chatgpt.com → Paramètres → Gestion des données → Exporter les données.
+          <strong>Claude</strong> : claude.ai → Paramètres → Confidentialité → Exporter les données.
+          Un lien arrive par mail : téléchargez le .zip et donnez-le ici tel quel. Rien d'autre que le texte
+          des demandes et des réponses n'est gardé ; aucun mot de passe ne passe par l'appli.</p>
+      </details>
+      <p class="quota-note" id="import-state"></p>
+      <div class="import-pick hidden" id="import-pick">
+        <div class="share-add">
+          <input type="search" id="import-filter" placeholder="Filtrer par titre…" autocomplete="off" aria-label="Filtrer">
+          <button class="btn btn-ghost btn-small" type="button" id="import-all">Tout cocher</button>
+        </div>
+        <div class="import-list" id="import-list"></div>
+        <label class="check"><input type="checkbox" id="import-merge"> Fusionner les conversations cochées en une seule nouvelle conversation</label>
+        <label class="hidden" id="import-title-row">Titre de la conversation fusionnée
+          <input id="import-title" maxlength="120" placeholder="ex. Tout sur le site">
+        </label>
+        <div class="field-row">
+          <label>Dossier de travail
+            <input id="import-workdir" placeholder="D:\projets\mon-projet">
+          </label>
+          <label>Projet
+            <select id="import-project"></select>
+          </label>
+          <label>IA pour continuer
+            <select id="import-model"></select>
+          </label>
+        </div>
+        <p class="quota-note">La suite de la conversation repart de sa mémoire (résumé, derniers échanges,
+          passages utiles), comme après un changement d'IA.</p>
+      </div>
+      <p class="form-error" id="import-error" role="alert"></p>
+      <div class="dialog-actions">
+        <button class="btn btn-ghost" type="button" id="import-cancel">Annuler</button>
+        <button class="btn btn-primary" type="submit" id="import-go" disabled>Importer</button>
+      </div>
+    </form>
+  </dialog>
+
+  <dialog id="quota-dialog" class="dialog">
+    <form method="dialog">
+      <h2>Quota de vos IA</h2>
+      <section class="quota" id="quota" aria-label="Quota des IA"></section>
+      <div class="dialog-actions">
+        <button class="btn btn-ghost" type="button" id="quota-close">Fermer</button>
+      </div>
+    </form>
+  </dialog>
+
   <dialog id="people-dialog" class="dialog dialog-wide">
     <form method="dialog">
       <h2>Personnes</h2>
-      <p class="quota-note">Chaque personne a son nom, son mot de passe et ses propres comptes d'IA : ses
-        demandes consomment son abonnement, pas le vôtre. Elle ne voit que ce que vous lui partagez.</p>
+      <p class="quota-note">Chaque personne a son nom, un mot de passe si elle veut, et ses propres comptes
+        d'IA : ses demandes consomment son abonnement, pas le vôtre. Rôles : <strong>Invité</strong> (ce
+        qu'on lui partage), <strong>Membre</strong> (en plus, ses propres conversations dans un dossier à lui),
+        <strong>Admin</strong> (voit et gère tout, sauf les réglages du serveur).</p>
       <div class="devices-list" id="people-list"></div>
-      <h3>Créer un compte</h3>
-      <p class="quota-note">Vous choisissez son nom et un mot de passe, et vous les lui donnez ; elle pourra
-        changer le mot de passe ensuite (« Mot de passe »).</p>
-      <div class="share-add">
-        <input type="text" id="new-user-name" maxlength="40" placeholder="Son nom" autocomplete="off">
-        <input type="password" id="new-user-password" minlength="12" placeholder="Mot de passe (12 caractères au moins)" autocomplete="new-password">
-        <button class="btn btn-primary" type="button" id="new-user-make">Créer</button>
+
+      <h3>Ajouter quelqu'un</h3>
+      <div class="field-row">
+        <label>Rôle
+          <select id="add-role">
+            <option value="invite">Invité</option>
+            <option value="membre">Membre</option>
+            <option value="admin">Admin</option>
+          </select>
+        </label>
+        <label>Qui choisit le nom et le mot de passe ?
+          <select id="add-how">
+            <option value="link">La personne (lien d'invitation)</option>
+            <option value="direct">Moi, maintenant</option>
+          </select>
+        </label>
       </div>
-      <h3>Ou inviter par un lien</h3>
-      <div class="share-add">
-        <input type="text" id="invite-note" maxlength="80" placeholder="Pour qui (facultatif, pour vous)">
-        <button class="btn btn-primary" type="button" id="invite-make">Créer un lien d'invitation</button>
+      <div class="field-row hidden" id="add-direct">
+        <label>Son nom
+          <input type="text" id="new-user-name" maxlength="40" autocomplete="off">
+        </label>
+        <label>Mot de passe (facultatif)
+          <input type="password" id="new-user-password" minlength="8" autocomplete="new-password">
+        </label>
+      </div>
+      <label id="add-note-row">Pour qui (facultatif, pour vous)
+        <input type="text" id="invite-note" maxlength="80">
+      </label>
+      <fieldset id="add-grants-box">
+        <legend>Accès (un invité ne voit que ceux-là ; un membre en plus de ses conversations)</legend>
+        <div class="grant-list" id="add-grants"></div>
+      </fieldset>
+      <div class="dialog-actions">
+        <button class="btn btn-primary" type="button" id="add-person">Créer le lien d'invitation</button>
       </div>
       <div class="invite-link hidden" id="invite-link-box">
-        <p class="quota-note">Envoyez ce lien à la personne (valable 7 jours, une seule fois). Elle doit
-          pouvoir joindre ce serveur (Tailscale ou réseau local).</p>
+        <p class="quota-note" id="invite-link-text">Envoyez ce lien à la personne (valable 7 jours, une seule
+          fois). Elle doit pouvoir joindre ce serveur (Tailscale ou réseau local).</p>
         <input type="text" id="invite-link" readonly aria-label="Lien d'invitation">
         <button class="btn btn-ghost btn-small" type="button" id="invite-copy">Copier</button>
       </div>
       <div class="devices-list" id="invitation-list"></div>
+
+      <fieldset class="hidden" id="server-password-box">
+        <legend>Mot de passe du serveur</legend>
+        <p class="quota-note" id="server-password-state"></p>
+        <div class="share-add">
+          <input type="password" id="server-password" minlength="8" autocomplete="new-password"
+                 placeholder="Nouveau mot de passe du serveur" aria-label="Mot de passe du serveur">
+          <button class="btn btn-ghost btn-small" type="button" id="server-password-save">Enregistrer</button>
+          <button class="btn btn-danger-ghost btn-small" type="button" id="server-password-remove">Retirer</button>
+        </div>
+      </fieldset>
       <p class="form-error" id="people-error" role="alert"></p>
       <div class="dialog-actions">
         <button class="btn btn-ghost" type="button" id="people-close">Fermer</button>
@@ -433,12 +566,12 @@
     <form method="dialog" id="password-form">
       <h2>Changer de mot de passe</h2>
       <label>Mot de passe actuel
-        <input type="password" id="password-current" autocomplete="current-password" required>
+        <input type="password" id="password-current" autocomplete="current-password" placeholder="vide si vous n'en avez pas">
       </label>
       <label>Nouveau mot de passe
-        <input type="password" id="password-new" autocomplete="new-password" required minlength="12">
+        <input type="password" id="password-new" autocomplete="new-password" minlength="8" placeholder="vide : plus de mot de passe">
       </label>
-      <p class="quota-note">Vos autres appareils seront déconnectés.</p>
+      <p class="quota-note">Vos autres appareils seront déconnectés. Sans mot de passe, votre nom suffit pour entrer (après celui du serveur, s'il y en a un).</p>
       <p class="form-error" id="password-error" role="alert"></p>
       <div class="dialog-actions">
         <button class="btn btn-ghost" type="button" id="password-cancel">Annuler</button>
@@ -455,8 +588,25 @@
       <div class="devices-list" id="devices-list"></div>
       <p class="form-error" id="devices-error" role="alert"></p>
       <div class="dialog-actions">
+        <button class="btn btn-ghost" type="button" id="devices-connect"
+                title="Un QR code à scanner avec le téléphone : il est connecté à votre compte">Connecter un autre appareil</button>
         <button class="btn btn-danger-ghost" type="button" id="devices-others">Déconnecter tous les autres</button>
         <button class="btn btn-ghost" type="button" id="devices-close">Fermer</button>
+      </div>
+    </form>
+  </dialog>
+
+  <dialog id="device-link-dialog" class="dialog">
+    <form method="dialog">
+      <h2 id="device-link-title">Connecter un appareil</h2>
+      <p class="quota-note">Scannez ce QR code avec l'appareil photo du téléphone : il s'ouvre connecté à ce
+        compte, sans nom ni mot de passe à taper. Une seule fois, pendant <span id="device-link-minutes">15</span>
+        minutes. Le téléphone doit pouvoir joindre ce serveur (Tailscale).</p>
+      <div class="device-qr" id="device-qr"></div>
+      <input type="text" id="device-link" readonly aria-label="Lien de connexion">
+      <div class="dialog-actions">
+        <button class="btn btn-ghost btn-small" type="button" id="device-link-copy">Copier le lien</button>
+        <button class="btn btn-ghost" type="button" id="device-link-close">Fermer</button>
       </div>
     </form>
   </dialog>

@@ -72,7 +72,7 @@ class InvitationTest(SharingTestCase):
     def test_a_guest_comes_by_invitation(self):
         guest, uid = self.guest()
         session = guest.get("/api/auth/session").json()
-        self.assertEqual(session["user"], {"name": "Lou", "is_owner": False})
+        self.assertEqual(session["user"], {"name": "Lou", "is_owner": False, "role": "invite"})
         self.assertEqual(guest.get("/api/conversations", headers=H).json()["conversations"], [])
         # Logged in with a name afterwards, from another device.
         other = self.client(("127.0.0.1", 50002))
@@ -101,7 +101,7 @@ class InvitationTest(SharingTestCase):
         self.assertEqual((r.json()["user"]["name"], r.json()["user"]["is_owner"]), ("Sam", False))
         sam = self.client(("127.0.0.1", 50005))
         self.assertEqual(sam.post("/api/auth/login", json={"name": "Sam", "password": "un bon mot de passe"}).status_code, 200)
-        self.assertEqual(sam.get("/api/auth/session").json()["user"], {"name": "Sam", "is_owner": False})
+        self.assertEqual(sam.get("/api/auth/session").json()["user"], {"name": "Sam", "is_owner": False, "role": "invite"})
         self.assertEqual(sam.post("/api/users", json={"name": "X", "password": "un bon mot de passe"}, headers=H).status_code,
                          403)  # the owner's alone
         again = self.owner.post("/api/users", json={"name": "SAM", "password": "un bon mot de passe"}, headers=H)
@@ -152,7 +152,8 @@ class InvitationTest(SharingTestCase):
                                    ("POST", "/api/projects", {"name": "p"}), ("GET", "/api/schedules", None)):
             with self.subTest(path=path):
                 r = guest.request(method, path, json=body, headers=H)
-                self.assertEqual(r.status_code, 403, r.text)
+                # Sharing a conversation they do not see: « introuvable », nothing said about it.
+                self.assertEqual(r.status_code, 404 if path == "/api/shares" else 403, r.text)
 
     def test_each_one_sees_only_their_own_devices(self):
         guest, uid = self.guest()
@@ -280,7 +281,8 @@ class PromptsTest(SharingTestCase):
 class MigrationTest(TempDirMixin, unittest.TestCase):
     def test_the_single_password_becomes_the_owners(self):
         path = str(self.make_tempdir() / "hub.db")
-        with mock.patch.object(db, "SCHEMA_VERSION", 14), mock.patch.object(db, "_SCHEMA_V15", []):
+        with mock.patch.object(db, "SCHEMA_VERSION", 14), mock.patch.object(db, "_SCHEMA_V15", []), \
+                mock.patch.object(db, "_SCHEMA_V16", []), mock.patch.object(db, "_SCHEMA_V17", []):
             db.connect(path).close()  # a base as version 14 left it
         raw = sqlite3.connect(path)
         raw.execute("PRAGMA user_version = 14")

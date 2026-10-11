@@ -3,3 +3,5 @@ uvicorn==0.54.0
 # Phone alerts: the encryption and signature of Web Push, and the HTTP requests.
 cryptography==50.0.2
 httpx==0.28.1
+# The QR code that connects a phone to an account (« Connecter un appareil »).
+segno==1.6.6

@@ -162,11 +162,16 @@ class Request:
             last = store.last_session(self.conn, self.conversation_id) if self.resume and package is None else None
             resume_id = last[1] if last and last[0] == self.provider else None
             switched = last is not None and resume_id is None
+            # Replies already there but no session at all: an imported conversation
+            # (aihub/importer.py). The AI starts from its memory, as after a change of AI.
+            # (A request alone, or a goal recorded before its first round, is not one.)
+            imported = (package is None and self.resume and last is None
+                        and store.has_replies(self.conn, self.conversation_id))
             if switched:
                 # Another AI answered last: its session is of no use to this one,
                 # which starts from the memory instead (« il va relire le RAG »).
                 package = self._automatic_package(conversation)
-            elif package is None and self.resume and providers.stateless(self.provider):
+            elif package is None and self.resume and (providers.stateless(self.provider) or imported):
                 # The local AI keeps no session: the memory goes with every request.
                 package = self._automatic_package(conversation)
                 if not package["summary"] and not package["exchanges"]:
@@ -181,6 +186,8 @@ class Request:
                 result.fresh_start = "automatic"
             elif switched:
                 result.fresh_start = "switched"
+            elif imported and package is not None and not providers.stateless(self.provider):
+                result.fresh_start = "imported"
             elif package is not None and not providers.stateless(self.provider):
                 result.fresh_start = "asked"
             if package is not None and result.status == "ok":

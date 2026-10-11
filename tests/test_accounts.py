@@ -38,6 +38,12 @@ class RunEnvTest(TempDirMixin, unittest.TestCase):
                                                       "CODEX_HOME": env["CODEX_HOME"]})
         self.assertEqual(accounts.account_vars(base), {})
 
+    def test_two_bases_in_one_folder_never_share_a_persons_accounts(self):
+        from aihub.web.jobs import side_folder
+        root = self.make_tempdir()
+        self.assertNotEqual(side_folder(root / "aihub.db", "comptes"), side_folder(root / "essai.db", "comptes"))
+        self.assertEqual(side_folder(root / "aihub.db", "comptes"), (root / "aihub-comptes").resolve())
+
     def test_a_deleted_person_s_folders_go(self):
         root = self.make_tempdir()
         accounts.run_env({}, GUEST, root)
@@ -188,12 +194,20 @@ class SignInTest(TempDirMixin, unittest.TestCase):
         self.assertEqual(self.hub.login_of(GUEST, "codex").view()["state"], "cancelled")
         self.assertIn("trop longue", login.view()["error"])
 
-    def test_the_owner_has_no_sign_in_here(self):
-        for call in (lambda: self.hub.start_login(OWNER, "codex"), lambda: self.hub.logout(OWNER, "codex")):
-            with self.assertRaisesRegex(accounts.AccountError, "comptes de l'ordinateur"):
-                call()
+    def test_the_owner_signs_in_the_computers_accounts_but_never_out(self):
+        view = self.hub.start_login(OWNER, "codex")
+        self.assertEqual((view["state"], view["code"]), ("waiting", "ABCD-1234"), view)
+        self.assertEqual(self.wait_owner("codex")["state"], "ok")
+        self.hub.login_of(OWNER, "codex")._server.proc.wait(10)  # the app server is gone
+        with self.assertRaisesRegex(accounts.AccountError, "terminal"):
+            self.hub.logout(OWNER, "codex")  # Claude Code and Codex use them outside the hub too
         with self.assertRaisesRegex(accounts.AccountError, "inconnu"):
             self.hub.start_login(GUEST, "ollama")
+
+    def wait_owner(self, provider, timeout=20):
+        login = self.hub.login_of(OWNER, provider)
+        self.assertTrue(login.done.wait(timeout), login.view())
+        return login.view()
 
 
 class WebAccountsTest(SharingTestCase):
@@ -223,9 +237,10 @@ class WebAccountsTest(SharingTestCase):
         self.assertIsNone(read_log(log)["config_dir"])
 
     def test_accounts_page_for_the_owner_and_deletion(self):
-        self.assertEqual(self.owner.get("/api/accounts", headers=H).json(), {"own": False})
-        r = self.owner.post("/api/accounts/claude_code/login", headers=H)
-        self.assertEqual(r.status_code, 400)
+        # The owner's are the computer's: signed in here (the fake says so), ready to work.
+        mine = self.owner.get("/api/accounts", headers=H).json()
+        self.assertEqual((mine["own"], mine["ready"], mine["providers"]["claude_code"]["signed_in"]), (False, True, True))
+        self.assertEqual(self.owner.post("/api/accounts/claude_code/logout", headers=H).status_code, 400)
         guest, uid = self.guest()
         guest.get("/api/accounts", headers=H)
         folder = self.app.state.jobs.accounts_root / str(uid)

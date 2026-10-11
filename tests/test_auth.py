@@ -44,7 +44,7 @@ class PasswordTests(unittest.TestCase):
                 self.assertFalse(auth.verify_password("n'importe quoi", stored))
 
     def test_too_short(self):
-        with self.assertRaisesRegex(auth.AuthError, "au moins 12"):
+        with self.assertRaisesRegex(auth.AuthError, "au moins 8"):
             auth.hash_password("court")
 
 
@@ -176,7 +176,7 @@ class SessionTests(StoreTestCase):
         conn = db.connect(":memory:")
         self.addCleanup(conn.close)
         self.assertFalse(auth.password_set(conn))
-        with self.assertRaisesRegex(auth.AuthError, "aucun mot de passe"):
+        with self.assertRaisesRegex(auth.AuthError, "pas encore créé"):
             self.auth.login(conn, "x", "c")
 
 
@@ -233,7 +233,8 @@ class WebAuthTests(TempDirMixin, unittest.TestCase):
             with self.subTest(path=path):
                 self.assertEqual(self.client.get(path).status_code, 200)
         self.assertEqual(self.client.get("/api/auth/session").json(),
-                         {"required": True, "logged_in": False, "user": None})
+                         {"required": True, "logged_in": False, "user": None, "setup": False, "setup_here": False,
+                          "server_password": False})
         # Checked again before reuse: an update reaches the browser and the phone at once.
         for path in ("/", "/static/app.js", "/static/style.css", "/sw.js", "/manifest.webmanifest"):
             self.assertEqual(self.client.get(path).headers["cache-control"], "no-cache", path)
@@ -252,7 +253,9 @@ class WebAuthTests(TempDirMixin, unittest.TestCase):
         self.assertNotIn("Secure", cookie)  # plain http on this computer
         self.assertEqual(self.client.get("/api/conversations").status_code, 200)
         self.assertEqual(self.client.get("/api/auth/session").json(),
-                         {"required": True, "logged_in": True, "user": {"name": "Propriétaire", "is_owner": True}})
+                         {"required": True, "logged_in": True,
+                          "user": {"name": "Propriétaire", "is_owner": True, "role": "admin"},
+                          "setup": False, "setup_here": False, "server_password": False})
 
     def test_cookie_is_secure_behind_https(self):
         r = self.login(**{"X-Forwarded-Proto": "https", "X-Forwarded-For": "100.64.0.2"})

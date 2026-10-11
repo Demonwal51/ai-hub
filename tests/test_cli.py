@@ -155,17 +155,18 @@ class PasswordAndServeTests(CliTestCase):
         self.assertIn("diffèrent", self.text())
         self.assertFalse(auth.password_set(self.conn()))
         self.assertEqual(self.set_password("court", "court"), 1)
-        self.assertIn("au moins 12", self.text())
+        self.assertIn("au moins 8", self.text())
         self.assertEqual(self.set_password(password, password), 0)
         stored = self.conn().execute("SELECT password_hash FROM users WHERE is_owner = 1").fetchone()[0]
         self.assertTrue(auth.verify_password(password, stored))
         self.assertNotIn(password, stored)
 
-    def test_serve_refuses_to_start_without_a_password(self):
+    def test_serve_a_new_server_waits_to_be_created(self):
         code, run = self.serve()
-        self.assertEqual(code, 2)
-        self.assertIn("python -m aihub mot-de-passe", self.text())
-        run.assert_not_called()
+        self.assertEqual(code, 0)
+        self.assertIn("Serveur pas encore créé", self.text())
+        run.assert_called_once()
+        self.assertIsNotNone(run.call_args[0][0].state.jobs)  # the app, with accounts (its setup page)
 
     def test_serve_with_a_password(self):
         password = secrets.token_urlsafe(18)

@@ -2,6 +2,10 @@
 
 // --- state -------------------------------------------------------------------
 
+const SHOWN_FIRST = 80;   // messages loaded when a conversation opens
+const SHOWN_MORE = 100;   // and each time « Afficher les précédents » is clicked
+const SHOWN_MAX = 5000;   // the server's limit for « last »
+
 const state = {
   conversations: [],
   projects: [],
@@ -16,7 +20,11 @@ const state = {
   subtaskLive: new Map(),    // subtask id -> text streamed so far
   refreshTimer: null,
   me: null,                  // { name, is_owner } on a server with accounts; null otherwise (the owner)
+  shown: SHOWN_FIRST,        // how many of the last messages are loaded (null: all)
 };
+
+// A mouse and a keyboard (not a phone): Entrée sends the request.
+const KEYBOARD = window.matchMedia("(pointer: fine)").matches;
 
 // The owner of the server (or a server without accounts): settings, people, sharing.
 const isOwner = () => !state.me || state.me.is_owner;
@@ -81,6 +89,67 @@ function el(tag, attrs = {}, ...children) {
   return node;
 }
 
+// One run at a time of a reload: a call made while one runs asks for a
+// single run more after it (the page then shows the latest state, once).
+function coalesced(load) {
+  let running = null;
+  let again = false;
+  const run = () => {
+    if (running) { again = true; return running; }
+    running = (async () => {
+      try {
+        do { again = false; await load(); } while (again);
+      } finally {
+        running = null;
+      }
+    })();
+    return running;
+  };
+  return run;
+}
+
+// The composer grows with what is typed, up to its CSS limit.
+function fitPrompt() {
+  const box = $("prompt");
+  box.style.height = "auto";
+  box.style.height = `${box.scrollHeight + 2}px`;
+}
+
+// What was being typed in a conversation, kept when going to another one (this device only).
+function saveDraft(id, text) {
+  if (id === null) return;
+  try {
+    if (text) sessionStorage.setItem(`aihub-draft-${id}`, text);
+    else sessionStorage.removeItem(`aihub-draft-${id}`);
+  } catch { /* private mode: no draft kept */ }
+}
+
+function loadDraft(id) {
+  try { return sessionStorage.getItem(`aihub-draft-${id}`) || ""; } catch { return ""; }
+}
+
+// The choices of the last new conversation, on this device only.
+function rememberedChoices() {
+  try { return JSON.parse(localStorage.getItem("aihub-new-choices") || "{}") || {}; } catch { return {}; }
+}
+
+function rememberChoices(choices) {
+  try {
+    const kept = Object.fromEntries(Object.entries({ ...rememberedChoices(), ...choices }).filter(([, v]) => v));
+    localStorage.setItem("aihub-new-choices", JSON.stringify(kept));
+  } catch { /* storage off: nothing remembered */ }
+}
+
+// Plain http (a phone on the local network): no clipboard API, the old way.
+function fallbackCopy(text) {
+  const area = el("textarea", { style: "position:fixed;opacity:0" });
+  area.value = text;
+  document.body.append(area);
+  area.select();
+  document.execCommand("copy");
+  area.remove();
+}
+
 function toast(message) {
   const node = el("div", { class: "toast", role: "status", text: message });
   document.body.append(node);
@@ -133,13 +202,17 @@ function setView(view) {
 
 // --- sidebar -------------------------------------------------------------------
 
-async function loadConversations() {
+const loadConversations = coalesced(async () => {
   const [{ conversations }, { projects }] = await Promise.all([
     api("GET", "/api/conversations"), api("GET", "/api/projects")]);
   state.conversations = conversations;
   state.projects = projects;
+  // A conversation never seen here starts as seen (no « nouveau » everywhere the first time);
+  // the open one is seen as it changes.
+  const seen = seenTimes();
+  markSeen(conversations.filter((c) => !seen[c.id] || c.id === state.currentId));
   renderList();
-}
+});
 
 // Folded projects, remembered on this device only.
 function foldedProjects() {
@@ -153,16 +226,53 @@ function toggleFolded(pid) {
   renderList();
 }
 
+// When each conversation was last seen on this device: what changed since is « nouveau ».
+function seenTimes() {
+  try { return JSON.parse(localStorage.getItem("aihub-seen") || "{}") || {}; } catch { return {}; }
+}
+
+function markSeen(conversations) {
+  const seen = seenTimes();
+  for (const c of conversations) seen[c.id] = c.updated_at;
+  try { localStorage.setItem("aihub-seen", JSON.stringify(seen)); } catch { /* storage off */ }
+}
+
+function unread(conv) {
+  if (conv.id === state.currentId || conv.running) return false;
+  const seen = seenTimes()[conv.id];
+  return Boolean(seen) && conv.updated_at > seen;
+}
+
 function conversationItem(conv) {
+  const fresh = unread(conv);
   return el("button", {
-    class: "conv-item" + (conv.id === state.currentId ? " active" : ""),
+    class: "conv-item" + (conv.id === state.currentId ? " active" : "") + (fresh ? " unread" : ""),
     onclick: () => openConversation(conv.id),
   },
-  el("span", { class: "conv-item-title", text: conv.title }),
+  el("span", { class: "conv-item-title" }, fresh ? el("span", { class: "dot", title: "nouveau depuis votre dernière visite" }) : null,
+    conv.title),
   el("span", { class: "conv-item-sub" },
     conv.running ? el("span", { class: "dot", title: "en cours" }) : null,
+    conv.running ? el("span", { class: "conv-running", text: "en cours · " }) : null,
     conv.project_id !== null && !conv.shared ? el("span", { class: "unshared", title: "Partage coupé", text: "privée · " }) : null,
-    `${conv.mode === "orchestration" ? "Orchestration · " : ""}${MODE_LABELS[conv.permission_mode] || conv.permission_mode} · ${formatDate(conv.updated_at)}`));
+    conv.my_role && conv.my_role !== "owner"
+      ? el("span", { class: "unshared", text: conv.my_role === "read" ? "lecture seule · " : "partagée · " }) : null,
+    `${conv.mode === "orchestration" ? "Orchestration · " : ""}${MODE_LABELS[conv.permission_mode] || conv.permission_mode} · `,
+    el("span", { title: formatDate(conv.updated_at), text: sinceDate(conv.updated_at) })));
+}
+
+// « à l'instant », « il y a 5 min », « hier »… then the date.
+function sinceDate(iso) {
+  const then = new Date(iso);
+  const minutes = Math.round((Date.now() - then) / 60000);
+  if (!Number.isFinite(minutes)) return "";
+  if (minutes < 1) return "à l'instant";
+  if (minutes < 60) return `il y a ${minutes} min`;
+  const today = new Date(); today.setHours(0, 0, 0, 0);
+  if (then >= today) return `aujourd'hui ${then.toLocaleTimeString("fr-FR", { hour: "2-digit", minute: "2-digit" })}`;
+  const yesterday = new Date(today); yesterday.setDate(today.getDate() - 1);
+  if (then >= yesterday) return "hier";
+  return formatDate(iso);
 }
 
 function renderList() {
@@ -225,9 +335,15 @@ async function loadStatus() {
       parts.push(local.running ? "IA locale prête" : "IA locale arrêtée");
       if (!local.running) hints.push(local.error || "IA locale : démarrez Ollama (ollama serve).");
     }
-    pill.textContent = parts.join(" · ");
+    // Short in the sidebar (one mark per AI), the whole sentence on hover.
+    const marks = [`Claude ${status.logged_in ? "✓" : "✗"}`];
+    if (gpt.offered !== false) marks.push(`Codex ${gpt.logged_in ? "✓" : "✗"}`);
+    if (local.offered !== false) marks.push(`Local ${local.running ? "✓" : "✗"}`);
+    pill.textContent = marks.join(" · ");
     pill.className = "pill " + (status.logged_in || gpt.logged_in || local.running ? "ok" : "bad");
-    pill.title = hints.join("\n");
+    pill.title = [parts.join(" · "), ...hints].join("\n");
+    // A guest's requests use their own accounts: this computer's state says nothing to them.
+    pill.classList.toggle("hidden", !isOwner());
   } catch (err) {
     pill.textContent = "Serveur injoignable";
     pill.className = "pill bad";
@@ -250,6 +366,62 @@ async function loadQuota(refresh = false) {
   box.replaceChildren();
   quotaSection(box, "Claude Code", data.claude_code, data.error, refreshButton);
   if (data.codex_connected) quotaSection(box, "Codex", data.codex, data.codex_error, refreshButton);
+  // The sidebar keeps one line: what is left of each AI's busiest window.
+  const mini = $("quota-mini");
+  const parts = [["Claude", data.claude_code, data.error]];
+  if (data.codex_connected) parts.push(["Codex", data.codex, data.codex_error]);
+  const threshold = state.options.quota_warning || 80;
+  let high = false;
+  mini.replaceChildren(el("span", { class: "quota-mini-label", text: "Quota" }), ...parts.map(([name, quota, error]) => {
+    const used = quotaUsed(quota);
+    if (used !== null && used >= threshold) high = true;
+    const text = error && used === null ? `${name} ?` : used === null ? `${name} —` : `${name} ${Math.max(0, 100 - used)} %`;
+    return el("span", { class: "quota-mini-part" + (used !== null && used >= threshold ? " high" : ""), text });
+  }));
+  mini.classList.toggle("high", high);
+  mini.title = "Ce qui reste de la fenêtre la plus entamée de chaque IA. Cliquez pour le détail.";
+}
+
+// The busiest window of a quota, in % used (null: unknown).
+function quotaUsed(quota) {
+  if (!quota) return null;
+  if (quota.status === "rejected") return 100;
+  const windows = Object.values(quota.windows || {});
+  if (!windows.length && typeof quota.utilization === "number") windows.push({ utilization: quota.utilization });
+  const used = windows.map((w) => w.utilization).filter((u) => typeof u === "number").map((u) => (u <= 1 ? u * 100 : u));
+  return used.length ? Math.round(Math.max(...used)) : null;
+}
+
+function setupQuotaDialog() {
+  const dialog = $("quota-dialog");
+  $("quota-mini").addEventListener("click", () => dialog.showModal());
+  $("quota-close").addEventListener("click", () => dialog.close());
+}
+
+// A button that opens a small menu under it (or above it: class menu-up).
+// A click on one of its items, outside it, or Échap closes it.
+function setupMenus() {
+  const close = (wrap) => {
+    wrap.classList.remove("open");
+    wrap.querySelector("[aria-haspopup]").setAttribute("aria-expanded", "false");
+  };
+  for (const wrap of document.querySelectorAll(".menu-wrap")) {
+    const button = wrap.querySelector("[aria-haspopup]");
+    button.addEventListener("click", (event) => {
+      event.stopPropagation();
+      const open = !wrap.classList.contains("open");
+      document.querySelectorAll(".menu-wrap.open").forEach(close);
+      if (open) { wrap.classList.add("open"); button.setAttribute("aria-expanded", "true"); }
+    });
+    wrap.querySelector(".menu").addEventListener("click", (event) => {
+      if (event.target.closest(".menu-item")) close(wrap);
+      else event.stopPropagation();  // a field of the menu (the project) keeps it open
+    });
+  }
+  document.addEventListener("click", () => document.querySelectorAll(".menu-wrap.open").forEach(close));
+  document.addEventListener("keydown", (event) => {
+    if (event.key === "Escape") document.querySelectorAll(".menu-wrap.open").forEach(close);
+  });
 }
 
 function quotaSection(box, who, quota, error, refreshButton) {
@@ -297,16 +469,25 @@ async function openConversation(id, messageId = null) {
   state.pending = new Map();
   state.live = null;
   state.subtaskLive = new Map();
+  state.shown = SHOWN_FIRST;
+  markSeen(state.conversations.filter((c) => c.id === id));
   renderList();
   setView("chat");
-  loadAgents();
   $("empty").classList.add("hidden");
   $("conversation").classList.remove("hidden");
+  $("prompt").value = loadDraft(id);
+  fitPrompt();
   await refreshConversation();
+  if (state.currentId !== id) return;  // another one was opened meanwhile
   connectEvents(id);
   if (messageId !== null) {
-    // From a search result: show the message found.
-    const node = $("messages").querySelector(`[data-id="${Number(messageId)}"]`);
+    // From a search result: show the message found, even far back.
+    const selector = `[data-id="${Number(messageId)}"]`;
+    if (!$("messages").querySelector(selector) && state.data && state.data.older) {
+      state.shown = null;
+      await refreshConversation();
+    }
+    const node = $("messages").querySelector(selector);
     if (node) {
       node.scrollIntoView({ block: "center" });
       node.classList.add("found");
@@ -315,11 +496,12 @@ async function openConversation(id, messageId = null) {
   }
 }
 
-async function refreshConversation() {
+const refreshConversation = coalesced(async () => {
   const id = state.currentId;
   if (id === null) return;
   try {
-    const data = await api("GET", `/api/conversations/${id}`);
+    // A long conversation comes in part: the last messages, more on request.
+    const data = await api("GET", `/api/conversations/${id}${state.shown ? `?last=${state.shown}` : ""}`);
     // The automatic assignment may have created agents the page does not know yet.
     if (data.conversation.mode === "orchestration") await loadAgents();
     if (id !== state.currentId) return;
@@ -336,7 +518,7 @@ async function refreshConversation() {
     }
     toast(err.message);
   }
-}
+});
 
 function closeConversation() {
   if (state.events) state.events.close();
@@ -363,7 +545,7 @@ function renderConversation() {
   $("conv-model").replaceChildren(...offered.map((m) => el("option", {
     value: m, text: (conv.mode === "orchestration" ? "Chef : " : "IA : ") + (MODEL_LABELS[m] || m),
     selected: m === current })));
-  $("conv-assignment").classList.toggle("hidden", conv.mode !== "orchestration");
+  $("conv-assignment-row").classList.toggle("hidden", conv.mode !== "orchestration");
   $("conv-assignment").value = conv.assignment_mode;
   $("schedules").classList.toggle("hidden", conv.mode === "orchestration");
   $("conv-project").replaceChildren(...projectOptions(conv.project_id, "Sans projet"));
@@ -381,13 +563,22 @@ function renderConversation() {
   const role = conv.my_role || "owner";
   for (const id of ["conv-project", "conv-assignment", "conv-model", "conv-mode", "obsidian", "tools",
     "schedules", "rename", "delete", "conv-shared"]) {
-    if (role !== "owner") $(id).classList.add("hidden");
+    if (role !== "owner") ($(id).closest(".menu-field") || $(id)).classList.add("hidden");
   }
   $("share").classList.toggle("hidden", role !== "owner" || !state.me);
   $("share").textContent = (state.data.shared_with || []).length ? `Partagée (${state.data.shared_with.length})` : "Partager";
   $("composer").classList.toggle("hidden", role === "read");
   $("readonly-note").classList.toggle("hidden", role !== "read");
   $("fresh").classList.toggle("hidden", role === "read");
+  if (!isAdmin()) {
+    // A member's own conversation: never without permission, nor the owner's vault.
+    $("obsidian").classList.add("hidden");
+    const bypass = $("conv-mode").querySelector('option[value="bypass"]');
+    if (bypass) bypass.disabled = true;
+  }
+  // Nothing left in the menu (reading only): no menu button.
+  $("conv-menu-button").classList.toggle("hidden",
+    ![...$("conv-menu").children].some((c) => !c.classList.contains("hidden")));
   renderFresh(conv);
   renderMessages(messages);
   renderRunning();
@@ -397,6 +588,21 @@ function renderMessages(messages) {
   const box = $("messages");
   const atBottom = box.scrollHeight - box.scrollTop - box.clientHeight < 80;
   box.replaceChildren();
+  const older = state.data.older || 0;
+  if (older > 0) {
+    box.append(el("button", { class: "btn btn-ghost btn-small older", type: "button",
+      text: `Afficher les messages précédents (${older} de plus)`,
+      onclick: async () => {
+        // Keep the reading place: what is added comes above it.
+        const before = box.scrollHeight - box.scrollTop;
+        const next = state.shown + SHOWN_MORE;
+        // The server gives at most SHOWN_MAX at a time: beyond, the whole conversation.
+        state.shown = next >= state.data.messages.length + older || next > SHOWN_MAX ? null : next;
+        await refreshConversation();
+        box.scrollTop = box.scrollHeight - before;
+      } }));
+  }
+  const firstShown = messages.length ? messages[0].id : null;
   if (!messages.length) {
     const orchestration = state.data.conversation.mode === "orchestration";
     box.append(el("p", { class: "list-empty", text: orchestration
@@ -438,10 +644,18 @@ function renderMessages(messages) {
     if (m.status === "error") node.append(el("div", { class: "msg-error", text: m.error || "erreur" }));
     if (m.status === "stopped") node.append(el("div", { class: "msg-stopped", text: m.error || "Requête arrêtée." }));
     if (!live) {
+      // Short under the reply; what it cost, on hover.
       const meta = [formatDuration(m.duration_ms)];
-      if (m.tokens_in !== null) meta.push(`${m.tokens_in} tokens envoyés, ${m.tokens_out} reçus`);
-      if (m.model && m.model !== "default") meta.push(m.model);
-      node.append(el("div", { class: "msg-meta", text: meta.filter(Boolean).join(" · ") }));
+      if (m.model && m.model !== "default") meta.push(MODEL_LABELS[m.model] || m.model);
+      const cost = m.tokens_in !== null ? `${m.tokens_in} tokens envoyés, ${m.tokens_out} reçus` : null;
+      node.append(el("div", { class: "msg-meta", title: cost },
+        el("span", { text: meta.filter(Boolean).join(" · ") }),
+        m.content ? el("button", { class: "msg-copy", type: "button", text: "Copier", title: "Copier la réponse",
+          onclick: async (e) => {
+            try { await navigator.clipboard.writeText(m.content); } catch { fallbackCopy(m.content); }
+            e.target.textContent = "Copié ✓";
+            setTimeout(() => { e.target.textContent = "Copier"; }, 1500);
+          } }) : null));
       if (state.data.conversation.obsidian_note && m.status === "ok") {
         // Conversations stay out of the note: a reply goes there only on this click.
         node.append(el("button", { class: "msg-note", type: "button", disabled: Boolean(m.noted_at),
@@ -467,7 +681,10 @@ function renderMessages(messages) {
     flushPlan();
   }
   flushPlan();
-  for (const plan of state.data.plans || []) if (!shown.has(plan.id)) box.append(planCard(plan));
+  for (const plan of state.data.plans || []) {
+    // A plan of a request not loaded yet stays with it, above.
+    if (!shown.has(plan.id) && !(older && firstShown !== null && plan.request_message_id < firstShown)) box.append(planCard(plan));
+  }
   for (const request of state.pending.values()) box.append(permissionCard(request));
   if (atBottom || state.live) box.scrollTop = box.scrollHeight;
 }
@@ -505,7 +722,9 @@ function setupToolsDialog() {
   $("tools").addEventListener("click", () => {
     const chosen = state.data.conversation.tools || [];
     $("tools-error").textContent = "";
-    $("tools-list").replaceChildren(...(state.data.tools_offered || []).map((t) => el("label", { class: "check tool-item" },
+    // A member: only the tools that touch nothing of the server's (the web, another AI's opinion).
+    const offered = (state.data.tools_offered || []).filter((t) => isAdmin() || ["web", "deleguer"].includes(t.name));
+    $("tools-list").replaceChildren(...offered.map((t) => el("label", { class: "check tool-item" },
       el("input", { type: "checkbox", value: t.name, checked: chosen.includes(t.name) }),
       el("span", {}, el("strong", { text: ` ${t.label}` }), t.read_only ? " · lecture seule" : "",
         t.description ? el("span", { class: "quota-note", text: ` — ${t.description}` }) : null))));
@@ -670,7 +889,8 @@ function updateComposer(running) {
   $("autonomous").disabled = running;
   send.disabled = running || Boolean(plan);
   send.title = plan ? "Un plan attend votre validation : lancez-le ou annulez-le d'abord" : "";
-  $("prompt").placeholder = !orchestration ? "Votre demande…"
+  $("prompt").placeholder = !orchestration
+    ? (KEYBOARD ? "Votre demande… (Entrée pour envoyer, Maj+Entrée pour aller à la ligne)" : "Votre demande…")
     : plan ? "Une question ou un changement pour le chef ? Ensuite, « Adapter le plan »."
       : "Votre demande, ou une question pour le chef…";
 }
@@ -713,6 +933,7 @@ function appendLive(chunk) {
 // --- live events -------------------------------------------------------------------
 
 function connectEvents(id) {
+  if (state.events) state.events.close();  // two quick openings: only the last one listens
   const source = new EventSource(`/api/conversations/${id}/events`);
   state.events = source;
   source.onmessage = (msg) => {
@@ -813,13 +1034,13 @@ function scheduleRefresh() {
 
 // --- orchestration plans ------------------------------------------------------------
 
-async function loadAgents() {
+const loadAgents = coalesced(async () => {
   try {
     state.agents = (await api("GET", "/api/agents")).agents;
   } catch (err) {
     toast(err.message);
   }
-}
+});
 
 async function planAction(method, path, body) {
   try {
@@ -1241,6 +1462,8 @@ function setupProjectActions() {
         citeDialog.close();
         box.focus();
         box.selectionStart = box.selectionEnd = at + text.length;
+        saveDraft(state.currentId, box.value);
+        fitPrompt();
       },
     }, el("span", { class: "conv-item-title", text: `#${c.id} ${c.title}` }),
        el("span", { class: "conv-item-sub", text: c.shared ? formatDate(c.updated_at) : "privée : illisible" }))));
@@ -1276,13 +1499,27 @@ function setupNewDialog() {
   openNewDialog = (projectId = null) => {
     form.reset();
     $("new-project-select").replaceChildren(...projectOptions(projectId, "Aucun projet"));
+    // The last choices of this device come back: the folder, the AI, the way of working.
+    const last = rememberedChoices();
+    for (const name of ["workdir", "model", "mode", "conductor_model", "assignment_mode"]) {
+      const field = form.elements[name];
+      if (!field || last[name] === undefined) continue;
+      if (field.tagName === "SELECT" && ![...field.options].some((o) => o.value === last[name])) continue;
+      if (name === "workdir" && projectId !== null) continue;  // the project's folder comes first
+      field.value = last[name];
+    }
     $("new-error").textContent = "";
     showWarning();
     showKind();
     showFolder();
+    // A member: a folder of theirs on the server, chosen by the hub; never without permission.
+    $("new-workdir-row").classList.toggle("hidden", !isAdmin());
+    const bypass = $("new-mode").querySelector('option[value="bypass"]');
+    if (bypass) bypass.disabled = !isAdmin();
     dialog.showModal();
   };
   $("new-conversation").addEventListener("click", () => openNewDialog(null));
+  $("empty-new").addEventListener("click", () => openNewDialog(null));
   form.addEventListener("submit", async (event) => {
     if (event.submitter && event.submitter.value === "cancel") return;
     event.preventDefault();
@@ -1304,6 +1541,9 @@ function setupNewDialog() {
     }
     try {
       const { conversation } = await api("POST", "/api/conversations", body);
+      // Never the mode without permission: that one is confirmed each time.
+      rememberChoices({ model: body.model, mode: body.mode, conductor_model: body.conductor_model,
+        assignment_mode: body.assignment_mode, ...(body.workdir && !body.project_id ? { workdir: body.workdir } : {}) });
       dialog.close();
       await loadConversations();
       await openConversation(conversation.id);
@@ -1374,9 +1614,11 @@ function setupActions() {
     const kind = (event.submitter || primaryButton()).value || "plan";
     $("send").disabled = true;
     $("discuss").disabled = true;
+    const sentTo = state.currentId;  // another conversation may be open when the answer comes
     try {
-      await api("POST", `/api/conversations/${state.currentId}/messages`, { prompt, kind });
-      $("prompt").value = "";
+      await api("POST", `/api/conversations/${sentTo}/messages`, { prompt, kind });
+      saveDraft(sentTo, "");
+      if (state.currentId === sentTo) { $("prompt").value = ""; fitPrompt(); }
       if ("Notification" in window && Notification.permission === "default") Notification.requestPermission();
       await refreshConversation();
     } catch (err) {
@@ -1384,9 +1626,17 @@ function setupActions() {
       renderRunning();
     }
   });
+  // With a keyboard: Entrée sends, Maj+Entrée goes to the line. On a phone, Entrée stays a new line.
   $("prompt").addEventListener("keydown", (event) => {
-    if (event.key === "Enter" && (event.ctrlKey || event.metaKey)) $("composer").requestSubmit(primaryButton());
+    if (event.key !== "Enter" || event.isComposing) return;
+    if (event.ctrlKey || event.metaKey || (KEYBOARD && !event.shiftKey)) {
+      event.preventDefault();
+      // The button Entrée stands for: « Discuter avec le chef » while a plan waits.
+      const button = primaryButton();
+      if (!button.disabled) $("composer").requestSubmit(button);
+    }
   });
+  $("prompt").addEventListener("input", () => { fitPrompt(); saveDraft(state.currentId, $("prompt").value); });
   $("stop").addEventListener("click", async () => {
     try {
       await api("POST", `/api/conversations/${state.currentId}/stop`);
@@ -1483,11 +1733,14 @@ let loginDone = null;  // resolves when the user is logged in
 
 function showLogin(text) {
   if (state.events) { state.events.close(); state.events = null; }
-  $("login-text").textContent = text || "Entrez votre mot de passe.";
+  const locked = Boolean(state.session && state.session.server_password);
+  $("login-text").textContent = text || (locked ? "Entrez le mot de passe du serveur, puis votre nom."
+    : "Entrez votre nom (et votre mot de passe si votre compte en a un).");
+  $("login-server-password").classList.toggle("hidden", !locked);
   $("login-error").textContent = "";
   $("login").classList.remove("hidden");
   $("login-password").value = "";
-  $("login-password").focus();
+  (locked ? $("login-server-password") : $("login-name")).focus();
 }
 
 function setupLogin() {
@@ -1496,7 +1749,9 @@ function setupLogin() {
     event.preventDefault();
     $("login-submit").disabled = true;
     try {
-      await api("POST", "/api/auth/login", { name: $("login-name").value.trim(), password: $("login-password").value });
+      await api("POST", "/api/auth/login", { name: $("login-name").value.trim(), password: $("login-password").value,
+        server_password: $("login-server-password").value });
+      $("login-server-password").value = "";
       $("login").classList.add("hidden");
       $("login-password").value = "";
       if (loginDone) { loginDone(); loginDone = null; }
@@ -1868,7 +2123,7 @@ function applyOptions() {
     selected: m === state.options.default_model })));
   $("new-conductor").replaceChildren(...models.map((m) => el("option", { value: m, text: MODEL_LABELS[m] || m,
     selected: m === state.options.default_conductor })));
-  $("settings").classList.toggle("hidden", !state.options.settings_editable);
+  $("settings").classList.toggle("hidden", !state.options.settings_editable || !isOwner());
   $("version").textContent = state.options.version ? `v${state.options.version}` : "";
 }
 
@@ -1882,6 +2137,31 @@ function deviceName(agent) {
   return `${browser} · ${os}`;
 }
 
+// The QR code (made by the server, an SVG of its own) that connects a device to an account.
+function showDeviceLink(made, title) {
+  $("device-link-title").textContent = title;
+  $("device-qr").innerHTML = made.qr_svg;  // the server's own SVG: no text of anyone in it but the link
+  $("device-link").value = made.link;
+  $("device-link-minutes").textContent = made.minutes;
+  $("device-link-dialog").showModal();
+}
+
+// Opened from a QR code (?appareil=…): this device is connected to that account.
+async function acceptDeviceLink() {
+  const link = new URLSearchParams(location.search).get("appareil");
+  if (!link) return;
+  history.replaceState(null, "", "/");
+  try {
+    const res = await fetch("/api/devices/accept", { method: "POST",
+      headers: { "X-AIHub": "1", "Content-Type": "application/json" }, body: JSON.stringify({ link }) });
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok) throw new Error(typeof data.detail === "string" ? data.detail : `erreur ${res.status}`);
+    toast("Cet appareil est connecté.");
+  } catch (err) {
+    toast(err.message);
+  }
+}
+
 function setupDevicesDialog() {
   const dialog = $("devices-dialog");
   const render = async () => {
@@ -1890,8 +2170,16 @@ function setupDevicesDialog() {
     try { data = await api("GET", "/api/sessions"); } catch (err) { $("devices-error").textContent = err.message; return; }
     $("devices-list").replaceChildren(...data.sessions.map((s) => el("div", { class: "device" + (s.current ? " current" : "") },
       el("div", { class: "device-text" },
-        el("span", { class: "conv-item-title", text: deviceName(s.user_agent) + (s.current ? " — cet appareil" : "") }),
-        el("span", { class: "conv-item-sub", text: `${s.client || "?"} · vu le ${formatDate(s.last_seen_at)} · ouverte le ${formatDate(s.created_at)}` })),
+        el("span", { class: "conv-item-title", text: (s.label || deviceName(s.user_agent)) + (s.current ? " — cet appareil" : "") }),
+        el("span", { class: "conv-item-sub", text: `${s.label ? deviceName(s.user_agent) + " · " : ""}${s.client || "?"} · vu le ${formatDate(s.last_seen_at)} · ouverte le ${formatDate(s.created_at)}` })),
+      el("button", { class: "btn btn-ghost btn-small", type: "button", text: "Renommer",
+        title: "Un nom pour le reconnaître : « Téléphone de Lou », « PC du salon »",
+        onclick: async () => {
+          const label = prompt("Nom de cet appareil :", s.label || deviceName(s.user_agent));
+          if (label === null) return;
+          try { await api("PATCH", `/api/sessions/${s.id}`, { label }); await render(); }
+          catch (err) { $("devices-error").textContent = err.message; }
+        } }),
       el("button", { class: "btn btn-danger-ghost btn-small", type: "button", text: "Déconnecter",
         onclick: async () => {
           try {
@@ -1904,6 +2192,17 @@ function setupDevicesDialog() {
   };
   $("devices").addEventListener("click", async () => { await render(); dialog.showModal(); });
   $("devices-close").addEventListener("click", () => dialog.close());
+  $("devices-connect").addEventListener("click", async () => {
+    const label = prompt("Nom de l'appareil à connecter :", `Téléphone de ${state.me ? state.me.name : "moi"}`);
+    if (label === null) return;
+    try { showDeviceLink(await api("POST", "/api/me/device-link", { label }), "Connecter un autre de vos appareils"); }
+    catch (err) { $("devices-error").textContent = err.message; }
+  });
+  $("device-link-close").addEventListener("click", () => $("device-link-dialog").close());
+  $("device-link-copy").addEventListener("click", async () => {
+    try { await navigator.clipboard.writeText($("device-link").value); } catch { fallbackCopy($("device-link").value); }
+    toast("Lien copié.");
+  });
   $("devices-others").addEventListener("click", async () => {
     try {
       const r = await api("POST", "/api/sessions/close-others");
@@ -1915,6 +2214,7 @@ function setupDevicesDialog() {
 
 async function ensureLoggedIn() {
   let session;
+  await acceptDeviceLink();  // a QR code first: it may log this device in
   try {
     session = await api("GET", "/api/auth/session");
   } catch (err) {
@@ -1925,9 +2225,18 @@ async function ensureLoggedIn() {
     $("login-submit").disabled = true;
     await new Promise(() => {});  // nothing else can work
   }
-  $("account-actions").classList.toggle("hidden", !session.required);
+  state.session = session;
+  for (const id of ["devices", "logout"]) $(id).classList.toggle("hidden", !session.required);
   const invitation = new URLSearchParams(location.search).get("invitation");
-  if (!session.logged_in) {
+  if (session.setup) {
+    // A new server: created from its own computer, by the first one there.
+    $("login").classList.remove("hidden");
+    $("login-form").classList.add("hidden");
+    if (!session.setup_here) { $("setup-elsewhere").classList.remove("hidden"); await new Promise(() => {}); }
+    showSetup();
+    await new Promise((resolve) => { loginDone = resolve; });
+    session = await api("GET", "/api/auth/session");
+  } else if (!session.logged_in) {
     if (invitation) showInvitation(invitation);
     else showLogin();
     await new Promise((resolve) => { loginDone = resolve; });
@@ -1935,15 +2244,46 @@ async function ensureLoggedIn() {
   } else if (invitation) {
     history.replaceState(null, "", "/");  // already in: the link is of no use here
   }
+  state.session = session;
   state.me = session.user;
   if (state.me) {
-    $("account-box").classList.remove("hidden");
-    $("me-name").textContent = `Connecté : ${state.me.name}`;
-    $("people").classList.toggle("hidden", !state.me.is_owner);
-    $("my-accounts").classList.toggle("hidden", state.me.is_owner);
+    $("me-name").textContent = state.me.name;
+    $("me-name").title = `Connecté : ${state.me.name} (${ROLE_NAMES[state.me.is_owner ? "owner" : state.me.role] || ""})`;
+    $("people").classList.toggle("hidden", !isAdmin());
+    $("my-accounts").classList.remove("hidden");
+    $("my-password").classList.remove("hidden");
   }
-  // What is the owner's alone: hidden for the others (the server refuses it anyway).
-  for (const id of ["new-conversation", "new-project"]) $(id).classList.toggle("hidden", !isOwner());
+  // What a guest may not do: hidden (the server refuses it anyway).
+  for (const id of ["new-conversation", "new-project", "empty-new", "import"]) $(id).classList.toggle("hidden", !canCreate());
+  $("import-local").classList.toggle("hidden", !isOwner());  // the sessions of the owner's PC
+}
+
+const ROLE_NAMES = { owner: "propriétaire", admin: "admin", membre: "membre", invite: "invité" };
+const isAdmin = () => !state.me || state.me.is_owner || state.me.role === "admin";
+const canCreate = () => isAdmin() || state.me.role === "membre";
+
+function showSetup() {
+  $("setup-form").classList.remove("hidden");
+  $("setup-name").focus();
+  $("setup-form").onsubmit = async (event) => {
+    event.preventDefault();
+    $("setup-error").textContent = "";
+    const password = $("setup-password").value;
+    const serverPassword = $("setup-server-password").value;
+    if (!password && !serverPassword && !confirm("Sans aucun mot de passe, quiconque joint ce serveur entre à votre nom. Continuer ?")) return;
+    $("setup-submit").disabled = true;
+    try {
+      await api("POST", "/api/setup", { name: $("setup-name").value.trim(), password, server_password: serverPassword });
+      $("login").classList.add("hidden");
+      $("setup-form").classList.add("hidden");
+      $("login-form").classList.remove("hidden");
+      if (loginDone) { loginDone(); loginDone = null; }
+    } catch (err) {
+      $("setup-error").textContent = err.message;
+    } finally {
+      $("setup-submit").disabled = false;
+    }
+  };
 }
 
 function showInvitation(token) {
@@ -1967,7 +2307,7 @@ function showInvitation(token) {
       $("invite-form").classList.add("hidden");
       $("login-form").classList.remove("hidden");
       if (loginDone) { loginDone(); loginDone = null; }
-      toast("Bienvenue ! Connectez vos comptes d'IA dans « Mes comptes IA ».");
+      toast("Bienvenue !");
     } catch (err) {
       $("invite-error").textContent = err.message;
     } finally {
@@ -1976,82 +2316,264 @@ function showInvitation(token) {
   };
 }
 
+// --- import: ChatGPT, Claude, Claude Code, Codex (aihub/importer.py) ---------------------
+
+function setupImportDialog() {
+  const dialog = $("import-dialog");
+  let reading = null;        // { reading, conversations } from the server
+  const chosen = new Set();
+  const error = (text) => { $("import-error").textContent = text || ""; };
+  const count = () => {
+    $("import-go").disabled = chosen.size === 0;
+    $("import-go").textContent = chosen.size > 1 && $("import-merge").checked
+      ? `Fusionner ${chosen.size} conversations` : `Importer${chosen.size ? ` (${chosen.size})` : ""}`;
+    $("import-title-row").classList.toggle("hidden", !$("import-merge").checked);
+  };
+  const render = () => {
+    const words = $("import-filter").value.trim().toLowerCase();
+    const shown = reading.conversations.filter((c) => !words || c.title.toLowerCase().includes(words));
+    $("import-list").replaceChildren(...(shown.length ? shown.map((c) => {
+      const box = el("input", { type: "checkbox", checked: chosen.has(c.key) });
+      box.addEventListener("change", () => { if (box.checked) chosen.add(c.key); else chosen.delete(c.key); count(); });
+      return el("label", { class: "import-item" }, box,
+        el("span", { class: "device-text" },
+          el("span", { class: "conv-item-title", text: c.title }),
+          el("span", { class: "conv-item-sub", text: `${c.source_name} · ${formatDate(c.created_at)} · ${c.count} message(s)`
+            + (c.workdir ? ` · ${c.workdir}` : "") })));
+    }) : [el("p", { class: "list-empty", text: "Aucune conversation ne correspond." })]));
+    count();
+  };
+  const received = (data) => {
+    reading = data;
+    chosen.clear();
+    $("import-pick").classList.remove("hidden");
+    $("import-filter").value = "";
+    const sources = [...new Set(data.conversations.map((c) => c.source_name))].join(", ");
+    $("import-state").textContent = `${data.conversations.length} conversation(s) trouvée(s) (${sources || "aucune"}). Cochez celles à importer.`;
+    render();
+  };
+  const wait = (text) => { error(); $("import-state").textContent = text; $("import-pick").classList.add("hidden"); };
+  $("import").addEventListener("click", () => {
+    reading = null;
+    chosen.clear();
+    $("import-form").reset();
+    $("import-pick").classList.add("hidden");
+    $("import-state").textContent = "Choisissez d'où viennent les conversations.";
+    $("import-project").replaceChildren(...projectOptions(null, "Aucun projet"));
+    $("import-model").replaceChildren(...modelOptions(rememberedChoices().model || "default"));
+    $("import-workdir").value = rememberedChoices().workdir || "";
+    error();
+    count();
+    dialog.showModal();
+  });
+  $("import-cancel").addEventListener("click", () => dialog.close());
+  $("import-file").addEventListener("change", async () => {
+    const file = $("import-file").files[0];
+    if (!file) return;
+    wait(`Lecture de « ${file.name} » (${Math.ceil(file.size / 1024 / 1024)} Mo)…`);
+    try {
+      const res = await fetch("/api/import/file", { method: "POST", body: file,
+        headers: { "X-AIHub": "1", "Content-Type": "application/octet-stream" } });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(typeof data.detail === "string" ? data.detail : `erreur ${res.status}`);
+      received(data);
+    } catch (err) { $("import-state").textContent = ""; error(err.message); }
+    $("import-file").value = "";
+  });
+  $("import-local").addEventListener("click", async () => {
+    wait("Lecture des sessions de Claude Code et de Codex sur ce PC…");
+    try { received(await api("GET", "/api/import/local")); } catch (err) { $("import-state").textContent = ""; error(err.message); }
+  });
+  $("import-filter").addEventListener("input", () => reading && render());
+  $("import-all").addEventListener("click", () => {
+    const words = $("import-filter").value.trim().toLowerCase();
+    const shown = reading.conversations.filter((c) => !words || c.title.toLowerCase().includes(words));
+    const all = shown.every((c) => chosen.has(c.key));
+    for (const c of shown) { if (all) chosen.delete(c.key); else chosen.add(c.key); }
+    render();
+  });
+  $("import-merge").addEventListener("change", count);
+  $("import-form").addEventListener("submit", async (event) => {
+    event.preventDefault();
+    if (!reading || !chosen.size) return;
+    error();
+    $("import-go").disabled = true;
+    try {
+      const merge = $("import-merge").checked && chosen.size > 1;
+      const r = await api("POST", "/api/import", {
+        reading: reading.reading, keys: [...chosen], merge, title: merge ? $("import-title").value.trim() : null,
+        workdir: $("import-workdir").value.trim(),
+        project_id: $("import-project").value ? Number($("import-project").value) : null,
+        model: $("import-model").value });
+      dialog.close();
+      toast(merge ? "Conversations fusionnées en une seule." : `${r.conversations.length} conversation(s) importée(s).`);
+      await loadConversations();
+      await openConversation(r.conversations[0]);
+    } catch (err) { error(err.message); count(); }
+  });
+}
+
 // --- people, sharing, own AI accounts (version 0.2) -----------------------------------
 
 const ROLE_LABELS = { read: "Lecture", write: "Lecture et écriture" };
 
+// Accesses chosen for a new person: [{conversation_id | project_id, role}], with a select per target.
+function grantPicker(box) {
+  const rows = [];
+  const add = (label, target, sub) => {
+    const select = el("select", { "aria-label": `Accès à ${label}` },
+      el("option", { value: "", text: "Pas d'accès" }),
+      ...Object.entries(ROLE_LABELS).map(([v, t]) => el("option", { value: v, text: t })));
+    rows.push({ target, select });
+    return el("div", { class: "grant-row" }, el("span", { class: "device-text" },
+      el("span", { class: "conv-item-title", text: label }), sub ? el("span", { class: "conv-item-sub", text: sub }) : null), select);
+  };
+  const items = [];
+  for (const p of state.projects) {
+    const count = state.conversations.filter((c) => c.project_id === p.id).length;
+    items.push(add(p.name, { project_id: p.id }, `projet entier · ${count} conversation(s)`));
+  }
+  for (const c of state.conversations.filter((c) => c.project_id === null)) {
+    items.push(add(c.title, { conversation_id: c.id }, "conversation"));
+  }
+  box.replaceChildren(...(items.length ? items : [el("p", { class: "list-empty", text: "Aucun projet ni conversation à partager pour l'instant." })]));
+  return () => rows.filter((r) => r.select.value).map((r) => ({ ...r.target, role: r.select.value }));
+}
+
 function setupPeopleDialog() {
   const dialog = $("people-dialog");
-  const error = (err) => { $("people-error").textContent = err.message; };
+  const error = (err) => { $("people-error").textContent = err ? err.message : ""; };
+  let chosenGrants = () => [];
+  const roleSelect = (u) => {
+    const select = el("select", { "aria-label": `Rôle de ${u.name}` },
+      ...[["invite", "Invité"], ["membre", "Membre"], ["admin", "Admin"]].map(([v, t]) =>
+        el("option", { value: v, text: t, selected: u.role === v })));
+    select.addEventListener("change", async () => {
+      try { await api("PATCH", `/api/users/${u.id}`, { role: select.value }); await render(); } catch (err) { error(err); await render(); }
+    });
+    return select;
+  };
   const render = async () => {
-    $("people-error").textContent = "";
+    error();
     let data;
     try { data = await api("GET", "/api/users"); } catch (err) { error(err); return; }
-    $("people-list").replaceChildren(...data.users.map((u) => el("div", { class: "device" },
-      el("div", { class: "device-text" },
-        el("span", { class: "conv-item-title", text: u.name + (u.is_owner ? " — vous" : "") + (u.disabled ? " (désactivée)" : "") }),
-        el("span", { class: "conv-item-sub", text: u.is_owner ? "propriétaire du serveur (ou nom laissé vide à la connexion)" : `depuis le ${formatDate(u.created_at)}` })),
-      el("button", { class: "btn btn-ghost btn-small", type: "button", text: "Renommer",
-        title: "Le nom pour se connecter",
-        onclick: async () => {
-          const name = prompt(`Nouveau nom pour se connecter (au lieu de « ${u.name} ») :`, u.name);
-          if (!name || name.trim() === u.name) return;
-          try {
-            const r = await api("PATCH", `/api/users/${u.id}`, { name: name.trim() });
-            if (u.is_owner) { state.me.name = r.user.name; $("me-name").textContent = `Connecté : ${r.user.name}`; }
-            toast(`Nom changé : « ${r.user.name} ».`);
-            await render();
-          } catch (err) { error(err); }
-        } }),
-      u.is_owner ? null : el("button", { class: "btn btn-ghost btn-small", type: "button",
-        text: u.disabled ? "Réactiver" : "Désactiver",
-        title: u.disabled ? "Elle pourra se reconnecter" : "Elle est déconnectée tout de suite et ne peut plus entrer",
-        onclick: async () => { try { await api("PATCH", `/api/users/${u.id}`, { disabled: !u.disabled }); await render(); } catch (err) { error(err); } } }),
-      u.is_owner ? null : el("button", { class: "btn btn-danger-ghost btn-small", type: "button", text: "Supprimer",
-        onclick: async () => {
-          const ok = await confirmDialog({ title: `Supprimer ${u.name} ?`,
-            text: "Son accès, ses partages et ses comptes d'IA enregistrés ici sont effacés. Ses messages restent dans les conversations.",
-            okText: "Supprimer" });
-          if (!ok) return;
-          try { await api("DELETE", `/api/users/${u.id}`); await render(); } catch (err) { error(err); }
-        } }))));
+    $("people-list").replaceChildren(...data.users.map((u) => {
+      const sees = u.is_owner ? "propriétaire du serveur : voit et gère tout"
+        : u.role === "admin" ? "voit et gère tout"
+          : (u.grants.length ? `voit : ${u.grants.map((g) => `${g.title || "?"} (${ROLE_LABELS[g.role]})`).join(", ")}` : "rien de partagé")
+            + (u.role === "membre" ? " · et ses propres conversations" : "");
+      const devices = (u.devices || []).map((d) => d.label || deviceName(d.user_agent));
+      return el("div", { class: "device person" },
+        el("div", { class: "device-text" },
+          el("span", { class: "conv-item-title", text: u.name + (u.disabled ? " (désactivé·e)" : "") + (u.has_password ? "" : " · sans mot de passe") }),
+          el("span", { class: "conv-item-sub", text: sees }),
+          el("span", { class: "conv-item-sub", text: devices.length ? `appareils : ${devices.join(", ")}` : "aucun appareil connecté" })),
+        u.disabled ? null : el("button", { class: "btn btn-ghost btn-small", type: "button", text: "Connecter un appareil",
+          title: "Un QR code à scanner avec son téléphone : il est connecté à ce compte",
+          onclick: async () => {
+            const label = prompt("Nom de l'appareil :", `Téléphone de ${u.name}`);
+            if (label === null) return;
+            try { showDeviceLink(await api("POST", `/api/users/${u.id}/device-link`, { label }), `Connecter un appareil à ${u.name}`); }
+            catch (err) { error(err); }
+          } }),
+        u.is_owner ? el("span", { class: "chip", text: "Propriétaire" }) : roleSelect(u),
+        el("button", { class: "btn btn-ghost btn-small", type: "button", text: "Renommer", title: "Le nom pour se connecter",
+          onclick: async () => {
+            const name = prompt(`Nouveau nom pour se connecter (au lieu de « ${u.name} ») :`, u.name);
+            if (!name || name.trim() === u.name) return;
+            try {
+              const r = await api("PATCH", `/api/users/${u.id}`, { name: name.trim() });
+              if (state.me && u.name === state.me.name) { state.me.name = r.user.name; $("me-name").textContent = r.user.name; }
+              await render();
+            } catch (err) { error(err); }
+          } }),
+        u.is_owner ? null : el("button", { class: "btn btn-ghost btn-small", type: "button", text: u.disabled ? "Réactiver" : "Désactiver",
+          onclick: async () => { try { await api("PATCH", `/api/users/${u.id}`, { disabled: !u.disabled }); await render(); } catch (err) { error(err); } } }),
+        u.is_owner ? null : el("button", { class: "btn btn-danger-ghost btn-small", type: "button", text: "Supprimer",
+          onclick: async () => {
+            const ok = await confirmDialog({ title: `Supprimer ${u.name} ?`,
+              text: "Son accès, ses partages et ses comptes d'IA enregistrés ici sont effacés. Ses messages restent dans les conversations.",
+              okText: "Supprimer" });
+            if (!ok) return;
+            try { await api("DELETE", `/api/users/${u.id}`); await render(); } catch (err) { error(err); }
+          } }));
+    }));
     const waiting = data.invitations.filter((i) => !i.used_at);
     $("invitation-list").replaceChildren(...waiting.map((i) => el("div", { class: "device" },
       el("div", { class: "device-text" },
-        el("span", { class: "conv-item-title", text: `Invitation${i.note ? " · " + i.note : ""}` }),
+        el("span", { class: "conv-item-title", text: `Invitation${i.note ? " · " + i.note : ""} · ${ROLE_NAMES[i.role] || i.role}` }),
         el("span", { class: "conv-item-sub", text: `valable jusqu'au ${formatDate(i.expires_at)}` })),
       el("button", { class: "btn btn-danger-ghost btn-small", type: "button", text: "Annuler",
         onclick: async () => { try { await api("DELETE", `/api/invitations/${i.id}`); await render(); } catch (err) { error(err); } } }))));
+    // The server's own password: the owner's to set.
+    $("server-password-box").classList.toggle("hidden", !isOwner());
+    $("server-password-state").textContent = data.server_password
+      ? "Ce serveur a un mot de passe : il est demandé une fois par appareil, avant le nom."
+      : "Ce serveur n'a pas de mot de passe : le nom (et le mot de passe du compte, s'il y en a un) suffit.";
+    $("server-password-remove").classList.toggle("hidden", !data.server_password);
   };
+  const showHow = () => {
+    const direct = $("add-how").value === "direct";
+    $("add-direct").classList.toggle("hidden", !direct);
+    $("add-note-row").classList.toggle("hidden", direct);
+    $("add-person").textContent = direct ? "Créer le compte" : "Créer le lien d'invitation";
+    $("add-grants-box").classList.toggle("hidden", $("add-role").value === "admin");  // an admin sees all
+  };
+  $("add-how").addEventListener("change", showHow);
+  $("add-role").addEventListener("change", showHow);
   $("people").addEventListener("click", async () => {
     $("invite-link-box").classList.add("hidden");
+    chosenGrants = grantPicker($("add-grants"));
+    showHow();
     await render();
     dialog.showModal();
   });
   $("people-close").addEventListener("click", () => dialog.close());
-  $("new-user-make").addEventListener("click", async () => {
-    $("people-error").textContent = "";
+  $("add-person").addEventListener("click", async () => {
+    error();
+    const role = $("add-role").value;
+    const grants = role === "admin" ? [] : chosenGrants();
     try {
-      const r = await api("POST", "/api/users", { name: $("new-user-name").value.trim(), password: $("new-user-password").value });
-      $("new-user-name").value = "";
-      $("new-user-password").value = "";
-      toast(`Compte « ${r.user.name} » créé : donnez-lui ce nom et ce mot de passe.`);
-      await render();
-    } catch (err) { error(err); }
-  });
-  $("invite-make").addEventListener("click", async () => {
-    try {
-      const r = await api("POST", "/api/invitations", { note: $("invite-note").value.trim() || null });
-      $("invite-link").value = r.link;
+      if ($("add-how").value === "direct") {
+        const r = await api("POST", "/api/users", { name: $("new-user-name").value.trim(),
+          password: $("new-user-password").value, role, grants });
+        const pass = $("new-user-password").value ? "et le mot de passe choisi" : "(sans mot de passe)";
+        $("new-user-name").value = "";
+        $("new-user-password").value = "";
+        $("invite-link").value = location.origin + "/";
+        $("invite-link-text").textContent = `Compte « ${r.user.name} » créé. Donnez-lui cette adresse, son nom ${pass}`
+          + (state.session && state.session.server_password ? ", et le mot de passe du serveur." : ".");
+      } else {
+        const r = await api("POST", "/api/invitations", { note: $("invite-note").value.trim() || null, role, grants });
+        $("invite-note").value = "";
+        $("invite-link").value = r.link;
+        $("invite-link-text").textContent = "Envoyez ce lien à la personne (valable 7 jours, une seule fois) : elle "
+          + "choisira son nom et son mot de passe. Elle doit pouvoir joindre ce serveur (Tailscale ou réseau local).";
+      }
       $("invite-link-box").classList.remove("hidden");
-      $("invite-note").value = "";
+      chosenGrants = grantPicker($("add-grants"));
       await render();
     } catch (err) { error(err); }
   });
   $("invite-copy").addEventListener("click", async () => {
     $("invite-link").select();
-    try { await navigator.clipboard.writeText($("invite-link").value); toast("Lien copié."); }
-    catch { document.execCommand("copy"); toast("Lien copié."); }
+    try { await navigator.clipboard.writeText($("invite-link").value); } catch { fallbackCopy($("invite-link").value); }
+    toast("Copié.");
+  });
+  const setServerPassword = async (password) => {
+    try {
+      const r = await api("POST", "/api/server-password", { password });
+      state.session.server_password = r.server_password;
+      $("server-password").value = "";
+      toast(r.server_password ? "Mot de passe du serveur enregistré." : "Le serveur n'a plus de mot de passe.");
+      await render();
+    } catch (err) { error(err); }
+  };
+  $("server-password-save").addEventListener("click", () => setServerPassword($("server-password").value));
+  $("server-password-remove").addEventListener("click", async () => {
+    const ok = await confirmDialog({ title: "Retirer le mot de passe du serveur ?",
+      text: "Le nom (et le mot de passe du compte, s'il y en a un) suffira pour entrer.", okText: "Retirer" });
+    if (ok) setServerPassword("");
   });
 }
 
@@ -2067,7 +2589,8 @@ async function openShareDialog(target, title) {
     $("share-error").textContent = "";
     let people, shared;
     try {
-      people = (await api("GET", "/api/users")).users.filter((u) => !u.is_owner);
+      // The owner and the admins see everything already: nothing to share with them.
+      people = (await api("GET", "/api/people")).people;
       shared = target.project_id
         ? (await api("GET", `/api/projects/${target.project_id}`)).shared_with || []
         : (await api("GET", `/api/conversations/${target.conversation_id}`)).shared_with || [];
@@ -2109,14 +2632,27 @@ function setupShareDialog() {
   });
 }
 
+let openAccounts = async () => {};  // set by setupAccountsDialog
+
 function setupAccountsDialog() {
   const dialog = $("accounts-dialog");
   let timer = null;
+  let required = false;  // the first login: at least one AI before going on
   const error = (err) => { $("accounts-error").textContent = err ? err.message : ""; };
+  // Échap does not skip the first login's step.
+  dialog.addEventListener("cancel", (event) => { if (required) event.preventDefault(); });
   const render = async () => {
     let data;
     try { data = await api("GET", "/api/accounts"); } catch (err) { error(err); return; }
-    if (!data.own) { dialog.close(); return; }
+    dialog.querySelector("h2").textContent = required ? "Connectez une IA pour commencer" : "Mes comptes IA";
+    dialog.querySelector("p.quota-note").textContent = data.own
+      ? "Vos demandes utilisent vos comptes, jamais ceux du propriétaire du serveur. Connectez votre abonnement "
+        + "Claude et/ou ChatGPT : la page de connexion s'ouvre chez vous, votre mot de passe ne passe pas par ce serveur."
+      : "Les comptes de cet ordinateur : vos demandes (et celles de l'appli sans compte à elle) les utilisent. "
+        + "Connectez Claude et/ou ChatGPT ; se déconnecter se fait dans un terminal.";
+    $("accounts-close").textContent = required ? "Continuer" : "Fermer";
+    $("accounts-close").disabled = required && !data.ready;
+    $("accounts-close").title = required && !data.ready ? "Connectez au moins Claude ou ChatGPT" : "";
     let waiting = false;
     $("accounts-list").replaceChildren(...Object.entries(data.providers).map(([provider, a]) => {
       const login = a.login && a.login.state === "waiting" ? a.login : null;
@@ -2126,7 +2662,7 @@ function setupAccountsDialog() {
           el("span", { class: "conv-item-title", text: a.name }),
           el("span", { class: "conv-item-sub", text: a.error ? a.error : a.signed_in ? "connecté : vos demandes l'utilisent" : "pas connecté" })));
       if (a.signed_in) {
-        row.append(el("button", { class: "btn btn-ghost btn-small", type: "button", text: "Se déconnecter",
+        if (data.own) row.append(el("button", { class: "btn btn-ghost btn-small", type: "button", text: "Se déconnecter",
           onclick: async () => { try { await api("POST", `/api/accounts/${provider}/logout`); await render(); } catch (err) { error(err); } } }));
       } else if (!login) {
         row.append(el("button", { class: "btn btn-primary btn-small", type: "button", text: "Se connecter",
@@ -2173,8 +2709,28 @@ function setupAccountsDialog() {
     clearTimeout(timer);
     if (waiting && dialog.open) timer = setTimeout(render, 3000);
   };
-  $("my-accounts").addEventListener("click", async () => { error(null); dialog.showModal(); await render(); });
-  $("accounts-close").addEventListener("click", () => { clearTimeout(timer); dialog.close(); loadQuota(true); });
+  openAccounts = async (mustConnect = false) => {
+    required = mustConnect;
+    error(null);
+    dialog.showModal();
+    await render();
+  };
+  $("my-accounts").addEventListener("click", () => openAccounts(false));
+  $("accounts-close").addEventListener("click", () => {
+    clearTimeout(timer);
+    required = false;
+    dialog.close();
+    loadQuota(true);
+    loadStatus();
+  });
+}
+
+// The first login (and any later one) with no AI connected: connect one before going on.
+async function askForAnAI() {
+  try {
+    const data = await api("GET", "/api/accounts");
+    if (!data.ready) await openAccounts(true);
+  } catch { /* the page still works; « Mes comptes IA » stays in the menu */ }
 }
 
 function setupPasswordDialog() {
@@ -2195,6 +2751,8 @@ function setupPasswordDialog() {
 
 async function main() {
   setupLogin();
+  setupMenus();
+  setupQuotaDialog();
   setupDevicesDialog();
   setupSettingsDialog();
   setupPushDialog();
@@ -2208,6 +2766,7 @@ async function main() {
   }
   await ensureLoggedIn();
   setupPeopleDialog();
+  setupImportDialog();
   setupShareDialog();
   setupAccountsDialog();
   setupPasswordDialog();
@@ -2223,6 +2782,7 @@ async function main() {
   }
   applyOptions();
   await Promise.all([loadConversations(), loadStatus(), loadQuota(true), loadAgents()]);
+  askForAnAI();  // no AI connected yet (a first login): one before going on
   // Opened from an alert: straight to its conversation.
   const asked = Number(new URLSearchParams(location.search).get("conversation"));
   if (asked && state.conversations.some((c) => c.id === asked)) {
@@ -2231,6 +2791,11 @@ async function main() {
   }
   // Fresh figures every 5 minutes while the page is displayed (reading them costs no quota).
   setInterval(() => { if (document.visibilityState === "visible") loadQuota(true); }, 5 * 60 * 1000);
+  // The list follows the other conversations (« en cours », « nouveau ») while the page is displayed.
+  setInterval(() => { if (document.visibilityState === "visible") loadConversations().catch(() => {}); }, 20 * 1000);
+  document.addEventListener("visibilitychange", () => {
+    if (document.visibilityState === "visible") loadConversations().catch(() => {});
+  });
 }
 
 main();

@@ -10,7 +10,7 @@ import sqlite3
 from contextlib import contextmanager
 from datetime import datetime, timezone
 
-SCHEMA_VERSION = 15
+SCHEMA_VERSION = 17
 
 # One statement per string: triggers contain semicolons, so the schema
 # cannot be split on ";" and executescript() would commit mid-migration.
@@ -655,6 +655,46 @@ _SCHEMA_V15 = [
 ]
 
 
+_SCHEMA_V16 = [
+    # Roles (version 0.3): « invite » sees what is shared with them; « membre »
+    # also makes conversations of their own; « admin » sees and manages
+    # everything but the server's settings. The owner stays is_owner = 1.
+    "ALTER TABLE users ADD COLUMN role TEXT NOT NULL DEFAULT 'invite' CHECK (role IN ('invite', 'membre', 'admin'))",
+    # A password is optional now: an empty hash is « no password » (the name is enough,
+    # behind the server's password if there is one).
+    # The server's own password, optional: asked once per device, before the accounts'.
+    """
+    CREATE TABLE server_lock (
+        id            INTEGER PRIMARY KEY CHECK (id = 1),
+        password_hash TEXT NOT NULL,
+        changed_at    TEXT NOT NULL
+    )
+    """,
+    # An invitation says what the person will be and see once they come.
+    "ALTER TABLE invitations ADD COLUMN role TEXT NOT NULL DEFAULT 'invite' CHECK (role IN ('invite', 'membre', 'admin'))",
+    "ALTER TABLE invitations ADD COLUMN shares_json TEXT",
+]
+
+
+_SCHEMA_V17 = [
+    # A device's name (« Téléphone de Lou »), chosen by its person or when it was connected.
+    "ALTER TABLE sessions ADD COLUMN label TEXT",
+    # A one-time link (a QR code) that connects a device to an account without typing anything;
+    # only its SHA-256 is kept, valid a few minutes.
+    """
+    CREATE TABLE device_links (
+        id         INTEGER PRIMARY KEY,
+        token_hash TEXT NOT NULL UNIQUE,
+        user_id    INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+        label      TEXT,
+        created_at TEXT NOT NULL,
+        expires_at TEXT NOT NULL,
+        used_at    TEXT
+    )
+    """,
+]
+
+
 class SchemaError(Exception):
     """The database file cannot be used by this version of the code."""
 
@@ -755,6 +795,12 @@ def migrate(conn: sqlite3.Connection) -> None:
                 conn.execute(statement)
         if version < 15:
             for statement in _SCHEMA_V15:
+                conn.execute(statement)
+        if version < 16:
+            for statement in _SCHEMA_V16:
+                conn.execute(statement)
+        if version < 17:
+            for statement in _SCHEMA_V17:
                 conn.execute(statement)
         # PRAGMA does not accept bound parameters; SCHEMA_VERSION is an int constant.
         conn.execute(f"PRAGMA user_version = {SCHEMA_VERSION}")

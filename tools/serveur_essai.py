@@ -15,6 +15,7 @@ in data/essai-mot-de-passe.txt (made at the first run), and a lockout of
 import argparse
 import os
 import secrets
+import shutil
 import sys
 from pathlib import Path
 
@@ -32,9 +33,18 @@ def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--port", type=int, default=8766)
     parser.add_argument("--mot-de-passe", action="store_true", dest="password")
+    parser.add_argument("--neuf", action="store_true", dest="fresh",
+                        help="un serveur pas encore créé (data/essai-neuf.db, recréée à chaque lancement)")
     args = parser.parse_args()
     policy = None
-    db_path = ROOT / "data" / ("essai-mdp.db" if args.password else "essai.db")
+    db_path = ROOT / "data" / ("essai-neuf.db" if args.fresh else "essai-mdp.db" if args.password else "essai.db")
+    if args.fresh:
+        # Only this throwaway trial base, and its WAL files, by their exact names.
+        for name in ("essai-neuf.db", "essai-neuf.db-wal", "essai-neuf.db-shm"):
+            (ROOT / "data" / name).unlink(missing_ok=True)
+        for name in ("essai-neuf-comptes", "essai-neuf-espaces"):  # its people's trial folders
+            shutil.rmtree(ROOT / "data" / name, ignore_errors=True)
+        policy = auth.Policy(max_failures=3, lock_minutes=1)
     if args.password:
         secret_file = ROOT / "data" / "essai-mot-de-passe.txt"
         if not secret_file.exists():

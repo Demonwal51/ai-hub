@@ -372,6 +372,19 @@ class ConversationApiTests(WebTestCase):
                                                                  "confirm_bypass": True})
         self.assertEqual(r.json()["conversation"]["permission_mode"], "bypass")
 
+    def test_a_long_conversation_comes_in_part(self):
+        cid = self.new_conversation()
+        conn = db.connect(self.db_path)
+        ids = [store.add_user_message(conn, cid, f"message {i}") for i in range(5)]
+        conn.close()
+        data = self.client.get(f"/api/conversations/{cid}?last=2").json()
+        self.assertEqual(([m["id"] for m in data["messages"]], data["older"]), (ids[-2:], 3))
+        whole = self.client.get(f"/api/conversations/{cid}").json()
+        self.assertEqual(([m["id"] for m in whole["messages"]], whole["older"]), (ids, 0))
+        self.assertEqual(self.client.get(f"/api/conversations/{cid}?last=9").json()["older"], 0)
+        for bad in (0, 5001):
+            self.assertEqual(self.client.get(f"/api/conversations/{cid}?last={bad}").status_code, 400)
+
     def test_unknown_conversation(self):
         for method, path in (("get", "/api/conversations/99"), ("delete", "/api/conversations/99"),
                              ("get", "/api/conversations/99/events")):

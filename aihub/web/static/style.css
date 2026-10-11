@@ -306,3 +306,91 @@ select { padding: 6px 8px; border: 1px solid var(--border); border-radius: 8px; 
 .account-steps { flex-basis: 100%; display: flex; flex-direction: column; gap: 6px; font-size: 14px; }
 .account-steps p { margin: 0; }
 .account-code { font-family: ui-monospace, Consolas, monospace; font-size: 18px; letter-spacing: 2px; user-select: all; }
+
+/* --- sidebar: the list first, the quota on one line, the rest in a menu --- */
+.brand { gap: 8px; min-width: 0; }
+.brand-name { white-space: nowrap; }
+.brand .pill { overflow: hidden; text-overflow: ellipsis; min-width: 0; }
+.quota-mini { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; width: 100%; padding: 8px 10px; border: 1px solid var(--border); border-radius: 8px; background: none; cursor: pointer; font-size: 13px; text-align: left; }
+.quota-mini:hover { background: var(--panel-2); }
+.quota-mini-label { font-weight: 600; }
+.quota-mini-part { color: var(--muted); font-variant-numeric: tabular-nums; }
+.quota-mini-part.high, .quota-mini.high .quota-mini-label { color: var(--danger); }
+.dialog .quota { border-top: 0; padding-top: 0; }
+.sidebar-foot { display: flex; align-items: center; gap: 8px; justify-content: space-between; }
+.me-name { font-size: 13px; color: var(--muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; }
+
+/* --- menus --- */
+.menu-wrap { position: relative; flex-shrink: 0; }
+.menu { display: none; position: absolute; right: 0; top: calc(100% + 4px); z-index: 15; min-width: 220px; max-width: calc(100vw - 24px); padding: 6px; background: var(--panel); border: 1px solid var(--border); border-radius: 10px; box-shadow: var(--shadow); flex-direction: column; gap: 2px; }
+.menu-up { top: auto; bottom: calc(100% + 4px); }
+.menu-wrap.open .menu { display: flex; }
+.menu-item { display: block; width: 100%; text-align: left; background: none; border: 0; border-radius: 6px; padding: 8px 10px; cursor: pointer; white-space: nowrap; }
+.menu-item:hover, .menu-item:focus-visible { background: var(--panel-2); }
+.menu-item.on { color: var(--accent); }
+.menu-danger { color: var(--danger); }
+.menu-field { display: flex; align-items: center; justify-content: space-between; gap: 8px; padding: 4px 10px; font-size: 13px; color: var(--muted); }
+.menu-field select { max-width: 150px; }
+#conv-menu-button { font-weight: 700; padding: 6px 12px; }
+
+@media (max-width: 760px) {
+  /* One header line: back, title, the AI, the mode and the menu. */
+  .conv-header { flex-wrap: nowrap; }
+  .conv-title-wrap { flex: 1 1 auto; }
+  .conv-meta { display: none; }
+  .conv-actions { width: auto; flex-wrap: nowrap; }
+  .conv-actions > select { max-width: 112px; }
+  .menu-item { padding: 10px 12px; }
+}
+
+@media (max-width: 760px) {
+  /* Two lines: back, title, menu; then the AI and the mode, side by side. */
+  .conv-header { display: grid; grid-template-columns: auto 1fr 1fr auto; gap: 6px 8px; align-items: center; }
+  .conv-actions { display: contents; }
+  .back { grid-column: 1; grid-row: 1; }
+  .conv-title-wrap { grid-column: 2 / 4; grid-row: 1; }
+  .conv-actions > .menu-wrap { grid-column: 4; grid-row: 1; }
+  #conv-model { grid-column: 1 / 3; grid-row: 2; max-width: none; min-width: 0; }
+  #conv-mode { grid-column: 3 / 5; grid-row: 2; max-width: none; min-width: 0; }
+}
+
+/* --- messages: the reply's line, a copy button --- */
+.msg-meta { display: flex; align-items: center; gap: 10px; }
+.msg-copy { margin-left: auto; background: none; border: 0; padding: 0 2px; color: var(--muted); font-size: 12px; cursor: pointer; opacity: .7; }
+.msg-copy:hover, .msg-copy:focus-visible { color: var(--accent); opacity: 1; }
+.composer textarea { min-height: 44px; overflow-y: auto; }
+.empty { display: flex; flex-direction: column; align-items: center; gap: 12px; }
+.empty img { border-radius: 12px; opacity: .9; }
+.empty p { margin: 0; }
+.conv-running { color: var(--accent); font-weight: 600; }
+.older { align-self: center; }
+
+/* Keyboard focus, visible everywhere (not on a mouse click). */
+:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.conv-item:focus-visible, .menu-item:focus-visible { outline-offset: -2px; }
+.conv-item.unread .conv-item-title { font-weight: 700; }
+.conv-item-title .dot { margin-right: 6px; vertical-align: middle; }
+
+/* --- import --- */
+.import-sources { display: flex; gap: 8px; flex-wrap: wrap; }
+.import-file { cursor: pointer; }
+.import-list { display: flex; flex-direction: column; gap: 4px; max-height: 40vh; overflow-y: auto; border: 1px solid var(--border); border-radius: 8px; padding: 4px; }
+.dialog .import-item { flex-direction: row; align-items: center; gap: 10px; padding: 6px 8px; border-radius: 6px; cursor: pointer; }
+.import-item:hover { background: var(--panel-2); }
+.import-item .conv-item-sub { flex-wrap: wrap; }
+#import-pick { display: flex; flex-direction: column; gap: 10px; }
+#import-pick.hidden { display: none; }
+
+/* --- people: roles and accesses --- */
+.grant-list { display: flex; flex-direction: column; gap: 4px; max-height: 30vh; overflow-y: auto; }
+.grant-row { display: flex; align-items: center; gap: 10px; padding: 4px 6px; border-radius: 6px; }
+.grant-row:hover { background: var(--panel-2); }
+.grant-row select { flex-shrink: 0; }
+.person { flex-wrap: wrap; }
+.person .device-text { flex-basis: 220px; }
+.login-card .quota-note { text-align: center; margin: 0; }
+
+/* --- a device connected by its QR code --- */
+.device-qr { display: flex; justify-content: center; }
+.device-qr svg { width: min(280px, 70vw); height: auto; background: #fff; border-radius: 8px; }
+#device-link { width: 100%; font-family: ui-monospace, Consolas, monospace; font-size: 12px; }

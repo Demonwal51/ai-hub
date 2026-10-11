@@ -193,14 +193,13 @@ def cmd_serve(args, out, command):
             out(f"Sans mot de passe, l'appli n'écoute que sur cet ordinateur : --host {args.host} refusé.")
             return 2
         policy = None
-    elif not has_password:
-        out("Aucun mot de passe n'est défini. Définissez-le d'abord :")
-        out("  python -m aihub mot-de-passe")
-        out("(ou lancez avec --sans-mot-de-passe pour n'utiliser l'appli que sur cet ordinateur)")
-        return 2
     else:
         policy = auth.Policy(idle_days=settings.idle_days, max_failures=settings.max_failures,
                              lock_minutes=settings.lock_minutes)
+        if not has_password:
+            # A new server: it is created from the page, on this computer only.
+            out("Serveur pas encore créé : ouvrez l'adresse ci-dessous sur cet ordinateur pour choisir")
+            out("votre nom, votre mot de passe (facultatif) et celui du serveur (facultatif).")
     codex_cli = codex.find_cli(args.codex) if args.codex else None
     if codex_cli is None and command is None:  # a test's own Claude Code: no real Codex behind it
         try:

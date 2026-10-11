@@ -289,20 +289,28 @@ class Notifier:
 
     @staticmethod
     def _audience(conn, conversation_id):
-        """Who besides the owner sees this alert: the people the conversation is shared with."""
+        """Who besides the owner and the admins sees this alert: the people it is shared with,
+        and the member whose conversation (or project) it is."""
         if conversation_id is None:
             return set()
-        project = conn.execute("SELECT project_id FROM conversations WHERE id = ?", (conversation_id,)).fetchone()
+        project = conn.execute("SELECT project_id, owner_id FROM conversations WHERE id = ?",
+                               (conversation_id,)).fetchone()
+        if project is None:
+            return set()
         rows = conn.execute("SELECT user_id FROM shares WHERE conversation_id = ? OR "
-                            "(project_id IS NOT NULL AND project_id = ?)",
-                            (conversation_id, project["project_id"] if project else None)).fetchall()
-        return {r["user_id"] for r in rows}
+                            "(project_id IS NOT NULL AND project_id = ?) "
+                            "UNION SELECT owner_id FROM projects WHERE id = ? AND owner_id IS NOT NULL",
+                            (conversation_id, project["project_id"], project["project_id"])).fetchall()
+        found = {r["user_id"] for r in rows}
+        if project["owner_id"] is not None:
+            found.add(project["owner_id"])
+        return found
 
     def _web_push(self, conn, event, conversation_id, conversation_title, detail, test=False, session_id=None,
                   user_id=None):
         guests = self._audience(conn, conversation_id)
         rows = []
-        for r in conn.execute("SELECT p.*, s.user_id, u.is_owner FROM push_subscriptions p "
+        for r in conn.execute("SELECT p.*, s.user_id, u.is_owner, u.role FROM push_subscriptions p "
                               "LEFT JOIN sessions s ON s.id = p.session_id LEFT JOIN users u ON u.id = s.user_id"):
             if test:
                 if session_id is None or r["session_id"] == session_id:
@@ -316,7 +324,7 @@ class Notifier:
                 continue
             # The owner's devices (and those of a server without accounts) get everything;
             # a guest's, only the alerts of what is shared with them.
-            if r["user_id"] is None or r["is_owner"] or r["user_id"] in guests:
+            if r["user_id"] is None or r["is_owner"] or r["role"] == "admin" or r["user_id"] in guests:
                 rows.append(r)
         if not rows:
             return

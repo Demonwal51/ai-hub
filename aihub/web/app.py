@@ -5,16 +5,19 @@ aihub/auth.py. Without one (`local_only`), the server answers only requests
 made on this computer, never one relayed by a proxy such as Tailscale.
 """
 
+import asyncio
 import contextvars
 import json
 import os
 import queue
+import secrets
 import subprocess
 import threading
 import time
 from contextlib import asynccontextmanager, contextmanager
 from pathlib import Path
 
+import segno
 from fastapi import Depends, FastAPI, Request as HttpRequest
 from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
@@ -23,11 +26,11 @@ from pydantic import BaseModel
 from .. import VERSION_LABEL
 from .. import (auth, autonomous, backup, config, db, eveil, memory, notify, obsidian, providers, routing, runner,
                 schedule, semantic, store, tools)
-from .. import access, accounts
+from .. import access, accounts, importer
 from ..providers import claude_code, codex, ollama
 from ..providers.claude_code import ProviderError
 from ..store import BypassConfirmationRequired, Busy, NotFound, StoreError
-from .jobs import JobManager
+from .jobs import JobManager, side_folder
 
 STATIC = Path(__file__).with_name("static")
 _NOBODY = object()  # with accounts, a request that came without a session
@@ -155,28 +158,63 @@ class PermissionAnswer(BaseModel):
 
 
 class Login(BaseModel):
-    password: str
-    name: str | None = None   # empty: the owner (a server of one person types no name)
+    password: str = ""                # empty: an account without a password
+    name: str | None = None           # empty: the owner (a server of one person types no name)
+    server_password: str = ""         # when the server has one
+
+
+class Setup(BaseModel):
+    name: str
+    password: str = ""                # optional
+    server_password: str = ""         # optional
+
+
+class ServerPassword(BaseModel):
+    password: str = ""                # empty: the server goes without
+
+
+class Grant(BaseModel):
+    """One access given with an account: a conversation or a project, read or write."""
+    conversation_id: int | None = None
+    project_id: int | None = None
+    role: str = "read"
 
 
 class Accept(BaseModel):
     invitation: str
     name: str
-    password: str
+    password: str = ""                # optional
 
 
 class NewInvitation(BaseModel):
     note: str | None = None
+    role: str = "invite"              # what the person will be once they come
+    grants: list[Grant] = []          # and what they will see
 
 
 class UserChange(BaseModel):
     disabled: bool | None = None
     name: str | None = None
+    role: str | None = None
+
+
+class DeviceLink(BaseModel):
+    label: str | None = None          # « Téléphone de Lou »
+
+
+class DeviceAccept(BaseModel):
+    link: str
+
+
+class SessionChange(BaseModel):
+    label: str | None = None
 
 
 class NewUser(BaseModel):
     name: str
-    password: str
+    password: str = ""                # optional: the name is then enough
+    role: str = "invite"
+    grants: list[Grant] = []
 
 
 class Share(BaseModel):
@@ -189,6 +227,17 @@ class Share(BaseModel):
 class PasswordChange(BaseModel):
     current: str
     new: str
+
+
+class NewImport(BaseModel):
+    reading: str                  # what /api/import/file or /api/import/local gave
+    keys: list[str]               # the conversations chosen in it
+    merge: bool = False           # one new conversation for all, or one each
+    title: str | None = None      # merged: its title
+    workdir: str = ""             # empty: a local session's own folder, or the project's
+    project_id: int | None = None
+    model: str = "default"
+    permission_mode: str = "manual"
 
 
 class AccountCode(BaseModel):
@@ -212,14 +261,55 @@ class ConfigChange(BaseModel):
 
 # Reachable without a session: the page itself (it shows the login form),
 # what the phone needs to install it, and the login routes.
-PUBLIC_PATHS = {"/", "/manifest.webmanifest", "/sw.js", "/api/auth/session", "/api/auth/login",
+PUBLIC_PATHS = {"/", "/manifest.webmanifest", "/sw.js", "/api/auth/session", "/api/auth/login", "/api/setup",
+                "/api/devices/accept",
                 "/api/auth/logout", "/api/invitations/accept"}
 PUBLIC_PREFIXES = ("/static/",)
 # A custom header no other site can make a browser send (no CORS here):
 # with SameSite=Strict, it keeps another page from acting through the session.
 CSRF_HEADER = "x-aihub"
+# The tools a member may give a conversation of theirs: none touches the server's files or vault.
+MEMBER_TOOLS = (tools.WEB, tools.DELEGATE)
 _LOOPBACK = {"127.0.0.1", "::1", "localhost"}
 _PROXY_HEADERS = (b"x-forwarded-for", b"forwarded", b"x-real-ip", b"tailscale-user-login")
+
+
+_TAILSCALE_CLI = (Path(os.environ.get("ProgramFiles", r"C:\Program Files")) / "Tailscale" / "tailscale.exe",
+                  Path("/usr/bin/tailscale"), Path("/usr/local/bin/tailscale"))
+_tailscale_cache = {}
+
+
+def tailscale_name(port):
+    """The Tailscale address (« pc.tailnet.ts.net ») that `tailscale serve` relays to this port, or None;
+    read at most every 10 minutes. A link made on this computer (a QR code for the phone) must not
+    say 127.0.0.1, nor lead to another server of this computer (a trial's)."""
+    at, relays = _tailscale_cache.get("relays", (0, None))
+    if relays is None or time.monotonic() - at >= 600:
+        relays = {}
+        cli = next((str(p) for p in _TAILSCALE_CLI if p.is_file()), None)
+        if cli:
+            try:
+                out = subprocess.run([cli, "serve", "status", "--json"], capture_output=True, text=True,
+                                     timeout=10, encoding="utf-8", errors="replace",
+                                     creationflags=claude_code.NO_WINDOW)
+                relays = serve_relays(json.loads(out.stdout or "{}"))
+            except (OSError, ValueError, subprocess.SubprocessError):
+                relays = {}
+        _tailscale_cache["relays"] = (time.monotonic(), relays)
+    return relays.get(port)
+
+
+def serve_relays(status):
+    """{local port: the https address that relays to it}, from `tailscale serve status --json`."""
+    found = {}
+    for host, web in (status.get("Web") or {}).items():
+        name, _, public_port = host.rpartition(":")
+        for handler in (web.get("Handlers") or {}).values():
+            target = handler.get("Proxy") or ""
+            local = target.rsplit(":", 1)[-1].split("/")[0]
+            if local.isdigit() and name:
+                found[int(local)] = name if public_port == "443" else f"{name}:{public_port}"
+    return found
 
 
 def _headers(scope):
@@ -332,12 +422,15 @@ def create_app(db_path, *, command=None, env=None, allowed_roots=(), permission_
                request_timeout_s=None, sse_ping_s=15, obsidian_vault=None, auth_policy=None,
                local_only=False, backup_dir=None, backup_keep=14, clock=None, keep_awake=False,
                awake_setter=None, settings=None, config_path=None, overridden=(), codex_command=None,
-               push_post=None, run_scheduler=True, schedule_clock=None, ollama_url=None):
+               push_post=None, run_scheduler=True, schedule_clock=None, ollama_url=None, local_home=None):
     """Build the application. `command` overrides the Claude Code CLI (tests).
 
     `codex_command` is the Codex CLI. Left to None, Codex is searched for
     only when `command` is too: a test that gives its own Claude Code does
     not start the real Codex of the computer by surprise.
+
+    `local_home`: where the Claude Code and Codex sessions to import are
+    (the person's home folder by default; tests give their own).
 
     `push_post(url, content, headers, timeout) -> status` sends the phone
     alerts (Web Push, ntfy); httpx by default, tests give their own.
@@ -521,8 +614,14 @@ def create_app(db_path, *, command=None, env=None, allowed_roots=(), permission_
         if authority is None:
             return {"required": False, "logged_in": True, "user": None}
         user = check_session(request.cookies.get(auth.COOKIE))
+        with database() as conn:
+            created = auth.password_set(conn)
+            locked = auth.server_password_set(conn)
         return {"required": True, "logged_in": bool(user),
-                "user": {"name": user["name"], "is_owner": user["is_owner"]} if user else None}
+                "user": {"name": user["name"], "is_owner": user["is_owner"], "role": user["role"]} if user else None,
+                # A new server: it is created from this computer (the form), not from elsewhere.
+                "setup": not created, "setup_here": not created and from_this_computer(request),
+                "server_password": locked}
 
     @app.post("/api/auth/login")
     def login(body: Login, request: HttpRequest):
@@ -530,8 +629,38 @@ def create_app(db_path, *, command=None, env=None, allowed_roots=(), permission_
             return {"logged_in": True}
         with database() as conn:
             token = authority.login(conn, body.password, client_of(request.scope),
-                                    request.headers.get("user-agent"), name=body.name)
+                                    request.headers.get("user-agent"), name=body.name,
+                                    server_password=body.server_password)
         return with_session(JSONResponse({"logged_in": True}), token, request)
+
+    def from_this_computer(request):
+        """Straight from this computer (not relayed by Tailscale or anything else)."""
+        peer = (request.scope.get("client") or ("?", 0))[0]
+        relayed = any(k.lower() in _PROXY_HEADERS for k, _ in request.scope.get("headers", []))
+        return peer in _LOOPBACK and not relayed
+
+    @app.post("/api/setup")
+    def setup(body: Setup, request: HttpRequest):
+        """Create the server: its owner, and its own password if wanted. Once, from this computer only:
+        the first one to reach a new server must not become its owner from elsewhere."""
+        if authority is None:
+            raise StoreError("ce serveur tourne sans comptes (--sans-mot-de-passe)")
+        if not from_this_computer(request):
+            raise access.Forbidden("le serveur se crée depuis l'ordinateur où il tourne")
+        if request.headers.get(CSRF_HEADER) != "1":  # a public path: the guard does not check it here
+            raise access.Forbidden("requête refusée : en-tête X-AIHub manquant")
+        with database() as conn:
+            user = auth.setup(conn, body.name, body.password, body.server_password)
+            token = authority._open(conn, user["id"], client_of(request.scope), request.headers.get("user-agent"))
+        return with_session(JSONResponse({"logged_in": True}), token, request)
+
+    @app.post("/api/server-password")
+    def server_password(body: ServerPassword):
+        """The server's own password: set, changed, or (empty) removed. The owner's."""
+        access.require_owner(me())
+        with database() as conn:
+            auth.set_server_password(conn, body.password)
+            return {"server_password": auth.server_password_set(conn)}
 
     def with_session(response, token, request):
         secure = (request.url.scheme == "https"
@@ -554,28 +683,91 @@ def create_app(db_path, *, command=None, env=None, allowed_roots=(), permission_
 
     @app.get("/api/users")
     def users():
-        access.require_owner(me())
+        access.require_admin(me())
         if authority is None:
             return {"users": [], "invitations": [], "accounts": False}
         with database() as conn:
-            return {"users": auth.list_users(conn), "invitations": auth.list_invitations(conn), "accounts": True}
+            people = auth.list_users(conn)
+            for person in people:  # what each one sees (the owner and the admins: everything), and their devices
+                person["grants"] = access.grants_of(conn, person["id"])
+                person["devices"] = authority.devices_of(conn, person["id"])
+            return {"users": people, "invitations": auth.list_invitations(conn), "accounts": True,
+                    "server_password": auth.server_password_set(conn), "roles": auth.ROLE_NAMES}
+
+    @app.get("/api/people")
+    def people():
+        """Who one may share with (a member shares what is theirs): names and roles, nothing more."""
+        user = me()
+        access.require_creator(user)
+        if authority is None:
+            return {"people": []}
+        with database() as conn:
+            return {"people": [{"id": u["id"], "name": u["name"], "role": u["role"], "disabled": u["disabled"]}
+                               for u in auth.list_users(conn)
+                               if not u["is_owner"] and u["role"] != "admin" and u["id"] != (user or {}).get("id")]}
+
+    def grants(body_grants):
+        return [g.model_dump() for g in body_grants]
 
     @app.post("/api/invitations", status_code=201)
     def new_invitation(body: NewInvitation, request: HttpRequest):
-        access.require_owner(me())
+        access.require_admin(me())
         if authority is None:
-            raise StoreError("définissez d'abord le mot de passe du serveur : python -m aihub mot-de-passe")
+            raise StoreError("ce serveur tourne sans comptes (--sans-mot-de-passe)")
         with database() as conn:
-            token = auth.invite(conn, body.note, now=authority.now())
-        # The address the owner is using (Tailscale's, on the phone): the guest will use the same.
+            token = auth.invite(conn, body.note, now=authority.now(), role=body.role, shares=grants(body.grants))
+        return {"link": f"{public_base(request)}/?invitation={token}", "days": auth.INVITE_DAYS}
+
+    def public_base(request):
+        """The address the others reach this server at. The one this page uses (Tailscale's, on the
+        phone); on this computer itself (127.0.0.1), Tailscale's name when there is one."""
+        if from_this_computer(request):
+            name = tailscale_name(request.url.port)
+            if name:
+                return f"https://{name}"
         base = str(request.base_url).rstrip("/")
         if request.headers.get("x-forwarded-proto", "").lower() == "https":
             base = "https://" + base.split("://", 1)[-1]
-        return {"link": f"{base}/?invitation={token}", "days": auth.INVITE_DAYS}
+        return base
+
+    @app.post("/api/users/{uid}/device-link", status_code=201)
+    def new_device_link(uid: int, body: DeviceLink, request: HttpRequest):
+        """A QR code that connects a device to an account: for oneself, or (owner, admin) for anyone."""
+        user = me()
+        if authority is None:
+            raise StoreError("ce serveur tourne sans comptes (--sans-mot-de-passe)")
+        if not (access.sees_all(user) or (user and user["id"] == uid)):
+            raise access.Forbidden("on connecte un appareil à son propre compte (ou, admin, à celui de chacun)")
+        with database() as conn:
+            token = auth.device_link(conn, uid, body.label, now=authority.now())
+        link = f"{public_base(request)}/?appareil={token}"
+        qr = segno.make(link, error="m")
+        return {"link": link, "minutes": auth.DEVICE_LINK_MINUTES,
+                "qr_svg": qr.svg_inline(scale=5, border=2, dark="#111111", light="#ffffff")}
+
+    @app.post("/api/me/device-link", status_code=201)
+    def my_device_link(body: DeviceLink, request: HttpRequest):
+        """Connect another device of one's own (the phone, from the PC): its QR code."""
+        user = me()
+        if user is None:
+            raise StoreError("ce serveur tourne sans comptes (--sans-mot-de-passe)")
+        return new_device_link(user["id"], body, request)
+
+    @app.post("/api/devices/accept")
+    def accept_device(body: DeviceAccept, request: HttpRequest):
+        """The device that scanned the QR code: connected to that account, under the name given."""
+        if authority is None:
+            raise StoreError("ce serveur tourne sans comptes (--sans-mot-de-passe)")
+        if request.headers.get(CSRF_HEADER) != "1":  # a public path: the guard does not check it here
+            raise access.Forbidden("requête refusée : en-tête X-AIHub manquant")
+        with database() as conn:
+            token = authority.accept_device_link(conn, body.link, client_of(request.scope),
+                                                 request.headers.get("user-agent"))
+        return with_session(JSONResponse({"logged_in": True}), token, request)
 
     @app.delete("/api/invitations/{iid}")
     def revoke_invitation(iid: int):
-        access.require_owner(me())
+        access.require_admin(me())
         with database() as conn:
             if not auth.revoke_invitation(conn, iid):
                 raise NotFound("invitation introuvable ou déjà utilisée")
@@ -583,26 +775,28 @@ def create_app(db_path, *, command=None, env=None, allowed_roots=(), permission_
 
     @app.patch("/api/users/{uid}")
     def change_user(uid: int, body: UserChange):
-        access.require_owner(me())
+        access.require_admin(me())
         with database() as conn:
             if body.name is not None:
                 auth.rename_user(conn, uid, body.name)
+            if body.role is not None:
+                auth.set_role(conn, uid, body.role)
             if body.disabled is not None:
                 auth.set_disabled(conn, uid, body.disabled)
             return {"user": auth.get_user(conn, uid)}
 
     @app.post("/api/users", status_code=201)
     def create_user(body: NewUser):
-        """An account made by the owner, without a link: they pass on the name and password."""
-        access.require_owner(me())
+        """An account made without a link: the name and password (or none) are passed on to the person."""
+        access.require_admin(me())
         if authority is None:
-            raise StoreError("ce serveur n'a pas de comptes (pas de mot de passe)")
+            raise StoreError("ce serveur tourne sans comptes (--sans-mot-de-passe)")
         with database() as conn:
-            return {"user": auth.create_user(conn, body.name, body.password)}
+            return {"user": auth.create_user(conn, body.name, body.password, body.role, grants(body.grants))}
 
     @app.delete("/api/users/{uid}")
     def remove_user(uid: int):
-        access.require_owner(me())
+        access.require_admin(me())
         with database() as conn:
             auth.delete_user(conn, uid)
         people_accounts.forget(uid)  # their AI accounts' folders go with them
@@ -610,8 +804,8 @@ def create_app(db_path, *, command=None, env=None, allowed_roots=(), permission_
 
     @app.post("/api/shares")
     def add_share(body: Share):
-        access.require_owner(me())
         with database() as conn:
+            access.require_sharer(conn, me(), conversation_id=body.conversation_id, project_id=body.project_id)
             access.share(conn, user_id=body.user_id, role=body.role, conversation_id=body.conversation_id,
                          project_id=body.project_id)
             return {"shared_with": access.shares_of(conn, conversation_id=body.conversation_id,
@@ -619,8 +813,8 @@ def create_app(db_path, *, command=None, env=None, allowed_roots=(), permission_
 
     @app.post("/api/shares/remove")
     def remove_share(body: Share):
-        access.require_owner(me())
         with database() as conn:
+            access.require_sharer(conn, me(), conversation_id=body.conversation_id, project_id=body.project_id)
             access.unshare(conn, user_id=body.user_id, conversation_id=body.conversation_id,
                            project_id=body.project_id)
             return {"shared_with": access.shares_of(conn, conversation_id=body.conversation_id,
@@ -634,20 +828,16 @@ def create_app(db_path, *, command=None, env=None, allowed_roots=(), permission_
             raise StoreError("ce serveur n'a pas de comptes")
         with database() as conn:
             authority.verify(conn, body.current, client_of(request.scope), name=user["name"])
-            if user["is_owner"]:
-                auth.set_password(conn, body.new)  # the server's password: every session closes
-            else:
-                auth.set_user_password(conn, user["id"], body.new)
+            # Empty: no password any more (the name is then enough, behind the server's password).
+            auth.set_user_password(conn, user["id"], body.new)
             token = authority._open(conn, user["id"], client_of(request.scope), request.headers.get("user-agent"))
         return with_session(JSONResponse({"changed": True}), token, request)
 
     # --- each person's own AI accounts (« Mes comptes IA ») ----------------------
 
     def my_accounts():
-        user = me()
-        if not accounts.own_accounts(user):
-            raise StoreError("le propriétaire utilise les comptes IA de cet ordinateur")
-        return user
+        """The person whose accounts are signed in: the owner signs in the computer's."""
+        return me()
 
     def account_call(action):
         try:
@@ -657,10 +847,14 @@ def create_app(db_path, *, command=None, env=None, allowed_roots=(), permission_
 
     @app.get("/api/accounts")
     def my_account_status():
+        """Signed in or not, for each AI: a person's own accounts, or the computer's for the owner.
+        `ready`: at least one is (the first login asks for one)."""
         user = me()
-        if not accounts.own_accounts(user):
-            return {"own": False}
-        return {"own": True, "providers": people_accounts.status(user)}
+        own = accounts.own_accounts(user)
+        if not own:
+            status_cache.clear()  # the computer's state, as it is now
+        found = people_accounts.status(user)
+        return {"own": own, "providers": found, "ready": any(p.get("signed_in") for p in found.values())}
 
     @app.post("/api/accounts/{provider}/login")
     def account_login(provider: str):
@@ -692,6 +886,16 @@ def create_app(db_path, *, command=None, env=None, allowed_roots=(), permission_
             return {"sessions": [], "required": False}
         with database() as conn:
             return {"sessions": authority.sessions(conn, request.cookies.get(auth.COOKIE)), "required": True}
+
+    @app.patch("/api/sessions/{sid}")
+    def rename_session(sid: int, body: SessionChange, request: HttpRequest):
+        """Name one of one's devices (« Téléphone de Lou », « PC du salon »)."""
+        if authority is None:
+            raise NotFound("session introuvable")
+        with database() as conn:
+            if not authority.rename_session(conn, sid, body.label, request.cookies.get(auth.COOKIE)):
+                raise NotFound("session introuvable")
+        return {"renamed": sid, "label": auth.check_label(body.label)}
 
     @app.delete("/api/sessions/{sid}")
     def close_session(sid: int, request: HttpRequest):
@@ -778,6 +982,7 @@ def create_app(db_path, *, command=None, env=None, allowed_roots=(), permission_
         return JSONResponse({"detail": str(exc)}, 409)
 
     @app.exception_handler(StoreError)
+    @app.exception_handler(importer.ImportFailed)
     @app.exception_handler(ProviderError)
     @app.exception_handler(obsidian.ObsidianError)
     @app.exception_handler(config.ConfigError)
@@ -1028,11 +1233,26 @@ def create_app(db_path, *, command=None, env=None, allowed_roots=(), permission_
 
     @app.post("/api/projects", status_code=201)
     def create_project(body: NewProject, request: HttpRequest):
-        access.require_owner(me(request))
-        workdir = check_workdir(body.workdir) if body.workdir.strip() else None
+        user = me(request)
+        access.require_creator(user)
+        # A member's project has no folder of the server's: its conversations get theirs.
+        workdir = check_workdir(body.workdir) if body.workdir.strip() and access.trusted(user) else None
         with database() as conn:
             pid = store.create_project(conn, body.name, description=body.description, workdir=workdir)
+            set_owner(conn, "projects", pid, user)
             return {"project": dict(store.get_project(conn, pid))}
+
+    def set_owner(conn, table, row_id, user):
+        """Whose it is: NULL for the server's owner (as before accounts), else the person's id."""
+        if user is not None and not user.get("is_owner"):
+            conn.execute(f"UPDATE {table} SET owner_id = ? WHERE id = ?", (user["id"], row_id))
+
+    def require_project(conn, user, pid):
+        role = access.project_role(conn, user, pid)
+        if role is None:
+            raise NotFound("projet introuvable")
+        if role != "owner":
+            raise access.Forbidden("seul celui qui a créé le projet (ou un admin) le modifie")
 
     @app.get("/api/projects/{pid}")
     def project(pid: int, request: HttpRequest):
@@ -1044,7 +1264,7 @@ def create_app(db_path, *, command=None, env=None, allowed_roots=(), permission_
             row = dict(store.get_project(conn, pid))
             seen = access.visible_conversation_ids(conn, user)
             convs = [dict(c) for c in store.project_conversations(conn, pid) if seen is None or c["id"] in seen]
-            mine = user is None or user["is_owner"]
+            mine = access.project_role(conn, user, pid) == "owner"
             shared_with = access.shares_of(conn, project_id=pid) if mine and authority is not None else None
         for conv in convs:
             conv["running"] = jobs.running(conv["id"])
@@ -1052,18 +1272,19 @@ def create_app(db_path, *, command=None, env=None, allowed_roots=(), permission_
 
     @app.patch("/api/projects/{pid}")
     def change_project(pid: int, body: ProjectChange, request: HttpRequest):
-        access.require_owner(me(request))
+        user = me(request)
         workdir = None
-        if body.workdir is not None:
+        if body.workdir is not None and access.trusted(user):
             workdir = check_workdir(body.workdir) if body.workdir.strip() else ""
         with database() as conn:
+            require_project(conn, user, pid)
             store.update_project(conn, pid, name=body.name, description=body.description, workdir=workdir)
             return {"project": dict(store.get_project(conn, pid))}
 
     @app.delete("/api/projects/{pid}")
     def delete_project(pid: int, request: HttpRequest, with_conversations: bool = False):
-        access.require_owner(me(request))
         with database() as conn:
+            require_project(conn, me(request), pid)
             for row in store.project_conversations(conn, pid):
                 if with_conversations and jobs.running(row["id"]):
                     raise Busy("une conversation du projet travaille : arrêtez-la d'abord")
@@ -1077,31 +1298,134 @@ def create_app(db_path, *, command=None, env=None, allowed_roots=(), permission_
 
     @app.post("/api/conversations", status_code=201)
     def create_conversation(body: NewConversation, request: HttpRequest):
-        access.require_owner(me(request))  # a guest takes part in shared conversations, creates none
+        user = me(request)
+        access.require_creator(user)  # a guest takes part in shared conversations, creates none
+        with database() as conn:
+            cid = new_conversation(conn, body, user)
+            return {"conversation": _row(store.get_conversation(conn, cid))}
+
+    # --- import (aihub/importer.py) --------------------------------------------
+    # A reading is kept 30 minutes on the server, for the person who made it:
+    # the page gets the list (titles, dates), never the whole texts.
+
+    readings = {}
+    readings_lock = threading.Lock()
+    READING_S = 30 * 60
+
+    def keep_reading(items, user):
+        token = secrets.token_urlsafe(16)
+        with readings_lock:
+            now = time.monotonic()
+            for old in [k for k, (at, _, _) in readings.items() if now - at > READING_S]:
+                del readings[old]
+            while len(readings) >= 4:  # a few at most: an export can be large
+                del readings[min(readings, key=lambda k: readings[k][0])]
+            readings[token] = (now, (user or {}).get("id"), {i.key: i for i in items})
+        return {"reading": token, "conversations": [i.summary() for i in items]}
+
+    @app.post("/api/import/file")
+    async def import_file(request: HttpRequest):
+        """The export of chatgpt.com or claude.ai (.zip or conversations.json), as the request's body."""
+        user = me(request)
+        access.require_creator(user)
+        size = int(request.headers.get("content-length") or 0)
+        if size > importer.MAX_UPLOAD:
+            raise importer.ImportFailed(f"fichier trop gros ({importer.MAX_UPLOAD // 1024 // 1024} Mo au plus)")
+        data = await request.body()
+        items = await asyncio.to_thread(importer.parse_export, data)
+        return keep_reading(items, user)
+
+    @app.get("/api/import/local")
+    def import_local(request: HttpRequest):
+        """The Claude Code and Codex sessions of this computer (the owner's: they are on their PC)."""
+        user = me(request)
+        access.require_owner(user)
+        return keep_reading(importer.local_sessions(local_home), user)
+
+    @app.post("/api/import", status_code=201)
+    def import_conversations(body: NewImport, request: HttpRequest):
+        user = me(request)
+        access.require_creator(user)
+        with readings_lock:
+            reading = readings.get(body.reading)
+        # Someone else's reading is as unknown as an expired one.
+        if reading is None or reading[1] != (user or {}).get("id"):
+            raise importer.ImportFailed("lecture expirée : choisissez de nouveau le fichier ou les sessions")
+        items = [reading[2][k] for k in dict.fromkeys(body.keys) if k in reading[2]]
+        if not items:
+            raise importer.ImportFailed("cochez au moins une conversation")
+        groups = [items] if body.merge else [[i] for i in items]
+        made = []
+        with database() as conn:
+            for group in groups:
+                first = group[0]
+                title = (body.title or "").strip() if body.merge else first.title
+                if not title:
+                    title = "Fusion : " + " + ".join(i.title for i in group)
+                    title = title if len(title) <= importer.TITLE_MAX else title[:importer.TITLE_MAX - 1] + "…"
+                workdir = body.workdir.strip()
+                if not workdir and body.project_id is None:
+                    # A local session's own folder, when it still exists.
+                    workdir = next((i.workdir for i in group if i.workdir and Path(i.workdir).is_dir()), "")
+                cid = new_conversation(conn, NewConversation(
+                    title=title, workdir=workdir, project_id=body.project_id, model=body.model,
+                    permission_mode=body.permission_mode if body.permission_mode != "bypass" else "manual"), user)
+                importer.write_messages(conn, cid, group, merged=body.merge)
+                made.append(cid)
+        return {"conversations": made}
+
+    spaces = side_folder(db_path, "espaces")
+
+    def own_space(user_id, title):
+        """A member's conversation works in a folder of theirs: data/espaces/<id>/<title>."""
+        safe = "".join(c if c.isalnum() or c in " -_" else "-" for c in title).strip()[:60] or "conversation"
+        folder = spaces / str(int(user_id)) / safe
+        n = 1
+        while folder.exists() and any(folder.iterdir()):
+            n += 1
+            folder = spaces / str(int(user_id)) / f"{safe} ({n})"
+        folder.mkdir(parents=True, exist_ok=True)
+        return str(folder)
+
+    def new_conversation(conn, body, user=None):
+        """Create a conversation from the « Nouvelle conversation » choices (also used by an import).
+
+        A member's: in their own space on the server, never without permission,
+        and only in a project of theirs."""
         if body.mode not in store.MODES:
             raise StoreError(f"mode inconnu : {body.mode!r}")
-        with database() as conn:
+        if body.project_id is not None and access.project_role(conn, user, body.project_id) != "owner":
+            raise access.Forbidden("une conversation se crée dans un projet à soi")
+        if access.trusted(user):
             workdir = body.workdir
             if not workdir.strip() and body.project_id is not None:
                 workdir = store.get_project(conn, body.project_id)["workdir"] or ""
             if not workdir.strip():
                 raise StoreError("indiquez le dossier de travail (ou donnez-en un au projet)")
             workdir = check_workdir(workdir)
-            if body.mode == "orchestration":
-                # The conductor plans and sums up; the subtasks get their agents in the plan.
-                agent_id = conductor_id = agent_for(conn, body.conductor_model)
-            else:
-                agent_id, conductor_id = agent_for(conn, body.model), None
-            cid = store.create_conversation(
-                conn, body.title, mode=body.mode, agent_id=agent_id, conductor_agent_id=conductor_id,
-                workdir=workdir, permission_mode=body.permission_mode,
-                confirm_bypass=body.confirm_bypass, assignment_mode=body.assignment_mode,
-                project_id=body.project_id,
-            )
-            return {"conversation": _row(store.get_conversation(conn, cid))}
+        else:
+            if body.permission_mode == "bypass":
+                raise access.Forbidden("le mode sans permission est réservé au propriétaire et aux admins")
+            workdir = own_space(user["id"], body.title)
+        if body.mode == "orchestration":
+            # The conductor plans and sums up; the subtasks get their agents in the plan.
+            agent_id = conductor_id = agent_for(conn, body.conductor_model)
+        else:
+            agent_id, conductor_id = agent_for(conn, body.model), None
+        cid = store.create_conversation(
+            conn, body.title, mode=body.mode, agent_id=agent_id, conductor_agent_id=conductor_id,
+            workdir=workdir, permission_mode=body.permission_mode,
+            confirm_bypass=body.confirm_bypass, assignment_mode=body.assignment_mode,
+            project_id=body.project_id,
+        )
+        set_owner(conn, "conversations", cid, user)
+        return cid
 
     @app.get("/api/conversations/{cid}")
-    def conversation(cid: int, request: HttpRequest):
+    def conversation(cid: int, request: HttpRequest, last: int | None = None):
+        """`last`: only the last messages (`older` says how many come before them)."""
+        if last is not None and not 1 <= last <= 5000:
+            raise StoreError("last : de 1 à 5000 messages")
         user = me(request)
         with database() as conn:
             conv = dict(access.require(conn, user, cid))
@@ -1110,7 +1434,8 @@ def create_app(db_path, *, command=None, env=None, allowed_roots=(), permission_
             agent = store.get_agent(conn, conv["agent_id"]) if conv["agent_id"] else None
             conductor = (store.get_agent(conn, conv["conductor_agent_id"])
                          if conv["conductor_agent_id"] else None)
-            messages = [dict(m) for m in store.list_messages(conn, cid)]
+            messages = [dict(m) for m in store.list_messages(conn, cid, last)]
+            older = store.count_messages(conn, cid) - len(messages) if last is not None else 0
             for m in messages:  # who asked, when several people share the conversation
                 m["author"] = names.get(m.get("user_id")) if m.get("user_id") else None
             plans = store.list_plans(conn, cid)
@@ -1122,7 +1447,8 @@ def create_app(db_path, *, command=None, env=None, allowed_roots=(), permission_
         conv["conductor_model"] = conductor["model"] if conductor else None
         conv["tools"] = tools.chosen(conv)
         pending = [dict(p, can_answer=jobs.may_answer(p["id"], user)) for p in jobs.pending(cid)]
-        return {"conversation": conv, "tools_offered": tools.offered(current()), "messages": messages, "plans": plans,
+        return {"conversation": conv, "tools_offered": tools.offered(current()), "messages": messages, "older": older,
+                "plans": plans,
                 "autonomous": runs, "delegations": delegations, "shared_with": shared_with,
                 "running": jobs.running(cid), "running_kind": jobs.kind(cid), "pending": pending}
 
@@ -1277,7 +1603,18 @@ def create_app(db_path, *, command=None, env=None, allowed_roots=(), permission_
     @app.patch("/api/conversations/{cid}")
     def change_conversation(cid: int, body: ConversationChange):
         with database() as conn:
-            access.require(conn, me(), cid, "owner")  # its folder, mode, AI, tools, sharing: the owner's
+            user = me()
+            access.require(conn, user, cid, "owner")  # its folder, mode, AI, tools, sharing: the owner's
+            if not access.trusted(user):
+                # A member, in a conversation of theirs: nothing that reaches beyond their space.
+                if body.permission_mode == "bypass":
+                    raise access.Forbidden("le mode sans permission est réservé au propriétaire et aux admins")
+                if body.tools is not None and set(body.tools) - set(MEMBER_TOOLS):
+                    raise access.Forbidden("seuls la recherche web et l'avis d'une autre IA sont permis ici")
+                if body.obsidian is not None:
+                    raise access.Forbidden("le coffre Obsidian est celui du propriétaire")
+                if body.project_id is not None and access.project_role(conn, user, body.project_id) != "owner":
+                    raise access.Forbidden("une conversation va dans un projet à soi")
             if body.title is not None:
                 store.rename_conversation(conn, cid, body.title)
             if body.permission_mode is not None:
@@ -1322,6 +1659,8 @@ def create_app(db_path, *, command=None, env=None, allowed_roots=(), permission_
         with database() as conn:
             message = store.get_message(conn, mid)
             conv = access.require(conn, me(), message["conversation_id"], "owner")
+            if not access.trusted(me()):
+                raise access.Forbidden("le coffre Obsidian est celui du propriétaire")
             if not conv["obsidian_note"]:
                 raise StoreError("la note Obsidian n'est pas activée pour cette conversation")
             if message["role"] != "assistant" or message["status"] != "ok":
@@ -1340,6 +1679,8 @@ def create_app(db_path, *, command=None, env=None, allowed_roots=(), permission_
         """Rebuild the whole project note; the previous one is backed up outside the vault."""
         with database() as conn:
             access.require(conn, me(), cid, "owner")
+            if not access.trusted(me()):
+                raise access.Forbidden("le coffre Obsidian est celui du propriétaire")
         if jobs.running(cid):
             raise Busy("une requête est en cours : attendez qu'elle ait fini pour réécrire la note")
         path, backup = jobs.rewrite_note(cid)
@@ -1382,9 +1723,9 @@ def create_app(db_path, *, command=None, env=None, allowed_roots=(), permission_
         user = me()
         with database() as conn:
             conv = access.require(conn, user, cid, "write")
-            if body.check_command and access.conversation_role(conn, user, conv) != "owner":
+            if body.check_command and not access.trusted(user):
                 # It runs on the server without the agent's sandbox: the owner's alone.
-                raise access.Forbidden("une commande de vérification est réservée au propriétaire de la conversation")
+                raise access.Forbidden("une commande de vérification est réservée au propriétaire et aux admins")
         if conv["mode"] != "single":
             raise StoreError("le travail autonome se lance dans une conversation à une IA")
         if not conv["agent_id"]:

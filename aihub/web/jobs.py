@@ -94,6 +94,13 @@ class Job:
         self.lock = threading.Lock()
 
 
+def side_folder(db_path, kind):
+    """A folder of one database's own, next to it: data/aihub-comptes for data/aihub.db.
+    Two bases in one folder (the real one, a trial's) never share a person's accounts."""
+    path = Path(db_path).resolve()
+    return path.with_name(f"{path.stem}-{kind}")
+
+
 class JobManager:
     def __init__(self, db_path, *, command=None, env=None, permission_timeout_s=1800,
                  request_timeout_s=None, obsidian_vault=None):
@@ -103,7 +110,7 @@ class JobManager:
         self.notifier = None          # phone alerts (aihub/notify.py; create_app sets it)
         self.command = command
         self.env = env
-        self.accounts_root = Path(db_path).resolve().parent / "comptes"  # each person's AI accounts
+        self.accounts_root = side_folder(db_path, "comptes")  # each person's AI accounts
         self.permission_timeout_s = permission_timeout_s
         self.request_timeout_s = request_timeout_s
         self.hub = EventHub()

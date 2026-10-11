@@ -266,24 +266,48 @@ The hub can be shared by several people, each with their own AI accounts:
 what they ask is paid by their own Claude or ChatGPT subscription, never by
 the owner's.
 
-- The owner (the server's password) invites from "Personnes": a link valid
-  7 days, for one use. The person picks a name and a password, then logs in
-  with that name (the owner leaves the name empty).
-- A person sees only what is shared with them: a conversation, or a whole
-  project, in "Lecture" (read) or "Lecture et écriture" (they may send
-  requests). Anything else answers "introuvable". Settings, people, new
-  conversations, the folder, the mode, the tools and the scheduled tasks stay
-  the owner's.
-- "Mes comptes IA": the person signs in to Claude (a page, then the code it
-  shows, pasted back) and to Codex (a code to type at OpenAI's page). Their
-  sign-ins live in `data/comptes/<id>/` (`CLAUDE_CONFIG_DIR`, `CODEX_HOME`);
-  the hub never reads them, only the CLIs' own commands do. An empty folder is
-  "not signed in": there is no fallback on the owner's account. Their quota
-  and its alerts are theirs too. The local AI (Ollama) stays common.
+- **Creating the server.** A new server (`serve` on an empty database) shows
+  "Créer le serveur", on the computer it runs on only (not through Tailscale
+  nor any relay): the owner's name, their password and the server's password,
+  both optional. The server's password is asked once per device, to everyone,
+  before the name. With neither, whoever reaches the server comes in as the
+  owner: the page says so before going on.
+- **People.** From "Personnes", the owner (or an admin) adds someone: either
+  they choose the name and the password (optional) themselves, or they make a
+  one-use link (7 days) and the person chooses. Either way, they pick the
+  person's role and what the person sees (projects, conversations, read or
+  read and write). An account without a password is entered with its name
+  alone (behind the server's password, if there is one).
+- **Roles.** *Invité*: only what is shared with them. *Membre*: also their own
+  conversations and projects, in a folder of theirs on the server
+  (`data/aihub-espaces/<id>/`), never in the mode without permission, with only
+  the web search and another AI's opinion as tools (nothing of the server's
+  files, vault or tool servers), no check command; they share what is theirs.
+  *Admin*: sees and manages everything (people, sharing, conversations) but
+  the server's settings, its password, the scheduled tasks and the import of
+  this computer's sessions, which stay the owner's. The owner and the admins
+  see every conversation, the members' too.
+- **First login.** Whoever logs in with no AI connected is asked to connect
+  Claude and/or ChatGPT before going on ("Mes comptes IA"): the person signs
+  in to Claude (a page, then the code it shows, pasted back) and to Codex (a
+  code to type at OpenAI's page). Their sign-ins live in
+  `data/aihub-comptes/<id>/` (`CLAUDE_CONFIG_DIR`, `CODEX_HOME`); the hub never
+  reads them, only the CLIs' own commands do. An empty folder is "not signed
+  in": there is no fallback on the owner's account. Their quota and its alerts
+  are theirs too. The owner signs in the computer's own accounts the same way
+  (a new server), and signs them out in a terminal only: Claude Code and Codex
+  use them outside the hub too. The local AI (Ollama) stays common.
+- **Devices.** "Connecter un appareil" (in "Personnes" for anyone's account,
+  in "Appareils" for one's own) shows a QR code: the phone that scans it opens
+  connected to that account, named ("Téléphone de Lou"), without typing a
+  name or a password. Once, within 15 minutes. The link carries this
+  computer's Tailscale address when `tailscale serve` relays this server's
+  port to it. In "Appareils", each one names their devices; "Personnes" shows
+  each person's.
 - Each request shows who wrote it. A permission prompt is answered only by
-  the person whose request it is.
-- A person with one conversation of a project, not the project, never makes
-  the agent read the other conversations.
+  the person whose request it is. A person with one conversation of a
+  project, not the project, never makes the agent read the other
+  conversations.
 
 ### From the phone (Tailscale)
 

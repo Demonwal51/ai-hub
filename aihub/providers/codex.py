@@ -193,12 +193,16 @@ def lost_session(error):
 class _Server:
     """One app server process and its JSON-RPC line protocol."""
 
-    def __init__(self, command, workdir, env, home=None):
+    def __init__(self, command, workdir, env, home=None, execution=None):
+        self.execution = execution
         if home is None and env and env.get("CODEX_HOME"):
             home = Path(env["CODEX_HOME"])  # a person's own account (aihub/accounts.py)
         try:
-            self.proc = subprocess.Popen(
-                server_args(command, home), cwd=workdir, env=env if env is not None else dict(os.environ),
+            spawn = execution.spawn if execution is not None else subprocess.Popen
+            args = (['codex', 'app-server', '--listen', 'stdio://', '-c', 'mcp_servers={}']
+                    if execution is not None else server_args(command, home))
+            self.proc = spawn(
+                args, cwd=workdir, env=env if env is not None else dict(os.environ),
                 stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
                 text=True, encoding="utf-8", errors="replace", bufsize=1,
                 creationflags=NO_WINDOW, start_new_session=(os.name != "nt"),
@@ -261,6 +265,8 @@ class _Server:
                 stream.close()
             except OSError:
                 pass
+        if self.execution is not None:
+            self.execution.finish()
 
     def tail(self):
         return "".join(self.stderr).strip()[-500:]
@@ -383,7 +389,7 @@ class CodexRun:
                  resume_session=None, ask_permission=None, on_text=None, on_quota=None,
                  timeout_s=None, env=None, tools=None, json_schema=None,
                  mcp_config=None, auto_allow=(), instructions=None, home=None,
-                 warning_from=_WARNING_FROM, web=True, images=()):
+                 warning_from=_WARNING_FROM, web=True, images=(), execution=None):
         if permission_mode not in PERMISSION_MODES:
             raise ProviderError(f"mode de permission inconnu : {permission_mode!r}")
         if not isinstance(prompt, str) or not prompt.strip():
@@ -408,6 +414,7 @@ class CodexRun:
         self.images = list(images)  # pictures sent with the request: seen by the model itself
         self.home = home
         self.warning_from = warning_from
+        self.execution = execution
         self._lock = threading.Lock()
         self._server = None
         self._stop_reason = None  # "user" or "timeout"
@@ -416,7 +423,8 @@ class CodexRun:
         """Parameters of thread/start (or thread/resume, with the thread id)."""
         mode = "plan" if self.tools is not None else self.permission_mode
         sandbox, approval = PERMISSION_MODES[mode]
-        params = {"cwd": str(self.workdir), "sandbox": sandbox, "approvalPolicy": approval}
+        params = {"cwd": self.execution.workdir if self.execution is not None else str(self.workdir),
+                  "sandbox": sandbox, "approvalPolicy": approval}
         if self.model:
             params["model"] = self.model
         if self.instructions:
@@ -441,7 +449,11 @@ class CodexRun:
                 self._stop_reason = reason
             server = self._server
         if server is not None:
-            _kill_tree(server.proc)
+            try:
+                if self.execution is not None:
+                    self.execution.stop()
+            finally:
+                _kill_tree(server.proc)
 
     def run(self):
         if not self.workdir or not Path(self.workdir).is_dir():
@@ -452,7 +464,7 @@ class CodexRun:
             if self._stop_reason is not None:
                 result.status = "stopped"
                 return result
-            server = _Server(self.command, self.workdir, self.env, self.home)
+            server = _Server(self.command, self.workdir, self.env, self.home, execution=self.execution)
             self._server = server
         timer = None
         if self.timeout_s:

@@ -177,9 +177,9 @@ class ShareTest(SharingTestCase):
         self.assertIn("lecture seule", r.json()["detail"])
         self.share(uid, "write", conversation_id=cid)
         r = guest.post(f"/api/conversations/{cid}/messages", json={"prompt": "salut"}, headers=H)
-        self.assertEqual(r.status_code, 202, r.text)
-        data = wait_idle(guest, cid)
-        self.assertEqual([(m["role"], m["author"]) for m in data["messages"]], [("user", "Lou"), ("assistant", None)])
+        self.assertEqual(r.status_code, 400, r.text)
+        self.assertIn('espace isolé', r.json()['detail'])
+        self.assertEqual(guest.get(f'/api/conversations/{cid}', headers=H).json()['conversation']['my_role'], 'write')
 
     def test_what_stays_the_owners(self):
         guest, uid = self.guest()
@@ -229,22 +229,20 @@ class ShareTest(SharingTestCase):
         mine = self.conversation("Logo", project_id=pid)
         self.share(uid, "write", conversation_id=mine)  # this one only, not the project
         log = self.env["FAKE_CLAUDE_LOG"]
-        guest.post(f"/api/conversations/{mine}/messages", json={"prompt": "quel est le budget du logo ?"}, headers=H)
-        wait_idle(guest, mine)
-        sent = read_log(log)
-        self.assertNotIn("--mcp-config", sent["args"])  # no project server for the agent
-        self.assertNotIn("900 euros", sent["user_message"]["message"]["content"])  # nothing joined by the hub
-        self.assertNotIn("--append-system-prompt", sent["args"])
+        before = read_log(log)
+        response = guest.post(f"/api/conversations/{mine}/messages", json={"prompt": "quel est le budget du logo ?"}, headers=H)
+        self.assertEqual(response.status_code, 400, response.text)
+        self.assertIn('espace isolé', response.json()['detail'])
+        self.assertEqual(read_log(log), before)  # no host CLI launched, no private project context sent
         # The owner, asking the same in the same conversation, gets the project.
         self.owner.post(f"/api/conversations/{mine}/messages", json={"prompt": "quel est le budget du logo ?"}, headers=H)
         wait_idle(self.owner, mine)
         sent = read_log(log)
         self.assertIn("--mcp-config", sent["args"])
-        # With the whole project shared, the guest gets it too.
+        # Sharing the whole project still does not grant access to the PC.
         self.share(uid, "write", project_id=pid)
-        guest.post(f"/api/conversations/{mine}/messages", json={"prompt": "et le budget ?"}, headers=H)
-        wait_idle(guest, mine)
-        self.assertIn("--mcp-config", read_log(log)["args"])
+        response = guest.post(f"/api/conversations/{mine}/messages", json={"prompt": "et le budget ?"}, headers=H)
+        self.assertEqual(response.status_code, 400, response.text)
 
     def test_unshare(self):
         guest, uid = self.guest()
@@ -281,9 +279,12 @@ class PromptsTest(SharingTestCase):
 class MigrationTest(TempDirMixin, unittest.TestCase):
     def test_the_single_password_becomes_the_owners(self):
         path = str(self.make_tempdir() / "hub.db")
-        with mock.patch.object(db, "SCHEMA_VERSION", 14), mock.patch.object(db, "_SCHEMA_V15", []), \
-                mock.patch.object(db, "_SCHEMA_V16", []), mock.patch.object(db, "_SCHEMA_V17", []), \
-                mock.patch.object(db, "_SCHEMA_V18", []), mock.patch.object(db, "_SCHEMA_V19", []):
+        from contextlib import ExitStack
+        current = db.SCHEMA_VERSION
+        with ExitStack() as patches:
+            patches.enter_context(mock.patch.object(db, 'SCHEMA_VERSION', 14))
+            for version in range(15, current + 1):
+                patches.enter_context(mock.patch.object(db, f'_SCHEMA_V{version}', []))
             db.connect(path).close()  # a base as version 14 left it
         raw = sqlite3.connect(path)
         raw.execute("PRAGMA user_version = 14")

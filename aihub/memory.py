@@ -69,21 +69,41 @@ def match_query(text, every=False):
 
 # --- search across the conversations (the sidebar's search box) ---------------------------
 
-def search(conn, text, limit=30):
+def search(conn, text, limit=30, *, conversation_ids=None, project_id=None, model=None, after=None, before=None):
     """Messages matching every word, best first, with a highlighted excerpt;
     then those close in meaning only (`by_meaning`), when the local model is there."""
     query = match_query(text, every=True)
+    joins = ("FROM memory m JOIN conversations c ON c.id = m.conversation_id "
+             "LEFT JOIN messages msg ON msg.id = m.message_id LEFT JOIN subtasks st ON st.id = m.subtask_id "
+             "LEFT JOIN agents a ON a.id = c.agent_id")
+    clauses, parameters = [], []
+    if conversation_ids is not None:
+        if not conversation_ids:
+            return []
+        ids = sorted(conversation_ids)
+        clauses.append("c.id IN (" + ",".join("?" for _ in ids) + ")")
+        parameters.extend(ids)
+    for value, clause in ((project_id, "c.project_id = ?"),
+                          (model, "COALESCE(msg.model, st.model, a.model) = ?"),
+                          (after, "COALESCE(msg.created_at, st.started_at, c.created_at) >= ?"),
+                          (before, "COALESCE(msg.created_at, st.started_at, c.created_at) < ?")):
+        if value is not None:
+            clauses.append(clause)
+            parameters.append(value)
+    where = " AND ".join(clauses) or "1"
+    columns = "m.conversation_id, m.message_id, m.subtask_id, m.role, c.title, c.project_id"
     found = []
     if query is not None:
         found = [dict(r, by_meaning=False) for r in conn.execute(
-            """
-            SELECT m.conversation_id, m.message_id, m.subtask_id, m.role,
-                   snippet(memory, 0, '[[', ']]', '…', 24) AS excerpt, c.title, c.project_id
-            FROM memory m JOIN conversations c ON c.id = m.conversation_id
-            WHERE memory MATCH ? ORDER BY bm25(memory) LIMIT ?
-            """, (query, limit)).fetchall()]
+            f"SELECT {columns}, snippet(memory, 0, '[[', ']]', '…', 24) AS excerpt {joins} "
+            f"WHERE memory MATCH ? AND {where} ORDER BY bm25(memory) LIMIT ?",
+            (query, *parameters, limit)).fetchall()]
+    eligible = None
+    if clauses:
+        eligible = {("m", r["message_id"]) if r["message_id"] is not None else ("s", r["subtask_id"])
+                    for r in conn.execute(f"SELECT m.message_id, m.subtask_id {joins} WHERE {where}", parameters)}
     seen = {("m", r["message_id"]) if r["message_id"] is not None else ("s", r["subtask_id"]) for r in found}
-    for key in _by_meaning(conn, text, limit=10):
+    for key in _by_meaning(conn, text, limit=10, allowed_keys=eligible):
         if key in seen or len(found) >= limit:
             continue
         row = _row_of(conn, key)
@@ -124,9 +144,9 @@ MEANING_SPREAD = 0.9    # and below this share of the best one
 MEANING_KEEP = 5
 
 
-def _by_meaning(conn, text, conversation_id=None, limit=MEANING_KEEP):
+def _by_meaning(conn, text, conversation_id=None, limit=MEANING_KEEP, allowed_keys=None):
     """Keys ("m", id) / ("s", id) of the passages close in meaning (aihub/semantic.py), best first."""
-    hits = semantic.nearest(conn, text, conversation_id=conversation_id, limit=limit * 4)
+    hits = semantic.nearest(conn, text, conversation_id=conversation_id, limit=limit * 4, allowed_keys=allowed_keys)
     if not hits:
         return []
     best = hits[0][0]

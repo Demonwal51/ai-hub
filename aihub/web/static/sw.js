@@ -9,34 +9,65 @@
 // the PC does not answer (the page reads it, never writes), and dropped when
 // the choice is undone or at the logout.
 
-const CACHE = "aihub-v3";
+const CACHE = "aihub-v6";
 const OFFLINE = "aihub-hors-ligne";
-const SHELL = ["/", "/static/style.css", "/static/app.js", "/static/icon-192.png", "/manifest.webmanifest"];
+const SHELL = ["/", "/static/style.css", "/static/markdown.js", "/static/app.js", "/static/icon-192.png", "/manifest.webmanifest"];
 // What may be read without the PC: the lists, a conversation, the state the page starts with.
 const READABLE = [/^\/api\/auth\/session$/, /^\/api\/options$/, /^\/api\/conversations$/, /^\/api\/projects$/,
   /^\/api\/conversations\/\d+$/, /^\/api\/agents$/, /^\/api\/quota$/, /^\/api\/status$/];
 const ON = "/__aihub-hors-ligne-active";
+const PERSON = "/__aihub-hors-ligne-compte";
 
 async function offlineOn() {
   const cache = await caches.open(OFFLINE);
-  return Boolean(await cache.match(ON));
+  const marker = await cache.match(ON);
+  return marker ? await marker.text() : null;
 }
 
 self.addEventListener("message", (event) => {
   const kind = event.data && event.data.type;
   if (kind === "offline-on") {
-    event.waitUntil(caches.open(OFFLINE).then((cache) => cache.put(ON, new Response("1"))));
+    event.waitUntil(caches.open(OFFLINE).then((cache) => cache.put(ON, new Response(crypto.randomUUID()))));
   } else if (kind === "offline-off") {
     event.waitUntil(caches.delete(OFFLINE));  // the choice undone, or the logout: nothing stays
   }
 });
 
 async function readable(request, url) {
+  // Bind the request to the person/epoch present when it was sent, not
+  // whichever person happens to be signed in when its response arrives.
+  const requestedEpoch = await offlineOn();
   try {
     const response = await fetch(request);
-    if (response.ok && await offlineOn()) {
+    const samePerson = requestedEpoch !== null && await offlineOn() === requestedEpoch;
+    if (samePerson && response.ok && url.pathname === "/api/auth/session") {
+      const session = await response.clone().json();
+      if (!session.logged_in) {
+        await caches.delete(OFFLINE);
+      } else if (await offlineOn()) {
+        const cache = await caches.open(OFFLINE);
+        const identity = JSON.stringify([session.required, session.user]);
+        const previous = await cache.match(PERSON);
+        if (previous && await previous.text() !== identity) {
+          await caches.delete(OFFLINE);
+        } else {
+          await cache.put(PERSON, new Response(identity));
+        }
+      }
+    }
+    if (samePerson && response.status === 401) {
+      await caches.delete(OFFLINE);
+    } else if (samePerson && (response.status === 403 || response.status === 404) && /^\/api\/conversations\/\d+$/.test(url.pathname)) {
+      const cache = await caches.open(OFFLINE);
+      for (const stored of await cache.keys()) {
+        if (new URL(stored.url).pathname === url.pathname) await cache.delete(stored);
+      }
+    }
+    const epoch = await offlineOn();
+    if (response.ok && epoch && epoch === requestedEpoch) {
       const copy = response.clone();
-      caches.open(OFFLINE).then((cache) => cache.put(request, copy));
+      const cache = await caches.open(OFFLINE);
+      if (await offlineOn() === epoch) await cache.put(request, copy);
     }
     return response;
   } catch (err) {

@@ -54,7 +54,7 @@ class RegenerateTest(SharingTestCase):
         self.share(uid, "write", conversation_id=cid)
         r = guest.post(f"/api/conversations/{cid}/regenerate", json={"model": "sonnet"}, headers=H)
         self.assertEqual(r.status_code, 403)  # the AI of the conversation is its owner's to change
-        self.assertEqual(guest.post(f"/api/conversations/{cid}/regenerate", json={}, headers=H).status_code, 202)
+        self.assertEqual(guest.post(f"/api/conversations/{cid}/regenerate", json={}, headers=H).status_code, 400)
         wait_idle(guest, cid)
 
     def test_only_a_request_then_its_reply_is_regenerated(self):

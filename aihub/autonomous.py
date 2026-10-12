@@ -149,6 +149,7 @@ class AutonomousRun:
         self._stopped = False
         self._request = None
         self._check = None
+        self._check_context = None
 
     def stop(self):
         with self._lock:
@@ -157,7 +158,11 @@ class AutonomousRun:
         if request is not None:
             request.stop()
         if check is not None:
-            _kill(check)
+            try:
+                if self._check_context is not None:
+                    self._check_context.stop()
+            finally:
+                _kill(check)
 
     def _stopping(self):
         with self._lock:
@@ -166,6 +171,11 @@ class AutonomousRun:
     def run(self):
         """Run to the end; returns the run's row (status done, limit, stopped or error)."""
         conversation = store.get_conversation(self.conn, self.conversation_id)
+        from . import isolation
+        self.execution = isolation.for_run(self.conn, conversation,
+                                           account_id=self.request_kwargs.get('account_id') or self.request_kwargs.get('user_id'),
+                                           settings=self.request_kwargs.get('settings'))
+        self.provider = store.get_agent(self.conn, self.agent_id)['provider']
         if not conversation["workdir"]:
             raise StoreError("aucun dossier de travail n'est défini pour cette conversation")
         if store.active_request(self.conn, self.conversation_id) is not None:
@@ -235,7 +245,13 @@ class AutonomousRun:
         """(exit code, end of the output) of the check command; 124 when it takes too long."""
         timeout = max(1, min(CHECK_TIMEOUT_S, int(deadline - self.clock()) + 60))
         try:
-            proc = subprocess.Popen(self.check_command, shell=True, cwd=workdir, stdin=subprocess.DEVNULL,
+            if self.execution is not None:
+                self.execution.prepare(self.provider)
+                spawn = self.execution.spawn
+                command, shell = ['sh', '-c', self.check_command], False
+            else:
+                spawn, command, shell = subprocess.Popen, self.check_command, True
+            proc = spawn(command, shell=shell, cwd=workdir, stdin=subprocess.DEVNULL,
                                     stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True,
                                     encoding="utf-8", errors="replace", creationflags=NO_WINDOW,
                                     start_new_session=(os.name != "nt"))
@@ -243,21 +259,43 @@ class AutonomousRun:
             return 127, f"impossible de lancer la vérification : {exc}"
         with self._lock:
             self._check = proc
+            self._check_context = self.execution
             stopped = self._stopped
         if stopped:  # a stop that came just before the check started
-            _kill(proc)
+            try:
+                if self.execution is not None:
+                    self.execution.stop()
+            finally:
+                _kill(proc)
+        tail = ['']
+        def read_tail():
+            try:
+                while chunk := proc.stdout.read(4096):
+                    tail[0] = (tail[0] + chunk)[-CHECK_KEEP:]
+            except (OSError, ValueError):
+                pass
+        reader = threading.Thread(target=read_tail, daemon=True)
+        reader.start()
         try:
-            output, _ = proc.communicate(timeout=timeout)
+            proc.wait(timeout=timeout)
             code = proc.returncode
         except subprocess.TimeoutExpired:
-            _kill(proc)
-            output, _ = proc.communicate()
+            try:
+                if self.execution is not None:
+                    self.execution.stop()
+            finally:
+                _kill(proc)
             code = 124
-            output = (output or "") + f"\n(vérification arrêtée après {timeout} s)"
         finally:
+            reader.join(timeout=5)
+            proc.stdout.close()
+            if self.execution is not None:
+                self.execution.finish()
             with self._lock:
                 self._check = None
-        return code, (output or "").strip()[-CHECK_KEEP:]
+                self._check_context = None
+        output = tail[0] + (f"\n(vérification arrêtée après {timeout} s)" if code == 124 else '')
+        return code, output.strip()[-CHECK_KEEP:]
 
     def _round(self, number, message_id, state, check):
         self.conn.execute(

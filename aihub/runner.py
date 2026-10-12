@@ -10,7 +10,7 @@ import os
 import threading
 from pathlib import Path
 
-from . import access, accounts, attachments, config, memory, project_access, providers, routing, store, tools
+from . import access, accounts, attachments, config, isolation, memory, project_access, providers, routing, store, tools
 from .providers import claude_code
 from .providers.claude_code import ProviderError
 
@@ -20,7 +20,7 @@ from .providers.claude_code import ProviderError
 LIGHT_CODEX = ("gpt-6-luna", "gpt-5.6-luna")
 
 
-def summary_model(model):
+def summary_model(model, *, commands=None, env=None, workdir=None):
     """The summary AI actually used (cahier des charges, section 5).
 
     The setting names one (Haiku by default); when its provider is not
@@ -28,35 +28,37 @@ def summary_model(model):
     """
     if not model or model == config.NO_SUMMARY:
         return model
-    available = routing.available()
+    available = (accounts.available_models(commands, env, workdir)
+                 if accounts.account_vars(env) else routing.available())
     if config.provider_of(model) in available:
         return model
     if "codex" not in available:
         # Neither Claude nor ChatGPT: the local AI, if it runs (cahier des charges, section 5).
         local = sorted(available.get("ollama") or ())
-        return local[0] if local else model
+        return local[0] if local else (None if accounts.account_vars(env) else model)
     offered = available["codex"]
     if offered is None:
         return LIGHT_CODEX[0]
     return next((m for m in LIGHT_CODEX if m in offered), "codex")
 
 
-def summarizer(commands, workdir, model, *, env=None, timeout_s=300):
+def summarizer(commands, workdir, model, *, env=None, timeout_s=300, execution=None):
     """summarize(prompt) -> (text, tokens_in, tokens_out, model) with the summary AI; None without one.
 
     A run of its own, recorded nowhere as a message, with no tool at all:
     it only reads the text it is given. `commands`: as for Request.
     """
-    model = summary_model(model)
+    if execution is None:
+        model = summary_model(model, commands=commands, env=env, workdir=workdir)
     if not model or model == config.NO_SUMMARY:
         return None
     provider = config.provider_of(model)
 
     def summarize(prompt):
-        command = providers.command_for(commands, provider)
+        command = providers.command_for(commands, provider, execution=execution)
         result = providers.new_run(provider, command, prompt=prompt, workdir=workdir, permission_mode="plan",
                                    model=providers.default_model(provider, model), tools=[], env=env,
-                                   timeout_s=timeout_s).run()
+                                   timeout_s=timeout_s, execution=execution).run()
         if result.status != "ok":
             raise ProviderError(f"résumé impossible : {result.error}")
         return result.text, result.tokens_in, result.tokens_out, model
@@ -148,7 +150,9 @@ class Request:
         """
         conversation, agent = self._prepare()
         self.provider = agent["provider"]
-        command = providers.command_for(self.command, self.provider)
+        self.execution = isolation.for_run(self.conn, conversation, account_id=self.account_id or self.user_id,
+                                            settings=self.settings)
+        command = providers.command_for(self.command, self.provider, execution=self.execution)
         self.request_id = None
         if self.record_prompt:
             self.request_id = store.add_user_message(self.conn, self.conversation_id, self.prompt, self.user_id)
@@ -226,6 +230,11 @@ class Request:
         # Passages of the conversations the request names, joined to what
         # is sent (not to what is recorded): no tool round trip for them.
         project = access.reads_project(self.conn, self.user_id, conversation)
+        execution = self.execution
+        if execution is not None:
+            project = project and execution.policy['memory'] == 'project'
+            if tools.chosen(conversation):
+                raise ProviderError('retirez les outils du PC avant d’utiliser un espace isolé')
         joined = project_access.prefetch(self.conn, conversation, self.prompt, automatic=self.record_prompt,
                                          project=project)
         if package is not None:
@@ -240,8 +249,9 @@ class Request:
         # The files sent with it: a text file's text in the request, the others by their path.
         files_text, files = attachments.for_request(self.attachments)
         sent += files_text
-        given = tools.for_run(self.conn, conversation, self.settings, own=package is not None, commands=self.command,
-                              project=project, account_env=accounts.account_vars(self.env))
+        given = (tools.RunTools() if execution is not None else
+                 tools.for_run(self.conn, conversation, self.settings, own=package is not None, commands=self.command,
+                               project=project, account_env=accounts.account_vars(self.env)))
         env = self.env
         if given.env:
             env = {**(env if env is not None else claude_code.clean_env(os.environ)), **given.env}
@@ -269,6 +279,7 @@ class Request:
             instructions=store.join_instructions(store.person_instructions(self.conn, conversation),
                                                  project_access.instructions(self.conn, conversation, project=project)),
             attachments=files,
+            execution=execution,
         )
         with self._lock:
             self._run = run
@@ -279,7 +290,9 @@ class Request:
     def _automatic_package(self, conversation):
         s = self.settings
         local = providers.stateless(self.provider)
-        summarize = summarizer(self.command, conversation["workdir"], s.summary_model, env=self.env)
+        summarize = summarizer(self.command, conversation["workdir"], s.summary_model, env=self.env,
+                               execution=isolation.for_run(self.conn, conversation, account_id=self.account_id or self.user_id,
+                                                           read_only=True, settings=s))
         if local:
             # Sent with every request: no summary while the last exchanges hold everything
             # (writing one each time would cost a model call per request).

@@ -4,6 +4,7 @@ import subprocess
 import sys
 import unittest
 import zipfile
+import tarfile
 from pathlib import Path
 
 from .helpers import TempDirMixin
@@ -37,6 +38,13 @@ class ReleaseTest(TempDirMixin, unittest.TestCase):
             for script in ("installer.bat", "Lancer AI Hub.bat"):
                 data = archive.read(prefix + script)
                 self.assertNotIn(b"\n", data.replace(b"\r\n", b""), script)  # CRLF only: cmd needs it
+            for script in ('installer.sh', 'lancer.sh'):
+                self.assertTrue((archive.getinfo(prefix + script).external_attr >> 16) & 0o111)
+        with tarfile.open(target.with_name(target.stem + '-linux.tar.gz')) as archive:
+            self.assertEqual({m.name for m in archive.getmembers()}, set(listed))
+            for script in ('installer.sh', 'lancer.sh'):
+                self.assertTrue(archive.getmember(prefix + script).mode & 0o111)
+            self.assertTrue(all(m.uid == 0 and not m.uname for m in archive.getmembers()))
 
 
 if __name__ == "__main__":

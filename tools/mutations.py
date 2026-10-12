@@ -257,10 +257,9 @@ MUTATIONS = [
     ("route: raison sans le meilleur choix", "aihub/routing.py",
      "        if unusable:\n            best, why = unusable[0]\n", "        if False:\n            best, why = unusable[0]\n"),
     ("route: mode auto ignore au plan", "aihub/orchestrator.py",
-     '    if conversation["assignment_mode"] == "auto":\n        routing.auto_assign(conn, plan_id)\n',
-     "    if False:\n        routing.auto_assign(conn, plan_id)\n"),
+     "        routing.auto_assign(conn, plan_id, connected=connected)\n", "        pass\n"),
     ("route: trous non combles apres adaptation", "aihub/orchestrator.py",
-     "        routing.auto_assign(conn, plan_id, only_unassigned=True)\n", "        pass\n"),
+     "        routing.auto_assign(conn, plan_id, only_unassigned=True, connected=connected)\n", "        pass\n"),
     ("route: assignation manuelle ecrasee", "aihub/routing.py",
      "        if only_unassigned and st[\"agent_id\"] is not None:\n", "        if False:\n"),
     ("route: retrait d'agent non memorise", "aihub/store.py",
@@ -413,8 +412,7 @@ MUTATIONS = [
      "    for old in backups(folder)[:-keep] if keep > 0 else []:\n", "    for old in []:\n"),
     ("backup: copie du jour refaite", "aihub/backup.py",
      "    if target.exists():\n        return None\n", ""),
-    ("backup: fichier partiel laisse", "aihub/backup.py",
-     "        try:\n            temporary.unlink(missing_ok=True)\n        except OSError:\n            pass\n", ""),
+    ('refresh-v10: backup: fichier partiel laisse', 'aihub/backup.py', '            temporary.unlink(missing_ok=True)\n            pieces_temporary.unlink(missing_ok=True)\n', '            pass\n'),
     ("backup: copie en mode WAL", "aihub/backup.py",
      '                copy.execute("PRAGMA journal_mode = DELETE")\n', ""),
     ("backup: purge sans attendre la copie", "aihub/backup.py",
@@ -691,8 +689,7 @@ MUTATIONS = [
      '    if server:\n        out(f"Le serveur tourne', '    if False:\n        out(f"Le serveur tourne'),
     ("restaurer: sans confirmation", "aihub/cli.py",
      'if ask("Tapez « oui » pour restaurer : ").strip().lower() != "oui":', "if False:"),
-    ("restaurer: ancienne base perdue", "aihub/cli.py",
-     "                    current.backup(saved)\n", "                    pass\n"),
+    ('refresh-v10: restaurer: ancienne base perdue', 'aihub/backup.py', '            copy_database(target_db, keep)\n', '            pass\n'),
     ("web: fichiers de l'appli gardes en cache", "aihub/web/app.py",
      '        response.headers["Cache-Control"] = "no-cache"\n        return response\n',
      "        return response\n"),
@@ -789,9 +786,7 @@ MUTATIONS = [
     ("web: changement d'IA ignore", "aihub/web/app.py",
      "                else:\n                    store.update_conversation(conn, cid, agent_id=agent_id)\n",
      "                else:\n                    pass\n"),
-    ("web: changement d'IA sans controle du modele", "aihub/web/app.py",
-     "                agent_id = agent_for(conn, body.model)\n",
-     "                agent_id = store.ensure_agent(conn, config.provider_of(body.model), body.model)\n"),
+    ("refresh-v10: web: changement d'IA sans controle du modele", 'aihub/web/app.py', "                agent_id = agent_for(conn, body.model, isolated=isolation.effective(conn, store.get_conversation(conn, cid))['isolated'])", '                agent_id = store.ensure_agent(conn, config.provider_of(body.model), body.model)'),
     ("codex: liste des modeles sans params", "aihub/providers/codex.py",
      '"model/list", {}, env=env', '"model/list", env=env'),
     ("runner: la demande parmi les derniers echanges", "aihub/runner.py",
@@ -817,8 +812,7 @@ MUTATIONS = [
      "    if command and not confirm_check:\n", "    if False:\n"),
     ("auto: commande sur plusieurs lignes", "aihub/autonomous.py",
      '    if command and ("\\n" in command or len(command) > 1000):\n', "    if False:\n"),
-    ("auto: verification sans delai", "aihub/autonomous.py",
-     "            output, _ = proc.communicate(timeout=timeout)\n", "            output, _ = proc.communicate()\n"),
+    ('refresh-v10: auto: verification sans delai', 'aihub/autonomous.py', '            proc.wait(timeout=timeout)\n', '            proc.wait()\n'),
     ("auto: resultat de la verification non transmis", "aihub/autonomous.py",
      '        parts.append(f"Vérification {verdict}. Fin de sa sortie :\\n{output or \'(rien)\'}")\n', ""),
     ("auto: derniere ligne d'etat ignoree", "aihub/autonomous.py",
@@ -914,7 +908,7 @@ MUTATIONS = [
     ("local: plafond du cloud", "aihub/runner.py",
      "(s.rag_budget_local if local else s.rag_budget)", "s.rag_budget"),
     ("local: resume par defaut injoignable", "aihub/runner.py",
-     "        return local[0] if local else model\n", "        return model\n"),
+     "        return local[0] if local else (None if accounts.account_vars(env) else model)\n", "        return model\n"),
     ("local: vrai Ollama sous un faux Claude", "aihub/web/app.py",
      "ollama.PROVIDER: [ollama_url] if ollama_url else (None if command is None else False)}",
      "ollama.PROVIDER: [ollama_url] if ollama_url else None}"),
@@ -935,7 +929,7 @@ MUTATIONS = [
      "AND NOT EXISTS (SELECT 1 FROM memory_vectors v WHERE v.model = ? AND v.message_id = m.id)",
      "AND ? IS NOT NULL"),
     ("sens: recherche de la barre sans le sens", "aihub/memory.py",
-     "    for key in _by_meaning(conn, text, limit=10):\n", "    for key in []:\n"),
+     "    for key in _by_meaning(conn, text, limit=10, allowed_keys=eligible):\n", "    for key in []:\n"),
     # --- notifications ---
     ("notif: tout service accepte", "aihub/notify.py",
      '    if parts.scheme != "https" or not any(host == h or host.endswith("." + h) for h in PUSH_HOSTS):\n',
@@ -980,7 +974,7 @@ MUTATIONS = [
      '        elif status != "ok":\n            self._alert("error"', '        elif False:\n            self._alert("error"'),
     ("notif: essai filtre", "aihub/web/app.py", '"notification d\'essai", test=True,', '"notification d\'essai", test=False,'),
     ("runner: resume par un Claude non connecte", "aihub/runner.py",
-     "    model = summary_model(model)\n", ""),
+     "    model = summary_model(model, commands=commands, env=env, workdir=workdir)\n", ""),
     ("runner: resume Codex sur un modele absent", "aihub/runner.py",
      "return next((m for m in LIGHT_CODEX if m in offered), \"codex\")", "return LIGHT_CODEX[0]"),
     ("codex: copie la plus ancienne choisie", "aihub/providers/codex.py",
@@ -1059,12 +1053,8 @@ MUTATIONS = [
      "    def users():\n        access.require_admin(me())", "    def users():\n        pass"),
     ("roles: membre dans le dossier de son choix", "aihub/web/app.py",
      "        if access.trusted(user):\n            workdir = body.workdir", "        if True:\n            workdir = body.workdir"),
-    ("roles: membre cree sans permission", "aihub/web/app.py",
-     "            if body.permission_mode == \"bypass\":\n                raise access.Forbidden(\"le mode sans permission est réservé au propriétaire et aux admins\")\n            workdir = own_space",
-     "            workdir = own_space"),
-    ("roles: membre passe sans permission", "aihub/web/app.py",
-     "                if body.permission_mode == \"bypass\":\n                    raise access.Forbidden(\"le mode sans permission est réservé au propriétaire et aux admins\")\n                if body.tools",
-     "                if body.tools"),
+    ('refresh-v10: roles: membre cree sans permission', 'aihub/web/app.py', "            if not profile['isolated']:\n                if body.isolation is not None:", '            if False:\n                if body.isolation is not None:'),
+    ('refresh-v10: roles: membre passe sans permission', 'aihub/isolation.py', "        if old['isolated'] and not effective(conn, conv)['isolated']:", '        if False:'),
     ("roles: membre prend les outils du serveur", "aihub/web/app.py",
      "                if body.tools is not None and set(body.tools) - set(MEMBER_TOOLS):", "                if False:"),
     ("roles: membre ecrit dans le coffre", "aihub/web/app.py",
@@ -1078,9 +1068,7 @@ MUTATIONS = [
      "        if reading is None or reading[1] != (user or {}).get(\"id\"):", "        if reading is None:"),
     ("roles: projet de membre avec un dossier", "aihub/web/app.py",
      "if body.workdir.strip() and access.trusted(user) else None", "if body.workdir.strip() else None"),
-    ("roles: projet d'un autre modifie", "aihub/web/app.py",
-     "        with database() as conn:\n            require_project(conn, user, pid)\n            store.update_project(",
-     "        with database() as conn:\n            store.update_project("),
+    ("refresh-v10: roles: projet d'un autre modifie", 'aihub/web/app.py', '            require_project(conn, user, pid)\n', '            pass\n'),
     ("roles: admin traite en invite", "aihub/access.py",
      "    return is_owner(user) or user.get(\"role\") == \"admin\"", "    return is_owner(user)"),
     ("roles: membre ne cree rien", "aihub/access.py",
@@ -1097,15 +1085,13 @@ MUTATIONS = [
      " or r[\"is_owner\"] or r[\"role\"] == \"admin\" or ", " or r[\"is_owner\"] or "),
     ("roles: alertes sans le membre proprietaire", "aihub/notify.py",
      "        if project[\"owner_id\"] is not None:\n            found.add(project[\"owner_id\"])\n", ""),
-    ("roles: comptes de l'ordinateur deconnectes d'ici", "aihub/accounts.py",
-     "        if not own_accounts(user):\n            # Claude Code and Codex use them outside the hub too",
-     "        if False:\n            # Claude Code and Codex use them outside the hub too"),
+    ("refresh-v10: roles: comptes de l'ordinateur deconnectes d'ici", 'aihub/accounts.py', '        if self.execution is None and not own_accounts(user):\n            # Claude Code and Codex use them outside the hub too', '        if False:\n            # Claude Code and Codex use them outside the hub too'),
     ("roles: comptes de deux bases melanges", "aihub/web/jobs.py",
      "    return path.with_name(f\"{path.stem}-{kind}\")", "    return path.with_name(kind)"),
     # Version 0.5: regenerate, branch, compare, instructions, dashboard.
     ("v05: regenerer en lecture seule", "aihub/web/app.py",
-     "            conv = access.require(conn, user, cid, \"write\")\n            if conv[\"mode\"] != \"single\":\n                raise StoreError(\"on régénère",
-     "            conv = access.require(conn, user, cid, \"read\")\n            if conv[\"mode\"] != \"single\":\n                raise StoreError(\"on régénère"),
+     "            conv = access.require(conn, user, cid, \"write\")\n            if isolation.suspended(conn, cid):\n                raise StoreError('accès suspendus : réactivez cet espace avant de régénérer une réponse')\n            if conv[\"mode\"] != \"single\":\n                raise StoreError(\"on régénère",
+     "            conv = access.require(conn, user, cid, \"read\")\n            if isolation.suspended(conn, cid):\n                raise StoreError('accès suspendus : réactivez cet espace avant de régénérer une réponse')\n            if conv[\"mode\"] != \"single\":\n                raise StoreError(\"on régénère"),
     ("v05: IA changee par un invite", "aihub/web/app.py",
      "                if access.conversation_role(conn, user, conv) != \"owner\":\n                    raise access.Forbidden(\"seul celui qui possède la conversation change son IA\")",
      "                if False:\n                    raise access.Forbidden(\"seul celui qui possède la conversation change son IA\")"),
@@ -1122,7 +1108,7 @@ MUTATIONS = [
      "\"duration_ms FROM messages WHERE conversation_id = ? AND id < ? AND content <> '' \"",
      "\"duration_ms FROM messages WHERE conversation_id = ? AND id <= ? AND content <> '' \""),
     ("v05: copies comptees deux fois", "aihub/store.py",
-     "            [(target_id, r[\"role\"], None, r[\"model\"],", "            [(target_id, r[\"role\"], r[\"provider\"], r[\"model\"],"),
+     "                (target_id, r[\"role\"], None, r[\"model\"],", "                (target_id, r[\"role\"], r[\"provider\"], r[\"model\"],"),
     ("v05: branche depuis une reponse", "aihub/web/app.py",
      "            if message[\"role\"] != \"user\":\n                raise StoreError(\"on modifie une demande, pas une réponse\")\n", ""),
     ("v05: comparaison qui ecrit", "aihub/compare.py",
@@ -1201,9 +1187,7 @@ MUTATIONS = [
      "        if text is not None:\n            fence", "        if False:\n            fence"),
     ("pieces: dossier dans le nom", "aihub/attachments.py",
      "    name = str(name or \"\").replace(\"\\\\\", \"/\").rsplit(\"/\", 1)[-1]", "    name = str(name or \"\")"),
-    ("maj: fichier qui ecrit hors de son dossier", "aihub/updater.py",
-     "            if not names or any(not n.startswith(folder) or \"..\" in Path(n).parts or Path(n).is_absolute()\n                                for n in names):",
-     "            if not names:"),
+    ('refresh-v10: maj: fichier qui ecrit hors de son dossier', 'aihub/updater.py', 'not n.startswith(folder)', 'False'),
     ("maj: version annoncee non verifiee", "aihub/updater.py",
      "    if not found or found.group(1) != version:", "    if not found:"),
     ("maj: telechargement d'ailleurs", "aihub/updater.py",
@@ -1214,10 +1198,8 @@ MUTATIONS = [
      "        if jobs.busy():\n            raise Busy(\"une IA travaille", "        if False:\n            raise Busy(\"une IA travaille"),
     ("maj: lancee par un invite", "aihub/web/app.py",
      "        access.require_owner(me())\n        if jobs.busy():", "        if jobs.busy():"),
-    ("maj: echec sans retour en arriere", "aihub/updater.py",
-     "            if name in moved:\n                target = root / name", "            if False:\n                target = root / name"),
-    ("maj: serveur pas relance", "aihub/updater.py",
-     "        if restart:\n            popen(restart,", "        if False:\n            popen(restart,"),
+    ('refresh-v10: maj: echec sans retour en arriere', 'aihub/updater.py', '            shutil.move(str(backup / name), str(root / name))\n', '            pass\n'),
+    ('refresh-v10: maj: serveur pas relance', 'aihub/updater.py', '            process = launch(probe)\n', '            process = None\n'),
     ("maj: version egale prise pour plus recente", "aihub/updater.py",
      "            if key is None or key <= (version_key(current) or (0,)):", "            if key is None or key < (version_key(current) or (0,)):"),
     # A device connected by its QR code, devices named.
@@ -1297,11 +1279,36 @@ MUTATIONS = [
      "        if not code or len(code) > 512 or any(c.isspace() for c in code):", "        if False:"),
     ("comptes: connexion jamais abandonnee", "aihub/accounts.py",
      "time.monotonic() - login.started > LOGIN_TIMEOUT_S:", "False:"),
-    ("comptes: annulation sans arret", "aihub/accounts.py",
-     "            if proc is not None:\n                claude_code._kill_tree(proc)", "            if False:\n                pass"),
+    ('refresh-v10: comptes: annulation sans arret', 'aihub/accounts.py', '                finally:\n                    claude_code._kill_tree(proc)\n', '                finally:\n                    pass\n'),
     # « comptes: proprietaire connecte dans un dossier » retired (11/10): the owner now signs in the
     # computer's accounts from the hub (a new server); never signs them out (« roles: comptes de
     # l'ordinateur deconnectes d'ici »).
+]
+
+MUTATIONS += [
+    ('refresh-v10: v051: resume sur le compte serveur', 'aihub/web/app.py', 's.summary_model, env=people_accounts.env_for(me()),', 's.summary_model, env=env,'),
+    ("v051: variantes laissees actives", "aihub/store.py",
+     '        conn.execute("UPDATE variants SET status = \'stopped\', error = ? WHERE status = \'running\'", (INTERRUPTED,))\n', ''),
+    ('refresh-v10: v051: consignes perdues dans la branche', 'aihub/web/app.py', '(conv["instructions"], \'[]\' if policy[\'isolated\'] else', "(None, '[]' if policy['isolated'] else"),
+    ("v051: branche sans fichiers", "aihub/web/app.py",
+     '                    files = attachments.copy_for_branch(conn, pieces, message["conversation_id"], cid, mid,\n'
+     '                                                        copied, (user or {}).get("id"))',
+     '                    files = []'),
+    ("v051: local non propose", "aihub/routing.py",
+     '        if ("ollama", model) not in excluded:', '        if False:'),
+    ("v06: epingles melangees", "aihub/library.py",
+     'SELECT * FROM conversation_preferences WHERE user_id IS ?', 'SELECT * FROM conversation_preferences WHERE ? IS NOT NULL'),
+    ("v06: recherche sans les droits", "aihub/memory.py",
+     '    if conversation_ids is not None:\n', '    if False:\n'),
+    ("v06: modele personnel visible a tous", "aihub/library.py",
+     'SELECT * FROM work_templates WHERE user_id IS ? ORDER BY title COLLATE NOCASE',
+     'SELECT * FROM work_templates WHERE ? IS NOT NULL ORDER BY title COLLATE NOCASE'),
+    ("v06: suppression du modele d'un autre", "aihub/library.py",
+     'DELETE FROM work_templates WHERE id = ? AND user_id IS ?', 'DELETE FROM work_templates WHERE id = ? OR user_id IS ?'),
+    ("v06: champs non remplis acceptes", "aihub/library.py",
+     '    if any(not str(values.get(name) or "").strip() for name in required):', '    if False:'),
+    ("v06: protocole de lien non filtre", "aihub/web/static/markdown.js",
+     'safeUrl(url)\n      ?', 'true\n      ?'),
 ]
 
 
@@ -1315,11 +1322,28 @@ def _kill_tree(proc):
 
 
 TIMEOUT = 900
+MUTATIONS += [('v10: untrusted host execution', 'aihub/isolation.py', "if not policy['isolated'] and not access.trusted(dict(person)):", 'if False:'), ('v10: invalid backup published', 'aihub/backup.py', '        count = restore_assets(chosen, staged_db)\n', '        count = 0\n')]
+
+MUTATIONS.append(('v10: deleted account VM reused', 'aihub/isolation.py', "        context.account_id = f'{account_id}:{nonce}'\n", '        context.account_id = account_id\n'))
+
+MUTATIONS += [('v10: stale account response cached', 'aihub/web/static/sw.js', 'epoch && epoch === requestedEpoch', 'epoch'), ('v10: failed migration DB retained', 'aihub/updater.py', '            copy_database(saved_db, database)\n', '            pass\n')]
+
+MUTATIONS.append(('v10: recreated conversation space reused', 'aihub/isolation.py', "    context.scope_nonce = conn.execute('SELECT nonce FROM sandbox_contexts WHERE conversation_id = ?',\n                                       (conversation['id'],)).fetchone()[0]\n", '    context.scope_nonce = None\n'))
+
+MUTATIONS.extend([
+    ('v101: emergency suspension not saved', 'aihub/web/app.py',
+     '                isolation.suspend(conn, cid)\n', '                pass\n'),
+    ('v101: suspended execution accepted', 'aihub/isolation.py',
+     "    if policy.get('paused'):\n", '    if False:\n'),
+])
+
+TEST_MODULES = []
 
 
 def run_tests(root, timeout=300):
     proc = subprocess.Popen(
-        [sys.executable, "-B", "-m", "unittest", "discover", "-s", str(root / "tests"), "-t", str(root)],
+        [sys.executable, "-B", "-m", "unittest"] + (TEST_MODULES or
+         ["discover", "-s", str(root / "tests"), "-t", str(root)]),
         stdout=subprocess.PIPE, stderr=subprocess.STDOUT, stdin=subprocess.DEVNULL,
         text=True, encoding="utf-8", errors="replace", creationflags=NO_WINDOW, cwd=root,
     )
@@ -1389,9 +1413,12 @@ def main():
                         help="ne lancer que les mutations dont le nom contient ce mot (répétable)")
     parser.add_argument("--timeout", type=int, default=900,
                         help="secondes avant d'arrêter une suite bloquée (défaut : 900)")
+    parser.add_argument("--tests", action="append", default=[], metavar="MODULE",
+                        help="modules de tests ciblés (répétable) ; sans cette option, toute la suite")
     args = parser.parse_args()
-    global TIMEOUT
+    global TIMEOUT, TEST_MODULES
     TIMEOUT = args.timeout
+    TEST_MODULES = args.tests
     mutations = [m for m in MUTATIONS if not args.only or any(w in m[0] for w in args.only)]
     with tempfile.TemporaryDirectory() as tmp:
         base = Path(tmp) / "orig"

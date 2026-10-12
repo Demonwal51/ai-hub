@@ -135,6 +135,27 @@ def forget_conversation(root, conversation_id):
     shutil.rmtree(Path(root) / str(int(conversation_id)), ignore_errors=True)
 
 
+def copy_for_branch(conn, root, source_id, target_id, before_id, message_ids, user_id):
+    """Independent copies: deleting the source never breaks a branch's files."""
+    pending = []
+    rows = conn.execute("SELECT * FROM attachments WHERE conversation_id = ? AND message_id <= ? ORDER BY id",
+                        (source_id, before_id)).fetchall()
+    for row in rows:
+        target_message = message_ids.get(row["message_id"])
+        if row["message_id"] != before_id and target_message is None:
+            continue
+        try:
+            content = Path(row["stored"]).read_bytes()
+        except OSError:
+            raise StoreError(f"le fichier « {row['name']} » manque : la branche n'a pas été créée") from None
+        saved = save(conn, root, target_id, user_id, row["name"], content, row["mime"])
+        if target_message is not None:
+            attach(conn, [saved], target_message)
+        else:
+            pending.append(saved)
+    return pending
+
+
 def for_request(rows):
     """(text to join to the request, [{"path", "image"}] for the run) of the files it takes."""
     if not rows:

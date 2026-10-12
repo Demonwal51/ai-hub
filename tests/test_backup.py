@@ -2,6 +2,7 @@ import sqlite3
 import threading
 import time
 import unittest
+from pathlib import Path
 from datetime import date, timedelta
 from unittest import mock
 
@@ -27,6 +28,68 @@ def wait_for_backup(folder, timeout=20):
 
 
 class BackupTests(TempDirMixin, unittest.TestCase):
+    def test_successful_restore_preserves_the_complete_previous_database(self):
+        made = backup.backup_now(self.db_path, self.folder, today=date(2026, 10, 8))
+        new_id = store.create_conversation(self.conn, 'created after backup')
+        keep = Path(self.db_path).with_name('before-successful-restore.db')
+        backup.restore_database(made, self.db_path, keep)
+        saved = sqlite3.connect(keep)
+        try:
+            self.assertEqual(saved.execute('SELECT title FROM conversations WHERE id = ?', (new_id,)).fetchone()[0],
+                             'created after backup')
+        finally:
+            saved.close()
+        self.assertIsNone(self.conn.execute('SELECT id FROM conversations WHERE id = ?', (new_id,)).fetchone())
+
+    def test_invalid_assets_do_not_replace_existing_database(self):
+        import zipfile
+        made = backup.backup_now(self.db_path, self.folder, today=date(2026, 10, 9))
+        store.create_conversation(self.conn, 'created after backup')
+        before = self.conn.execute('SELECT COUNT(*) FROM conversations').fetchone()[0]
+        with zipfile.ZipFile(backup.assets_path(made), 'w') as archive:
+            archive.writestr('manifest.json', 'invalid json')
+        keep = Path(self.db_path).with_name('before-restore.db')
+        with self.assertRaises(backup.BackupError):
+            backup.restore_database(made, self.db_path, keep)
+        self.assertEqual(self.conn.execute('SELECT COUNT(*) FROM conversations').fetchone()[0], before)
+        self.assertFalse(keep.exists())
+
+    def test_attached_files_are_copied_restored_and_purged(self):
+        import zipfile
+        pieces = Path(self.db_path).with_name('hub-pieces') / str(self.cid)
+        pieces.mkdir(parents=True)
+        path = pieces / '1-document.txt'
+        path.write_text('document de test', encoding='utf-8')
+        self.conn.execute('INSERT INTO attachments (conversation_id, name, stored, mime, size, created_at) VALUES (?, ?, ?, ?, ?, ?)',
+                          (self.cid, 'document.txt', str(path), 'text/plain', path.stat().st_size, db.utc_now()))
+        made = backup.backup_now(self.db_path, self.folder, today=date(2026, 10, 10))
+        with zipfile.ZipFile(backup.assets_path(made)) as archive:
+            self.assertEqual(archive.read(f'{self.cid}/1-document.txt'), b'document de test')
+        destination = Path(self.db_path).parent / 'restored.db'
+        source = sqlite3.connect(made); target = sqlite3.connect(destination)
+        source.backup(target); source.close(); target.close()
+        self.assertEqual(backup.restore_assets(made, destination), 1)
+        restored = sqlite3.connect(destination)
+        try:
+            stored = restored.execute('SELECT stored FROM attachments').fetchone()[0]
+        finally:
+            restored.close()
+        self.assertTrue(Path(stored).is_relative_to(destination.with_name('restored-pieces')))
+        self.assertEqual(Path(stored).read_text(encoding='utf-8'), 'document de test')
+        transactional = Path(self.db_path).parent / 'transactional.db'
+        keep = transactional.with_name('before-transactional.db')
+        self.assertEqual(backup.restore_database(made, transactional, keep), 1)
+        restored = sqlite3.connect(transactional)
+        try:
+            stored = restored.execute('SELECT stored FROM attachments').fetchone()[0]
+        finally:
+            restored.close()
+        self.assertTrue(Path(stored).is_relative_to(transactional.with_name('transactional-pieces')))
+        self.assertEqual(Path(stored).read_text(encoding='utf-8'), 'document de test')
+        self.assertEqual(backup.purge_conversation(self.folder, self.cid), {})
+        with zipfile.ZipFile(backup.assets_path(made)) as archive:
+            self.assertNotIn(f'{self.cid}/1-document.txt', archive.namelist())
+
     def setUp(self):
         tmp = self.make_tempdir()
         self.db_path = str(tmp / "hub.db")

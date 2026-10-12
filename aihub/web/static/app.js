@@ -1,5 +1,12 @@
 "use strict";
 
+function applyAppearance(theme, density) {
+  document.documentElement.dataset.theme = ["light", "dark"].includes(theme) ? theme : "system";
+  document.documentElement.dataset.density = density === "compact" ? "compact" : "comfortable";
+}
+try { applyAppearance(localStorage.getItem("aihub-theme"), localStorage.getItem("aihub-density")); }
+catch { applyAppearance("system", "comfortable"); }
+
 // --- state -------------------------------------------------------------------
 
 const SHOWN_FIRST = 80;   // messages loaded when a conversation opens
@@ -9,6 +16,7 @@ const SHOWN_MAX = 5000;   // the server's limit for « last »
 const state = {
   conversations: [],
   projects: [],
+  templates: [],
   currentId: null,
   data: null,          // { conversation, messages, running, pending }
   pending: new Map(),  // permission id -> request
@@ -183,20 +191,7 @@ function escapeHtml(text) {
 // Small, safe Markdown: everything is escaped first, then code blocks,
 // inline code, bold and paragraphs are rebuilt.
 function renderMarkdown(text) {
-  const blocks = [];
-  let src = escapeHtml(text || "").replace(/```[^\n]*\n([\s\S]*?)(```|$)/g, (_, code) => {
-    blocks.push(`<pre><code>${code.replace(/\n$/, "")}</code></pre>`);
-    return `\u0000${blocks.length - 1}\u0000`;
-  });
-  src = src
-    .replace(/`([^`\n]+)`/g, "<code>$1</code>")
-    .replace(/\*\*([^*\n]+)\*\*/g, "<strong>$1</strong>");
-  const html = src.split(/\n{2,}/).map((part) => {
-    const only = part.match(/^\u0000(\d+)\u0000$/);
-    if (only) return blocks[Number(only[1])];
-    return `<p>${part.replace(/\n/g, "<br>")}</p>`;
-  }).join("");
-  return html.replace(/\u0000(\d+)\u0000/g, (_, i) => blocks[Number(i)]);
+  return AIHubMarkdown.render(text);
 }
 
 function setView(view) {
@@ -210,11 +205,13 @@ const loadConversations = coalesced(async () => {
     api("GET", "/api/conversations"), api("GET", "/api/projects")]);
   state.conversations = conversations;
   state.projects = projects;
+  refreshFilterChoices();
   // A conversation never seen here starts as seen (no « nouveau » everywhere the first time);
   // the open one is seen as it changes.
   const seen = seenTimes();
   markSeen(conversations.filter((c) => !seen[c.id] || c.id === state.currentId));
-  renderList();
+  if ($("search").value.trim().length >= 3) await runSearch();
+  else renderList();
 });
 
 // Folded projects, remembered on this device only.
@@ -253,7 +250,7 @@ function conversationItem(conv) {
     onclick: () => openConversation(conv.id),
   },
   el("span", { class: "conv-item-title" }, fresh ? el("span", { class: "dot", title: "nouveau depuis votre dernière visite" }) : null,
-    conv.title),
+    `${conv.pinned ? "📌 " : ""}${conv.title}${conv.archived ? " · archivée" : ""}`),
   el("span", { class: "conv-item-sub" },
     conv.running ? el("span", { class: "dot", title: "en cours" }) : null,
     conv.running ? el("span", { class: "conv-running", text: "en cours · " }) : null,
@@ -286,8 +283,16 @@ function renderList() {
     return;
   }
   const folded = foldedProjects();
+  const matching = filteredConversations();
+  const pinned = matching.filter((conv) => conv.pinned);
+  if (pinned.length) {
+    list.append(el("div", { class: "project-loose", text: "Épinglées" }));
+    pinned.forEach((conv) => list.append(conversationItem(conv)));
+  }
   for (const project of state.projects) {
-    const convs = state.conversations.filter((c) => c.project_id === project.id);
+    const convs = matching.filter((c) => c.project_id === project.id && !c.pinned);
+    if (!convs.length && ($("filter-project").value || $("filter-model").value ||
+      $("list-scope").value !== "active" || state.conversations.some((c) => c.project_id === project.id))) continue;
     const open = !folded.has(project.id) || convs.some((c) => c.id === state.currentId);
     const group = el("section", { class: "project" + (open ? "" : " folded") });
     group.append(el("div", { class: "project-head" },
@@ -308,11 +313,31 @@ function renderList() {
     }
     list.append(group);
   }
-  const loose = state.conversations.filter((c) => c.project_id === null);
+  const loose = matching.filter((c) => c.project_id === null && !c.pinned);
   if (loose.length) {
     if (state.projects.length) list.append(el("div", { class: "project-loose", text: "Sans projet" }));
     for (const conv of loose) list.append(conversationItem(conv));
   }
+  if (!matching.length && state.conversations.length) list.append(el("p", {
+    class: "list-empty", text: "Aucune conversation avec ces filtres." }));
+}
+
+function refreshFilterChoices() {
+  for (const [id, values, label] of [["filter-project", state.projects.map((p) => [String(p.id), p.name]), "Tous les projets"],
+    ["filter-model", [...new Set(state.conversations.map((c) => c.model).filter(Boolean))].map((m) => [m, MODEL_LABELS[m]]), "Toutes les IA"]]) {
+    const previous = $(id).value;
+    $(id).replaceChildren(el("option", { value: "", text: label }), ...values.map(([value, text]) => el("option", { value, text })));
+    if (values.some(([value]) => value === previous)) $(id).value = previous;
+  }
+}
+
+function filteredConversations() {
+  const scope = $("list-scope").value;
+  return state.conversations.filter((c) => (scope === "all" || Boolean(c.archived) === (scope === "archived")) &&
+    (!$("filter-project").value || String(c.project_id) === $("filter-project").value) &&
+    (!$("filter-model").value || c.model === $("filter-model").value) &&
+    (!$("filter-after").value || c.updated_at.slice(0, 10) >= $("filter-after").value) &&
+    (!$("filter-before").value || c.updated_at.slice(0, 10) <= $("filter-before").value));
 }
 
 function projectOptions(selected, emptyLabel) {
@@ -485,6 +510,7 @@ async function openConversation(id, messageId = null) {
   fitPrompt();
   await refreshConversation();
   if (state.currentId !== id) return;  // another one was opened meanwhile
+  if (messageId === null) $("messages").scrollTop = $("messages").scrollHeight;
   connectEvents(id);
   if (messageId !== null) {
     // From a search result: show the message found, even far back.
@@ -539,15 +565,25 @@ function closeConversation() {
 function renderConversation() {
   const { conversation: conv, messages } = state.data;
   $("conv-title").textContent = conv.title;
+  $("isolation-access").classList.toggle("hidden", conv.my_role !== "owner");
+  $("isolation-access").textContent = conv.isolation?.isolated ? "Espace isolé · accès…" : "Espace et accès…";
+  $("isolation-accounts").classList.toggle("hidden", !conv.isolation?.isolated || conv.my_role === "read");
+  $("isolation-accounts-quick").classList.toggle("hidden", !conv.isolation?.isolated || conv.my_role === "read");
+  $("isolation-results").classList.toggle("hidden", !conv.isolation?.isolated || conv.my_role === "read");
+  $("results-quick").classList.toggle("hidden", !conv.isolation?.isolated || conv.my_role === "read");
+  $("access-overview").textContent = conv.isolation?.paused ? "Accès suspendus · voir" : "Accès de cette IA";
+  $("pin-conversation").textContent = conv.pinned ? "Désépingler pour moi" : "Épingler pour moi";
+  $("archive-conversation").textContent = conv.archived ? "Sortir de mes archives" : "Archiver pour moi";
+  $("save-template").classList.toggle("hidden", !canCreate() || conv.my_role !== "owner");
   const how = conv.mode === "orchestration"
     ? `Orchestration · chef : ${MODEL_LABELS[conv.conductor_model] || conv.conductor_model || "?"}`
     : (MODEL_LABELS[conv.model] || conv.model || "");
-  $("conv-meta").textContent = `${conv.workdir || "sans dossier"} · ${how}`;
+  $("conv-meta").textContent = `${conv.isolation?.isolated ? "Espace isolé · " : ""}${conv.isolation?.isolated && conv.isolation.files === "none" ? "Aucun fichier du PC" : conv.workdir || "sans dossier"} · ${how}`;
   $("conv-mode").value = conv.permission_mode;
   // The AI of the conversation (the conductor in orchestration); one no longer offered stays shown.
   const current = conv.mode === "orchestration" ? conv.conductor_model : conv.model;
-  const offered = state.options.models.includes(current) || !current ? state.options.models
-    : [current, ...state.options.models];
+  const allowedModels = (conv.isolation?.isolated ? state.options.isolated_models : state.options.models) || [];
+  const offered = allowedModels.includes(current) || !current ? allowedModels : [current, ...allowedModels];
   $("conv-model").replaceChildren(...offered.map((m) => el("option", {
     value: m, text: (conv.mode === "orchestration" ? "Chef : " : "IA : ") + (MODEL_LABELS[m] || m),
     selected: m === current })));
@@ -573,9 +609,11 @@ function renderConversation() {
   }
   $("share").classList.toggle("hidden", role !== "owner" || !state.me);
   $("share").textContent = (state.data.shared_with || []).length ? `Partagée (${state.data.shared_with.length})` : "Partager";
-  $("composer").classList.toggle("hidden", role === "read");
-  $("readonly-note").classList.toggle("hidden", role !== "read");
-  $("fresh").classList.toggle("hidden", role === "read");
+  $("composer").classList.toggle("hidden", role === "read" || !!conv.isolation?.paused);
+  $("readonly-note").classList.toggle("hidden", role !== "read" && !conv.isolation?.paused);
+  $("readonly-note").textContent = conv.isolation?.paused ? "Accès suspendus. Le propriétaire peut les réactiver dans « Accès de cette IA »." : "Cette conversation est partagée en lecture seule.";
+  $("fresh").classList.toggle("hidden", role === "read" || !!conv.isolation?.paused);
+  for (const id of ["isolation-accounts", "isolation-accounts-quick", "isolation-results", "results-quick"]) $(id).disabled = !!conv.isolation?.paused;
   fillCompareChoices();
   // Files go to a conversation with one AI (not to a conductor yet).
   $("attach").classList.toggle("hidden", role === "read" || conv.mode === "orchestration");
@@ -600,6 +638,7 @@ function renderConversation() {
 
 function renderMessages(messages) {
   const box = $("messages");
+  const previousTop = box.scrollTop;
   const atBottom = box.scrollHeight - box.scrollTop - box.clientHeight < 80;
   box.replaceChildren();
   const older = state.data.older || 0;
@@ -706,7 +745,8 @@ function renderMessages(messages) {
     if (!shown.has(plan.id) && !(older && firstShown !== null && plan.request_message_id < firstShown)) box.append(planCard(plan));
   }
   for (const request of state.pending.values()) box.append(permissionCard(request));
-  if (atBottom || state.live) box.scrollTop = box.scrollHeight;
+  if (atBottom) box.scrollTop = box.scrollHeight;
+  else box.scrollTop = previousTop;
 }
 
 function delegationNote(d) {
@@ -944,9 +984,16 @@ function appendLive(chunk) {
   state.live.content += chunk;
   const body = $("live-body");
   if (body) {
-    body.innerHTML = renderMarkdown(state.live.content);
     const box = $("messages");
-    box.scrollTop = box.scrollHeight;
+    const following = box.scrollHeight - box.scrollTop - box.clientHeight < 80;
+    if (state.livePaint) return;
+    state.livePaint = requestAnimationFrame(() => {
+      state.livePaint = null;
+      if (!state.live || !document.contains(body)) return;
+      body.innerHTML = renderMarkdown(state.live.content);
+      if (following) box.scrollTop = box.scrollHeight;
+      $("latest-message").classList.toggle("hidden", box.scrollHeight - box.scrollTop - box.clientHeight < 80);
+    });
   }
 }
 
@@ -967,6 +1014,13 @@ function connectEvents(id) {
 
 function handleEvent(ev) {
   switch (ev.type) {
+    case "access_revoked":
+      closeConversation();
+      try { localStorage.setItem(OFFLINE_KEY, "0"); } catch { /* storage off */ }
+      tellWorker("offline-off");
+      toast("Votre accès ou votre session a changé. La conversation est fermée.");
+      loadConversations();
+      break;
     case "snapshot":
       if (ev.running) {
         for (const p of ev.pending) state.pending.set(p.id, p);
@@ -1376,10 +1430,351 @@ function confirmDialog({ title, text, okText = "Confirmer", check = null }) {
 let openNewDialog = () => {};      // set by setupNewDialog
 let openProjectDialog = () => {};  // set by setupProjectDialog
 
+// --- execution spaces ---------------------------------------------------------
+
+function isolationEditor(inherit) {
+  const choices = (items) => items.map(([value, text]) => el("option", { value, text }));
+  const mode = el("select", { "aria-label": "Lieu d’exécution" }, ...choices([
+    ...(inherit ? [["inherit", "Hériter du projet"]] : []),
+    ["host", "Sur le PC · accès selon les permissions"], ["isolated", "Espace isolé · accès choisis"]]));
+  const files = el("select", {}, ...choices([["none", "Aucun fichier du PC"], ["read", "Lire une copie"], ["write", "Modifier une copie"]]));
+  const paths = el("textarea", { rows: 3, maxlength: 50000, placeholder: "src\nREADME.md", "aria-label": "Fichiers et dossiers sélectionnés" });
+  const network = el("select", {}, ...choices([["ai", "Fournisseur IA seulement"], ["none", "Aucun réseau"]]));
+  const memory = el("select", {}, ...choices([["own", "Cette conversation seulement"], ["project", "Conversations partagées du projet"]]));
+  const summary = el("p", { class: "quota-note" });
+  const presets = el("select", { "aria-label": "Profil d’accès" }, ...choices([
+    ["custom", "Personnaliser les accès"], ["discussion", "Discussion seule"],
+    ["analysis", "Analyse de fichiers"], ["project", "Travail sur un projet"]]));
+  const presetNote = el("p", { class: "quota-note", text: "Un profil prépare les accès. Vous choisissez ensuite les fichiers autorisés." });
+  const selection = el("label", {}, "Sélection, relative au dossier de travail · un chemin par ligne", paths);
+  const fields = el("div", { class: "isolation-fields" }, el("label", {}, "Fichiers", files), selection,
+    el("label", {}, "Réseau", network), el("label", {}, "Mémoire", memory),
+    el("p", { class: "quota-note", text: "Aucun outil du PC. Les comptes IA de cet espace se connectent séparément. Les changements sont produits dans une copie, puis récupérés pour vérification." }));
+  const node = el("fieldset", { class: "isolation-editor" }, el("legend", { text: "Espace et accès" }),
+    el("label", {}, "Commencer avec un profil", presets), presetNote,
+    el("label", {}, "Lieu d’exécution", mode), summary, fields);
+  let parent = { isolated: false };
+  const refresh = () => {
+    const inherited = mode.value === "inherit";
+    fields.classList.toggle("hidden", mode.value !== "isolated");
+    selection.classList.toggle("hidden", files.value === "none");
+    summary.textContent = inherited ? (parent.isolated ? "Le projet impose l’isolation et ses limites d’accès." : "Le projet utilise le PC. Vous pouvez choisir un espace isolé pour cette conversation.")
+      : mode.value === "isolated" ? "Seuls les fichiers sélectionnés sont copiés. Les originaux restent sur le PC." : "L’IA s’exécute sur ce PC dans le dossier de travail.";
+    const host = mode.querySelector('option[value="host"]');
+    if (host) host.disabled = inherit && parent.isolated;
+    const level = { none: 0, read: 1, write: 2 };
+    for (const [profile, access] of [["analysis", "read"], ["project", "write"]]) {
+      presets.querySelector(`option[value="${profile}"]`).disabled = !!(inherit && parent.isolated && level[access] > level[parent.files]);
+    }
+  };
+  for (const field of [mode, files]) field.addEventListener("change", refresh);
+  const value = () => mode.value === "inherit" ? null : { isolated: mode.value === "isolated", files: files.value,
+    paths: files.value === "none" ? [] : paths.value.split(/\r?\n/).map((p) => p.trim()).filter(Boolean),
+    network: network.value, memory: memory.value };
+  const set = (policy) => {
+    presets.value = "custom";
+    presetNote.textContent = "Un profil prépare les accès. Vous choisissez ensuite les fichiers autorisés.";
+    mode.value = !policy && inherit ? "inherit" : policy?.isolated ? "isolated" : "host";
+    files.value = policy?.files || "none"; paths.value = (policy?.paths || []).join("\n");
+    network.value = policy?.network || "ai"; memory.value = policy?.memory || "own"; refresh();
+  };
+  for (const field of [mode, files, paths, network, memory]) field.addEventListener("change", () => { presets.value = "custom"; });
+  presets.addEventListener("change", () => {
+    if (presets.value === "custom") return;
+    mode.value = "isolated";
+    files.value = { discussion: "none", analysis: "read", project: "write" }[presets.value];
+    if (files.value === "none") paths.value = "";
+    else if (inherit && parent.isolated && !paths.value.trim()) paths.value = (parent.paths || []).join("\n");
+    network.value = parent.isolated && parent.network === "none" ? "none" : "ai";
+    memory.value = "own";
+    presetNote.textContent = { discussion: "Discutez sans donner accès aux fichiers du PC.",
+      analysis: "L’IA lit uniquement une copie de votre sélection. Elle ne modifie aucun original.",
+      project: "L’IA modifie une copie de votre sélection. Vous vérifiez les résultats avant de les appliquer." }[presets.value];
+    refresh();
+  });
+  set(null);
+  return { node, set, value, setPreset: (name) => { presets.value = name; presets.dispatchEvent(new Event("change", { bubbles: true })); },
+    effective: () => value() || parent, parent: (policy) => { parent = policy || { isolated: false }; refresh(); } };
+}
+
+document.addEventListener("DOMContentLoaded", () => {
+  $("appearance").addEventListener("click", () => {
+    const dialog = el("dialog", { class: "dialog dialog-content" });
+    const theme = el("select", { "aria-label": "Thème" }, ...[["system", "Selon l’appareil"], ["light", "Clair"], ["dark", "Sombre"]].map(([value, text]) => el("option", { value, text })));
+    const density = el("select", { "aria-label": "Espacement" }, el("option", { value: "comfortable", text: "Confortable" }), el("option", { value: "compact", text: "Compact" }));
+    theme.value = document.documentElement.dataset.theme; density.value = document.documentElement.dataset.density;
+    for (const field of [theme, density]) field.addEventListener("change", () => {
+      applyAppearance(theme.value, density.value);
+      try { localStorage.setItem("aihub-theme", theme.value); localStorage.setItem("aihub-density", density.value); } catch { /* storage off */ }
+    });
+    dialog.append(el("h2", { text: "Une interface à votre rythme" }), el("label", {}, "Thème", theme), el("label", {}, "Espacement", density),
+      el("p", { class: "quota-note", text: "Ces choix sont gardés sur cet appareil." }), el("div", { class: "dialog-actions" },
+        el("button", { type: "button", class: "btn btn-primary", text: "Terminé", onclick: () => dialog.close() })));
+    dialog.addEventListener("close", () => dialog.remove(), { once: true }); document.body.append(dialog); dialog.showModal();
+  });
+  $("isolation-accounts").addEventListener("click", () => openSpaceAccounts());
+  $("isolation-accounts-quick").addEventListener("click", () => openSpaceAccounts());
+  $("isolation-results").addEventListener("click", () => openSpaceResults());
+  $("results-quick").addEventListener("click", () => openSpaceResults());
+  $("access-overview").addEventListener("click", openAccessOverview);
+  $("diagnostics").addEventListener("click", openDiagnostics);
+  $("getting-started").addEventListener("click", openGettingStarted);
+  $("welcome-guide").addEventListener("click", openGettingStarted);
+  $("isolation-access").addEventListener("click", async () => {
+    try {
+      const data = await api("GET", `/api/conversations/${state.currentId}/isolation`);
+      const editor = isolationEditor(true); editor.parent(data.parent); editor.set(data.inherited ? null : data.policy);
+      const error = el("p", { class: "form-error", role: "alert" });
+      const dialog = el("dialog", { class: "dialog" });
+      const cancel = el("button", { type: "button", class: "btn btn-ghost", text: "Annuler", onclick: () => dialog.close() });
+      const submit = el("button", { type: "submit", class: "btn btn-primary", text: "Enregistrer les accès" });
+      const form = el("form", {}, el("h2", { text: "Espace et accès" }), editor.node, error,
+        el("div", { class: "dialog-actions" }, cancel, submit));
+      form.addEventListener("submit", async (event) => {
+        event.preventDefault(); submit.disabled = true;
+        try {
+          const policy = editor.value();
+          await api(policy ? "PUT" : "DELETE", `/api/conversations/${state.currentId}/isolation`, policy);
+          dialog.close(); await openConversation(state.currentId);
+        } catch (err) { error.textContent = err.message; }
+        finally { submit.disabled = false; }
+      });
+      dialog.append(form); document.body.append(dialog);
+      dialog.addEventListener("close", () => dialog.remove(), { once: true }); dialog.showModal();
+    } catch (err) { toast(err.message); }
+  });
+});
+
+function featureDialog(title, ...content) {
+  const dialog = el("dialog", { class: "dialog dialog-content" }, el("h2", { text: title }), ...content);
+  dialog.append(el("div", { class: "dialog-actions" }, el("button", { type: "button", class: "btn btn-ghost", text: "Fermer", onclick: () => dialog.close() })));
+  dialog.addEventListener("close", () => dialog.remove(), { once: true });
+  document.body.append(dialog); dialog.showModal(); return dialog;
+}
+
+async function openAccessOverview() {
+  const cid = state.currentId;
+  const conv = state.data?.conversation;
+  if (!conv) return;
+  try {
+    const data = await api("GET", `/api/conversations/${cid}/isolation`);
+    if (state.currentId !== cid) return;
+    const p = data.policy;
+    const details = el("dl", { class: "access-facts" });
+    for (const [label, value] of [
+      ["État", p.paused ? "Accès suspendus. Aucun nouveau travail ni connexion." : "Accès actifs"],
+      ["Exécution", p.isolated ? "Espace isolé" : "Directement sur le PC"],
+      ["Fichiers", p.isolated ? ({ none: "Aucun fichier du PC", read: "Lecture d’une copie", write: "Modification d’une copie ; application après vérification" }[p.files]) : "Accès du compte du PC selon les permissions choisies"],
+      ["Sélection", p.isolated ? (p.paths.join("\n") || "Aucune") : (conv.workdir || "Sans dossier")],
+      ["Réseau", p.isolated ? (p.network === "none" ? "Aucun réseau" : "Fournisseur IA seulement") : "Réseau du PC"],
+      ["Mémoire", p.memory === "project" ? "Conversations partagées du projet" : "Cette conversation"],
+      ["Compte IA", conv.my_role === "read" ? "Lecture seule : vous ne lancez pas d’IA" : p.isolated ? "Votre compte propre à cet espace et au fournisseur" : "Votre compte IA configuré sur le serveur"]
+    ]) details.append(el("dt", { text: label }), el("dd", { text: value }));
+    const actions = el("div", { class: "dialog-actions" });
+    const error = el("p", { class: "form-error", role: "alert" });
+    const dialog = featureDialog("Accès de cette IA", details, error, actions);
+    if (p.isolated && !p.paused && conv.my_role !== "read") actions.append(el("button", { class: "btn btn-ghost", text: "Voir mon compte IA", onclick: () => { dialog.close(); openSpaceAccounts(); } }));
+    if (conv.my_role === "owner") {
+      actions.append(el("button", { class: "btn btn-ghost", text: "Modifier les accès", onclick: () => { dialog.close(); $("isolation-access").click(); } }));
+      const cut = el("button", { class: p.paused ? "btn btn-primary" : "btn btn-danger", text: p.paused ? "Réactiver les accès" : "Tout couper", onclick: async () => {
+        cut.disabled = true;
+        try {
+          const result = await api("POST", `/api/conversations/${cid}/isolation/${p.paused ? "resume" : "pause"}`, {});
+          dialog.close(); await openConversation(cid);
+          toast(p.paused ? "Accès réactivés." : "Accès suspendus ; arrêt du travail demandé. Les fichiers et comptes sont conservés.");
+          if (result.warnings?.length) featureDialog("Arrêt à vérifier", el("p", { class: "form-error", text: "Les nouveaux lancements sont bloqués, mais un arrêt n’a pas été confirmé. Réessayez « Tout couper » ou vérifiez le moteur sur le serveur." }));
+        } catch (err) { error.textContent = err.message; cut.disabled = false; }
+      } }); actions.append(cut);
+      if (p.paused) actions.append(el("button", { class: "btn btn-ghost", text: "Réessayer l’arrêt", onclick: async () => {
+        try {
+          const result = await api("POST", `/api/conversations/${cid}/isolation/pause`, {});
+          error.textContent = result.warnings?.length ? "Un arrêt reste à vérifier sur le serveur." : "";
+          if (!result.warnings?.length) toast("Arrêt demandé à nouveau ; accès toujours suspendus.");
+        } catch (err) { error.textContent = err.message; }
+      } }));
+    }
+  } catch (err) { toast(err.message); }
+}
+
+async function openDiagnostics() {
+  const cid = state.currentId;
+  const conv = state.data?.conversation;
+  const body = el("div", { class: "diagnostic-checks" }, el("p", { text: "Vérification en cours…" }));
+  const dialog = featureDialog("Vérifier le fonctionnement", body);
+  try {
+    const data = await api("GET", "/api/diagnostics");
+    if (!dialog.open) return;
+    body.replaceChildren(el("p", { class: "quota-note", text: `AI Hub ${data.version}. Aucun message n’est envoyé à une IA.` }));
+    for (const c of data.checks) body.append(el("section", { class: "diagnostic-check" },
+      el("strong", { text: `${c.ok ? "✓" : "!"} ${c.name}` }), el("p", { text: c.detail }),
+      c.action ? el("p", { class: "quota-note", text: c.action }) : null));
+    if (cid && conv?.isolation?.isolated && conv.my_role !== "read") {
+      body.append(el("p", { text: "Le compte IA doit être connecté dans cet espace, même si un autre espace est déjà connecté." }),
+        el("button", { class: "btn btn-ghost", text: "Vérifier le compte de cet espace", onclick: () => { dialog.close(); openSpaceAccounts(); } }));
+      if (conv.isolation.paused) body.append(el("p", { text: "Cet espace est suspendu : réactivez ses accès avant de vérifier sa connexion." }));
+      else if (!state.data?.running && data.checks.find(c => c.id === "engine")?.ok) {
+        const model = conv.model || conv.conductor_model || "default";
+        const provider = model === "codex" || model.startsWith("gpt-") ? "codex" : model.startsWith("local:") ? null : "claude_code";
+        if (provider) {
+          try {
+            const account = await api("GET", `/api/conversations/${cid}/sandbox/accounts?provider=${provider}`);
+            if (dialog.open && state.currentId === cid) body.append(el("p", { text: account.signed_in ? "✓ Le compte IA de cet espace est connecté." : "! Aucun compte IA connecté dans cet espace. Utilisez le bouton de connexion ci-dessus." }));
+          } catch { if (dialog.open) body.append(el("p", { text: "Le compte de cet espace n’a pas pu être vérifié. Ouvrez ses comptes pour connaître la prochaine étape." })); }
+        }
+      }
+    } else body.append(el("button", { class: "btn btn-ghost", text: "Vérifier mes comptes IA", onclick: () => { dialog.close(); openAccounts(false); } }));
+  } catch (err) { body.replaceChildren(el("p", { class: "form-error", text: err.message })); }
+}
+
+function openGettingStarted() {
+  const steps = el("ol", { class: "getting-started-steps" });
+  const dialog = featureDialog("Votre premier espace, en trois étapes", el("p", { class: "quota-note", text: "Les espaces isolés nécessitent Docker Sandboxes sur le serveur. Le diagnostic vérifie sa disponibilité." }), steps);
+  try { localStorage.setItem("aihub-guide-seen", "1"); } catch { /* optional device preference */ }
+  for (const [title, text, action, label] of [
+    ["Choisir ses accès", "Créez une conversation avec le profil Discussion seule pour commencer sans fichiers du PC.", () => openNewDialog(null, "discussion"), "Créer mon espace"],
+    ["Connecter son IA", "Dans la conversation isolée, cliquez sur Comptes IA de cet espace. Votre connexion reste propre à cet espace.", () => state.data?.conversation?.isolation?.isolated ? openSpaceAccounts() : openNewDialog(), state.data?.conversation?.isolation?.isolated ? "Connecter cette IA" : "Créer une conversation d’abord"],
+    ["Vérifier et essayer", "Lancez le diagnostic, puis envoyez votre première demande. Pour travailler sur des fichiers, sélectionnez-les dans les accès et vérifiez les résultats avant application.", openDiagnostics, "Lancer le diagnostic"]
+  ]) steps.append(el("li", {}, el("h3", { text: title }), el("p", { text }), el("button", { class: "btn btn-primary", text: label, onclick: () => { dialog.close(); action(); } })));
+}
+
+async function openSpaceAccounts(selectedProvider = null) {
+  const cid = state.currentId;
+  const dialog = el("dialog", { class: "dialog dialog-content" });
+  const provider = el("select", { "aria-label": "Compte IA de l’espace" },
+    el("option", { value: "claude_code", text: "Claude" }), el("option", { value: "codex", text: "ChatGPT / Codex" }));
+  const current = state.data.conversation.model || state.data.conversation.conductor_model || "default";
+  provider.value = current === "codex" || current.startsWith("gpt-") ? "codex" : "claude_code";
+  if (selectedProvider === 'codex' || selectedProvider === 'claude_code') provider.value = selectedProvider;
+  const readOnly = el("input", { type: "checkbox" });
+  const body = el("div"); const error = el("p", { class: "form-error", role: "alert" });
+  let closed = false, timer = null, lastView = null;
+  const target = () => ({ provider: provider.value, read_only: readOnly.checked });
+  const path = (action) => `/api/conversations/${cid}/sandbox/${action}`;
+  const close = el("button", { type: "button", class: "btn btn-ghost", text: "Fermer", onclick: () => dialog.close() });
+  const render = (data) => {
+    const login = data.login || (data.state ? data : null);
+    const signature = JSON.stringify([target(), data.prepared, data.signed_in, login?.state, login?.url, login?.code, login?.needs_code, login?.error, data.error]);
+    if (signature === lastView) {
+      if (login?.state === "waiting" || login?.state === "starting") timer = setTimeout(refresh, 2500);
+      return; // preserve the code field and its focus while the person types
+    }
+    lastView = signature;
+    body.replaceChildren(); error.textContent = data.error || "";
+    if (data.signed_in || login?.state === "ok") {
+      body.append(el("p", { class: "pill ok", text: "Compte connecté dans cet espace" }));
+      body.append(el("button", { type: "button", class: "btn btn-ghost", text: "Déconnecter cet espace",
+        onclick: async () => { try { await api("POST", path("logout"), target()); await refresh(); } catch (err) { error.textContent = err.message; } } }));
+    } else if (login?.state === "waiting" || login?.state === "starting") {
+      body.append(el("p", { text: login.state === "starting" ? "Préparation de la connexion…" : "Terminez la connexion sur la page du fournisseur." }));
+      if (login.url) body.append(el("a", { href: login.url, target: "_blank", rel: "noopener noreferrer", class: "btn btn-primary", text: "Ouvrir la page de connexion" }));
+      if (login.code) body.append(el("p", {}, "Code à saisir sur cette page : ", el("strong", { text: login.code })));
+      if (login.needs_code) {
+        const input = el("input", { type: "password", autocomplete: "off", maxlength: 512, "aria-label": "Code de connexion Claude" });
+        const send = el("button", { type: "button", class: "btn btn-primary", text: "Valider le code", onclick: async () => {
+          send.disabled = true;
+          try { render(await api("POST", path("code"), { ...target(), code: input.value })); input.value = ""; }
+          catch (err) { error.textContent = err.message; } finally { send.disabled = false; }
+        } });
+        body.append(el("label", {}, "Code fourni par Claude", input), send);
+      }
+      body.append(el("button", { type: "button", class: "btn btn-ghost", text: "Annuler la connexion", onclick: async () => {
+        try { await api("POST", path("cancel-login"), target()); await refresh(); } catch (err) { error.textContent = err.message; }
+      } }));
+      timer = setTimeout(refresh, 2500);
+    } else {
+      if (login?.error) error.textContent = login.error;
+      body.append(el("p", { text: data.prepared ? "Cet espace attend votre connexion." : "Préparez cet espace, puis connectez votre compte." }));
+      const start = el("button", { type: "button", class: "btn btn-primary", text: "Préparer et me connecter", onclick: async () => {
+        start.disabled = true; start.textContent = "Préparation…";
+        try { render(await api("POST", path("login"), target())); }
+        catch (err) { error.textContent = err.message; start.disabled = false; start.textContent = "Réessayer"; }
+      } }); body.append(start);
+    }
+  };
+  const refresh = async () => {
+    clearTimeout(timer); if (closed) return;
+    try { render(await api("GET", path("accounts") + `?provider=${provider.value}&read_only=${readOnly.checked}`)); }
+    catch (err) { render({ prepared: false, error: err.message }); }
+  };
+  for (const field of [provider, readOnly]) field.addEventListener("change", refresh);
+  dialog.append(el("h2", { text: "Vos comptes dans cet espace" }),
+    el("p", { class: "quota-note", text: "Cette connexion appartient à votre compte AI Hub et à cette conversation. Effectuez vous-même la connexion sur la page du fournisseur." }),
+    el("label", {}, "Fournisseur", provider),
+    state.data.conversation.isolation.files === "write" ? el("label", { class: "check" }, readOnly, "Compte des réponses en lecture seule : comparaisons et résumés") : null,
+    body, error, el("div", { class: "dialog-actions" }, close));
+  dialog.addEventListener("close", () => { closed = true; clearTimeout(timer); dialog.remove(); }, { once: true });
+  document.body.append(dialog); dialog.showModal(); await refresh();
+}
+
+async function openSpaceResults() {
+  const cid = state.currentId;
+  const dialog = el("dialog", { class: "dialog dialog-wide dialog-content" });
+  const provider = el("select", { "aria-label": "Fournisseur des résultats" },
+    el("option", { value: "claude_code", text: "Claude" }), el("option", { value: "codex", text: "Codex" }));
+  const model = state.data.conversation.model || state.data.conversation.conductor_model || "default";
+  provider.value = model === "codex" || model.startsWith("gpt-") ? "codex" : "claude_code";
+  const list = el("div", { class: "result-files" }); const error = el("p", { class: "form-error", role: "alert" });
+  const download = el("a", { class: "btn btn-ghost", text: "Récupérer la copie (.zip)" });
+  const apply = el("button", { type: "button", class: "btn btn-primary", text: "Appliquer la sélection" });
+  const note = el("p", { class: "quota-note" }); let selected = new Map();
+  const load = async () => {
+    error.textContent = ""; list.textContent = "Lecture des résultats…"; selected = new Map(); apply.disabled = true;
+    download.href = `/api/conversations/${cid}/sandbox/results/download?provider=${provider.value}`;
+    try {
+      const data = await api("GET", `/api/conversations/${cid}/sandbox/results?provider=${provider.value}`);
+      list.replaceChildren();
+      const counts = data.files.reduce((out, file) => { out[file.kind] = (out[file.kind] || 0) + 1; return out; }, {});
+      list.append(el("p", { class: "results-summary", role: "status", text: `${counts.new || 0} créé(s) · ${counts.modified || 0} modifié(s) · ${counts.deleted || 0} supprimé(s). Rien n’est appliqué sans votre choix.` }));
+      apply.classList.toggle("hidden", !data.can_apply || state.data.conversation.my_role !== "owner");
+      note.textContent = data.can_apply ? `Dossier original : ${data.workdir}. Une copie de sécurité est conservée à chaque application.`
+        : "Les fichiers originaux restent inchangés. Récupérez les résultats pour les utiliser.";
+      if (!data.files.length) list.append(el("p", { text: "Aucun changement de fichier dans cet espace pour le moment." }));
+      for (const file of data.files) {
+        const resultProvider = provider.value;
+        const checkbox = el("input", { type: "checkbox" });
+        checkbox.addEventListener("change", () => {
+          if (checkbox.checked) selected.set(file.name, file); else selected.delete(file.name);
+          apply.disabled = !selected.size;
+        });
+        const detail = el("details", {}, el("summary", { text: "Voir les changements" }));
+        let loaded = false;
+        detail.addEventListener("toggle", async () => {
+          if (!detail.open || loaded) return; loaded = true;
+          const preview = el("p", { text: "Lecture de l’aperçu…" }); detail.append(preview);
+          try {
+            const view = await api("GET", `/api/conversations/${cid}/sandbox/results/preview?provider=${resultProvider}&name=${encodeURIComponent(file.name)}`);
+            preview.replaceWith(view.binary ? el("p", { class: "quota-note", text: view.note })
+              : el("pre", { class: "result-diff", text: view.diff || "Contenu identique à l’original actuel." }));
+          } catch (err) { preview.textContent = err.message; loaded = false; }
+        });
+        list.append(el("div", { class: "result-file" }, el("label", { class: "check" }, checkbox, el("span", {},
+          el("strong", { text: file.name }), el("span", { class: "conv-item-sub", text: `${{ new: "Nouveau", modified: "Modifié", deleted: "Supprimé" }[file.kind]} · ${file.size} octets` }))), detail));
+      }
+    } catch (err) { list.replaceChildren(); error.textContent = err.message; }
+  };
+  apply.addEventListener("click", async () => {
+    const files = [...selected.values()];
+    const deletes = files.some((f) => f.kind === "deleted");
+    if (!await confirmDialog({ title: "Appliquer les fichiers sélectionnés ?", text: `${files.length} fichier(s) seront appliqués au dossier original. ${deletes ? "La sélection comprend des suppressions. " : ""}Une sauvegarde des originaux est conservée.`, okText: "Appliquer", check: deletes ? "Je confirme les suppressions sélectionnées" : undefined })) return;
+    apply.disabled = true;
+    try {
+      await api("POST", `/api/conversations/${cid}/sandbox/results/apply`, { provider: provider.value,
+        files: Object.fromEntries(files.map((f) => [f.name, f.sha256])), confirm_delete: deletes });
+      toast("Fichiers appliqués ; copie de sécurité conservée."); await load();
+    } catch (err) { error.textContent = err.message; apply.disabled = false; }
+  });
+  provider.addEventListener("change", load);
+  dialog.append(el("h2", { text: "Fichiers produits dans l’espace" }), el("label", {}, "Fournisseur", provider), note, list, error,
+    el("div", { class: "dialog-actions" }, el("button", { type: "button", class: "btn btn-ghost", text: "Fermer", onclick: () => dialog.close() }), download, apply));
+  dialog.addEventListener("close", () => dialog.remove(), { once: true }); document.body.append(dialog); dialog.showModal(); await load();
+}
+
 // --- projects ---------------------------------------------------------------------------
 
 function setupProjectDialog() {
   const dialog = $("project-dialog");
+  const accessEditor = isolationEditor(false);
+  $("project-instructions").closest("label").before(accessEditor.node);
   let editing = null;  // the project being edited, null for a new one
   openProjectDialog = (project = null) => {
     editing = project;
@@ -1389,6 +1784,7 @@ function setupProjectDialog() {
     $("project-description").value = project ? project.description || "" : "";
     $("project-workdir").value = project ? project.workdir || "" : "";
     $("project-instructions").value = project ? project.instructions || "" : "";
+    accessEditor.set(project?.isolation || { isolated: false });
     $("project-delete").classList.toggle("hidden", !project);
     $("project-delete-all").classList.toggle("hidden", !project || !project.conversations);
     $("project-share").classList.toggle("hidden", !project || !state.me);
@@ -1405,7 +1801,8 @@ function setupProjectDialog() {
   $("project-form").addEventListener("submit", async (event) => {
     event.preventDefault();
     const body = { name: $("project-name").value.trim(), description: $("project-description").value,
-      workdir: $("project-workdir").value.trim(), instructions: $("project-instructions").value };
+      workdir: $("project-workdir").value.trim(), instructions: $("project-instructions").value,
+      isolation: accessEditor.value() };
     try {
       if (editing) await api("PATCH", `/api/projects/${editing.id}`, body);
       else await api("POST", "/api/projects", body);
@@ -1500,10 +1897,27 @@ function setupNewDialog() {
   const dialog = $("new-dialog");
   const form = $("new-form");
   const modeSelect = $("new-mode");
+  const accessEditor = isolationEditor(true);
+  modeSelect.closest("label").before(accessEditor.node);
+  const showAccessModels = () => {
+    const isolated = accessEditor.effective()?.isolated;
+    const models = (isolated ? state.options.isolated_models : state.options.models) || [];
+    for (const [id, fallback] of [["new-model", state.options.default_model], ["new-conductor", state.options.default_conductor]]) {
+      const chosen = $(id).value;
+      $(id).replaceChildren(...models.map((m) => el("option", { value: m, text: MODEL_LABELS[m] || m })));
+      $(id).value = models.includes(chosen) ? chosen : models.includes(fallback) ? fallback : models[0] || "";
+    }
+    $("new-workdir-row").classList.toggle("hidden", !isAdmin() || (isolated && accessEditor.effective()?.files === "none"));
+    const bypass = $("new-mode").querySelector('option[value="bypass"]');
+    if (bypass) bypass.disabled = !isAdmin() && !isolated;
+  };
+  accessEditor.node.addEventListener("change", () => { showAccessModels(); showWarning(); });
   const showWarning = () => {
     const bypass = modeSelect.value === "bypass";
     $("new-bypass-warning").classList.toggle("hidden", !bypass);
-    $("new-bypass-text").textContent = state.options.bypass_warning;
+    $("new-bypass-text").textContent = accessEditor.effective()?.isolated
+      ? "L’IA pourra agir sans demander dans son espace isolé. Les accès choisis restent imposés et les fichiers originaux ne sont pas modifiés."
+      : state.options.bypass_warning;
   };
   modeSelect.addEventListener("change", showWarning);
   const showKind = () => {
@@ -1516,12 +1930,18 @@ function setupNewDialog() {
   // In a project with a folder, the folder may stay empty: the project's is used.
   const showFolder = () => {
     const project = state.projects.find((p) => String(p.id) === $("new-project-select").value);
+    accessEditor.parent(project?.isolation);
+    showAccessModels();
     $("new-workdir").placeholder = project && project.workdir
       ? `${project.workdir} (dossier du projet)` : "D:\\projets\\mon-projet";
   };
   $("new-project-select").addEventListener("change", showFolder);
-  openNewDialog = (projectId = null) => {
+  openNewDialog = async (projectId = null, profile = null) => {
     form.reset();
+    accessEditor.set(null);
+    $("template-variables").replaceChildren();
+    $("template-description").classList.add("hidden");
+    $("delete-template").classList.add("hidden");
     $("new-project-select").replaceChildren(...projectOptions(projectId, "Aucun projet"));
     // The last choices of this device come back: the folder, the AI, the way of working.
     const last = rememberedChoices();
@@ -1536,12 +1956,49 @@ function setupNewDialog() {
     showWarning();
     showKind();
     showFolder();
+    if (profile === "discussion") accessEditor.setPreset("discussion");
     // A member: a folder of theirs on the server, chosen by the hub; never without permission.
-    $("new-workdir-row").classList.toggle("hidden", !isAdmin());
+    showAccessModels();
     const bypass = $("new-mode").querySelector('option[value="bypass"]');
-    if (bypass) bypass.disabled = !isAdmin();
+    if (bypass) bypass.disabled = !isAdmin() && !accessEditor.effective()?.isolated;
     dialog.showModal();
+    try {
+      state.templates = (await api("GET", "/api/templates")).templates;
+      $("new-template").replaceChildren(el("option", { value: "", text: "Conversation libre" }),
+        ...state.templates.map((t) => el("option", { value: t.id, text: t.title })));
+    } catch (err) { $("new-error").textContent = err.message; }
   };
+  $("new-template").addEventListener("change", () => {
+    const item = state.templates.find((t) => t.id === $("new-template").value);
+    $("template-variables").replaceChildren();
+    $("template-description").classList.toggle("hidden", !item);
+    $("delete-template").classList.toggle("hidden", !item || item.builtin);
+    if (!item) return;
+    $("template-description").textContent = item.prompt;
+    for (const name of item.variables) {
+      const input = el("input", { required: true, maxlength: "4000" });
+      input.dataset.variable = name;
+      $("template-variables").append(el("label", {}, name, input));
+    }
+    $("new-kind").value = item.settings.mode;
+    $("new-mode").value = item.settings.permission_mode;
+    for (const id of ["new-model", "new-conductor"]) {
+      const model = item.settings.model;
+      $(id).value = [...$(id).options].some((o) => o.value === model) ? model : $(id).options[0]?.value || "";
+    }
+    if (!form.elements.title.value) form.elements.title.value = item.title;
+    showWarning(); showKind();
+  });
+  $("delete-template").addEventListener("click", async () => {
+    const item = state.templates.find((t) => t.id === $("new-template").value);
+    if (!item || item.builtin || !await confirmDialog({ title: "Supprimer ce modèle ?", text: item.title, okText: "Supprimer" })) return;
+    try {
+      state.templates = (await api("DELETE", `/api/templates/${item.id}`)).templates;
+      $("new-template").querySelector(`option[value="${item.id}"]`).remove();
+      $("new-template").value = "";
+      $("new-template").dispatchEvent(new Event("change"));
+    } catch (err) { $("new-error").textContent = err.message; }
+  });
   $("new-conversation").addEventListener("click", () => openNewDialog(null));
   $("empty-new").addEventListener("click", () => openNewDialog(null));
   form.addEventListener("submit", async (event) => {
@@ -1558,19 +2015,25 @@ function setupNewDialog() {
       assignment_mode: data.get("mode") === "orchestration" ? data.get("assignment_mode") : "manual",
       permission_mode: data.get("permission_mode"),
       confirm_bypass: data.get("confirm_bypass") === "on",
+      template_id: $("new-template").value || null,
+      variables: Object.fromEntries([...$("template-variables").querySelectorAll("input")].map((input) => [input.dataset.variable, input.value])),
+      isolation: accessEditor.value(),
     };
+    if (accessEditor.effective()?.isolated && accessEditor.effective()?.files === "none") body.workdir = "";
     if (body.permission_mode === "bypass" && !body.confirm_bypass) {
       $("new-error").textContent = "Cochez la case pour confirmer le mode sans permission.";
       return;
     }
     try {
-      const { conversation } = await api("POST", "/api/conversations", body);
+      const { conversation, prompt: initialPrompt } = await api("POST", "/api/conversations", body);
       // Never the mode without permission: that one is confirmed each time.
       rememberChoices({ model: body.model, mode: body.mode, conductor_model: body.conductor_model,
         assignment_mode: body.assignment_mode, ...(body.workdir && !body.project_id ? { workdir: body.workdir } : {}) });
       dialog.close();
+      if ($("list-scope").value === "archived") $("list-scope").value = "active";
       await loadConversations();
       await openConversation(conversation.id);
+      if (initialPrompt) { $("prompt").value = initialPrompt; saveDraft(conversation.id, initialPrompt); fitPrompt(); }
       $("prompt").focus();
     } catch (err) {
       $("new-error").textContent = err.message;
@@ -1642,6 +2105,45 @@ function setupInstructions() {
       await refreshConversation();
       toast(text.trim() ? "Consignes enregistrées." : "Consignes retirées.");
     } catch (err) { toast(err.message); }
+  });
+}
+
+function setupOrganisation() {
+  for (const [button, field] of [["pin-conversation", "pinned"], ["archive-conversation", "archived"]]) {
+    $(button).addEventListener("click", async () => {
+      const conv = state.data?.conversation;
+      if (!conv) return;
+      try {
+        await api("PATCH", `/api/conversations/${conv.id}/preferences`, { [field]: !conv[field] });
+        await Promise.all([loadConversations(), refreshConversation()]);
+        toast(field === "archived" ? (conv.archived ? "Conversation sortie de vos archives." : "Conversation archivée pour vous.")
+          : (conv.pinned ? "Conversation désépinglée." : "Conversation épinglée pour vous."));
+      } catch (err) { toast(err.message); }
+    });
+  }
+  $("save-template").addEventListener("click", async () => {
+    const conv = state.data?.conversation;
+    if (!conv) return;
+    const title = await askText("Modèle de travail", "Nom du modèle. La demande écrite, les consignes, l'IA et les outils seront gardés.", conv.title);
+    if (!title) return;
+    try {
+      await api("POST", "/api/templates", { conversation_id: conv.id, title, prompt: $("prompt").value });
+      toast("Modèle gardé. Retrouvez-le dans Nouvelle conversation ; {{champ}} crée un champ à remplir.");
+    } catch (err) { toast(err.message); }
+  });
+  const messages = $("messages");
+  messages.addEventListener("scroll", () => $("latest-message").classList.toggle("hidden",
+    messages.scrollHeight - messages.scrollTop - messages.clientHeight < 80), { passive: true });
+  $("latest-message").addEventListener("click", () => { messages.scrollTop = messages.scrollHeight; });
+  document.addEventListener("click", async (event) => {
+    const button = event.target.closest?.(".code-copy");
+    if (!button) return;
+    const code = button.closest(".code-block").querySelector("code").textContent;
+    try {
+      if (navigator.clipboard && window.isSecureContext) await navigator.clipboard.writeText(code);
+      else fallbackCopy(code);
+      toast("Code copié.");
+    } catch { toast("Copie impossible dans ce navigateur."); }
   });
 }
 
@@ -1837,13 +2339,29 @@ function setupSearch() {
     timer = setTimeout(runSearch, 250);
   });
   box.addEventListener("keydown", (e) => { if (e.key === "Escape") { box.value = ""; renderList(); } });
+  for (const id of ["list-scope", "filter-project", "filter-model", "filter-after", "filter-before"]) {
+    $(id).addEventListener("change", runSearch);
+  }
+  $("clear-filters").addEventListener("click", () => {
+    $("list-scope").value = "active";
+    for (const id of ["filter-project", "filter-model", "filter-after", "filter-before"]) $(id).value = "";
+    runSearch();
+  });
 }
 
 async function runSearch() {
   const text = $("search").value.trim();
   if (text.length < 3) { renderList(); return; }
   let results;
-  try { ({ results } = await api("GET", `/api/search?q=${encodeURIComponent(text)}`)); } catch (err) { toast(err.message); return; }
+  const requested = new URLSearchParams({ q: text });
+  for (const [id, key] of [["filter-project", "project_id"], ["filter-model", "model"], ["filter-after", "after"], ["filter-before", "before"]]) {
+    if ($(id).value) requested.set(key, $(id).value);
+  }
+  if ($("list-scope").value !== "all") requested.set("archived", String($("list-scope").value === "archived"));
+  const stamp = requested.toString();
+  state.searchStamp = stamp;
+  try { ({ results } = await api("GET", `/api/search?${stamp}`)); } catch (err) { toast(err.message); return; }
+  if (state.searchStamp !== stamp || $("search").value.trim() !== text) return;
   const list = $("conversation-list");
   list.replaceChildren(el("div", { class: "project-loose", text: `${results.length} résultat(s)` }));
   if (!results.length) list.append(el("p", { class: "list-empty", text: "Rien trouvé." }));
@@ -2081,6 +2599,8 @@ function setupSettingsDialog() {
     $("set-allowed_roots").value = s.allowed_roots.join("\n");
     $("set-obsidian_vault").value = s.obsidian_vault || "";
     $("set-backup_dir").value = s.backup_dir || "";
+    $("set-sandbox_cli").value = s.sandbox_cli || "";
+    $("set-sandbox_data").value = s.sandbox_data || "";
     $("set-backup_dir").placeholder = data.backup_folder || "data\\sauvegardes";
     for (const name of SETTING_NUMBERS) $(`set-${name}`).value = s[name];
     for (const name of SETTING_BOOLS) $(`set-${name}`).checked = s[name];
@@ -2119,6 +2639,8 @@ function setupSettingsDialog() {
     allowed_roots: $("set-allowed_roots").value.split("\n").map((l) => l.trim()).filter(Boolean),
     obsidian_vault: $("set-obsidian_vault").value.trim() || null,
     backup_dir: $("set-backup_dir").value.trim() || null,
+    sandbox_cli: $("set-sandbox_cli").value.trim() || null,
+    sandbox_data: $("set-sandbox_data").value.trim() || null,
     models: chosenModels(),
     default_model: $("set-default_model").value,
     default_conductor: $("set-default_conductor").value,
@@ -2592,7 +3114,7 @@ function fillCompareChoices() {
 
 function canWrite() {
   const conv = state.data && state.data.conversation;
-  return Boolean(conv) && conv.mode === "single" && (conv.my_role || "owner") !== "read";
+  return Boolean(conv) && !conv.isolation?.paused && conv.mode === "single" && (conv.my_role || "owner") !== "read";
 }
 
 // Under the last reply: send its request again, with the same AI or another one.
@@ -3319,6 +3841,7 @@ function setupPasswordDialog() {
 // --- start ---------------------------------------------------------------------------
 
 async function main() {
+  const initialParams = new URLSearchParams(location.search);
   setupLogin();
   setupOffline();
   setupMenus();
@@ -3351,6 +3874,7 @@ async function main() {
   setupProjectDialog();
   setupProjectActions();
   setupActions();
+  setupOrganisation();
   setupObsidianDialog();
   try {
     state.options = await api("GET", "/api/options");
@@ -3359,13 +3883,17 @@ async function main() {
   }
   applyOptions();
   await Promise.all([loadConversations(), loadStatus(), loadQuota(true), loadAgents()]);
-  askForAnAI();  // no AI connected yet (a first login): one before going on
+  let guideSeen = false;
+  try { guideSeen = localStorage.getItem("aihub-guide-seen") === "1"; } catch { /* optional storage */ }
+  if (!state.conversations.length && !initialParams.get("conversation") && canCreate() && !guideSeen) openGettingStarted();
   checkUpdate();  // a newer version on GitHub: said to the owner
   // Opened from an alert: straight to its conversation.
-  const asked = Number(new URLSearchParams(location.search).get("conversation"));
+  const asked = Number(initialParams.get("conversation"));
   if (asked && state.conversations.some((c) => c.id === asked)) {
     history.replaceState(null, "", "/");
     await openConversation(asked);
+    if (initialParams.get('comptes') === '1' && state.data?.conversation?.isolation?.isolated
+        && state.data.conversation.my_role !== 'read') await openSpaceAccounts(initialParams.get('fournisseur'));
   }
   // Fresh figures every 5 minutes while the page is displayed (reading them costs no quota).
   setInterval(() => { if (document.visibilityState === "visible") loadQuota(true); }, 5 * 60 * 1000);

@@ -192,6 +192,13 @@ class JobManager:
         job = Job(conversation_id, kind)
         job.user = user
         with self._lock:
+            from .. import isolation
+            conn = db.connect(self.db_path)
+            try:
+                if isolation.suspended(conn, conversation_id):
+                    raise store.StoreError('accès suspendus : le propriétaire doit réactiver cet espace')
+            finally:
+                conn.close()
             if conversation_id in self._jobs:
                 raise store.Busy("une requête est déjà en cours dans cette conversation")
             self._jobs[conversation_id] = job
@@ -224,6 +231,13 @@ class JobManager:
     def running(self, conversation_id):
         with self._lock:
             return conversation_id in self._jobs
+
+    def stop_user(self, user_id):
+        """Revoked accounts cannot keep their requests or permission prompts alive."""
+        with self._lock:
+            ids = [cid for cid, job in self._jobs.items() if (job.user or {}).get('id') == user_id]
+        for cid in ids:
+            self.stop(cid)
 
     def busy(self):
         """True while any request or plan runs, in any conversation."""
@@ -461,6 +475,8 @@ class JobManager:
             # Another AI answers the same request beside it, read only (aihub/compare.py).
             cid = job.conversation_id
             side = compare.SideAnswer(self.db_path, cid, compare_with, commands=self.command, env=self.env_of(job),
+                                      account_id=self.account_id(job),
+                                      user_id=(job.user or {}).get('id'),
                                       settings=self.settings(), files=attachments, timeout_s=self.request_timeout_s,
                                       on_done=lambda vid: self.hub.publish(cid, {"type": "variant_done",
                                                                                  "variant_id": vid}))

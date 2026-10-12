@@ -359,7 +359,7 @@ class ClaudeCodeRun:
     def __init__(self, command, *, prompt, workdir, permission_mode, model=None,
                  resume_session=None, ask_permission=None, on_text=None, on_quota=None,
                  timeout_s=None, extra_args=(), env=None, tools=None, json_schema=None,
-                 mcp_config=None, auto_allow=(), disallowed=()):
+                 mcp_config=None, auto_allow=(), disallowed=(), execution=None):
         if permission_mode not in PERMISSION_MODES:
             raise ProviderError(f"mode de permission inconnu : {permission_mode!r}")
         if not isinstance(prompt, str) or not prompt.strip():
@@ -386,6 +386,7 @@ class ClaudeCodeRun:
         self.mcp_config = mcp_config
         self.auto_allow = list(auto_allow)
         self.disallowed = list(disallowed)  # tools taken away (the web search, when not chosen)
+        self.execution = execution
         self._lock = threading.Lock()
         self._proc = None
         self._stop_reason = None  # "user" or "timeout"
@@ -433,7 +434,11 @@ class ClaudeCodeRun:
                 self._stop_reason = reason
             proc = self._proc
         if proc is not None:
-            _kill_tree(proc)
+            try:
+                if self.execution is not None:
+                    self.execution.stop()
+            finally:
+                _kill_tree(proc)
 
     def _read_stderr(self, stream):
         size = 0
@@ -498,7 +503,8 @@ class ClaudeCodeRun:
                 result.status = "stopped"
                 return result
             try:
-                proc = subprocess.Popen(
+                spawn = self.execution.spawn if self.execution is not None else subprocess.Popen
+                proc = spawn(
                     self.arguments(), cwd=self.workdir,
                     env=self.env if self.env is not None else clean_env(os.environ),
                     stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
@@ -539,6 +545,8 @@ class ClaudeCodeRun:
                     stream.close()
                 except OSError:
                     pass
+            if self.execution is not None:
+                self.execution.finish()
         result.duration_ms = int((time.monotonic() - started) * 1000)
         self._conclude(proc, result, final)
         return result

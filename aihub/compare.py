@@ -12,7 +12,7 @@ and the next request starts from the memory (no session knows that text).
 import threading
 import time
 
-from . import attachments, config, db, memory, providers, store
+from . import attachments, config, db, isolation, memory, providers, store
 from .providers import ProviderError
 from .providers.claude_code import Decision
 
@@ -36,7 +36,7 @@ class SideAnswer:
     """One other AI answering one request. `run()` in its own thread; `stop()` from anywhere."""
 
     def __init__(self, db_path, conversation_id, model, *, commands, env=None, settings=None, files=(),
-                 timeout_s=None, on_done=None):
+                 timeout_s=None, on_done=None, account_id=None, user_id=None):
         self.db_path = db_path
         self.conversation_id = conversation_id
         self.model = model
@@ -46,6 +46,8 @@ class SideAnswer:
         self.files = list(files)
         self.timeout_s = timeout_s
         self.on_done = on_done
+        self.account_id = account_id
+        self.user_id = user_id
         self.variant_id = None
         self._run = None
         self._stopped = threading.Event()
@@ -73,13 +75,16 @@ class SideAnswer:
             prompt = _memory_prompt(conn, self.conversation_id, request_id, request["content"], self.settings)
             status, content, error, tokens_in, tokens_out = "error", "", None, None, None
             try:
+                execution = isolation.for_run(conn, conversation, account_id=self.account_id or self.user_id,
+                                              read_only=True, settings=self.settings)
                 run = providers.new_run(
-                    provider, providers.command_for(self.commands, provider), prompt=prompt + files_text,
+                    provider, providers.command_for(self.commands, provider, execution=execution), prompt=prompt + files_text,
                     workdir=conversation["workdir"], permission_mode="plan",
                     model=providers.default_model(provider, self.model), env=self.env,
                     tools=list(READ_ONLY_TOOLS) if provider == "claude_code" else None,
                     ask_permission=lambda r: Decision(False, "une comparaison ne fait que lire"),
                     timeout_s=self.timeout_s, attachments=files,
+                    execution=execution,
                     instructions=store.person_instructions(conn, conversation))
                 with self._lock:
                     self._run = run

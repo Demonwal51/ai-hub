@@ -145,6 +145,8 @@ def route(kind, connected=None, excluded=frozenset(), models=None):
     """
     if connected is None:
         connected, models = frozenset(_available), (_available if models is None else models)
+    elif isinstance(connected, dict) and models is None:
+        models = connected
     models = models or {}
     rules = list(RULES.get(kind) or RULES["autre"])
     rules += [r for r in RULES["autre"] if r not in rules]  # last resort
@@ -169,6 +171,10 @@ def route(kind, connected=None, excluded=frozenset(), models=None):
         if passed_over:
             reason += f". {passed_over[0].label} a été retiré du plan"
         return Choice(rule, reason)
+    for model in sorted(models.get("ollama") or ()) if "ollama" in connected else ():
+        if ("ollama", model) not in excluded:
+            rule = Rule("ollama", model, "IA locale", "modèle local disponible, en lecture seule")
+            return Choice(rule, f"IA locale : {model}, en lecture seule ; aucun modèle distant utilisable")
     return None
 
 

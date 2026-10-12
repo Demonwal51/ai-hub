@@ -1,6 +1,70 @@
 # Changelog
 
-## 0.5.0 beta — not published yet
+## 1.0.1 — 2026-10-12, guided access and diagnostics
+
+- Three editable access presets: discussion without PC files, analysis of
+  selected copies, and project work on copies reviewed before application.
+- Visible access overview and durable emergency suspension, with owner-only
+  reactivation. Suspension preserves project inheritance and private accounts.
+- Pending scoped sign-ins and running work are cancelled on suspension;
+  new jobs and sign-ins remain refused until reactivation.
+- First-space guidance, direct result-review button and created/modified/deleted
+  file counts. The composer shows why a suspended space cannot accept requests.
+- Cached diagnostics for database, disk and isolation engine, plus scoped
+  account status and concrete recovery steps without sending an AI message.
+
+
+## 1.0.0 — 2026-10-12, prepared for publication
+
+- Isolated conversations and projects with separate file, network and memory
+  access; project limits also constrain existing child conversations.
+- Docker Sandboxes microVM transport, private account sign-in per person and
+  space, no host fallback, host MCP tools or forwarded host AI credentials.
+- Selected files copied for read-only or copy-based editing. Review, download,
+  and explicitly apply results with original-file conflict checks and backups.
+- Local Ollama inference stays on loopback with read-only file tools in a VM.
+- Members and guests require isolated execution; revoked accounts stop work.
+  Recreated numeric user ids cannot reuse a deleted account's logged-in VM.
+  Recreated conversation ids also receive a fresh space identity.
+- Installers, launchers and desktop startup support for Linux; executable ZIP
+  scripts and a Linux tar.gz package. App installation tested on Debian 13,
+  Fedora 44 and Ubuntu 26.04. Docker's local engine requires a supported host.
+- Clearer interface, device-specific appearance and density, mobile access
+  forms and improved handling of reduced motion. Direct account button and
+  links open the right isolated account dialog.
+- Claude uses the official CLI image with a neutral shell profile: its OAuth
+  login stays inside its own VM instead of being captured as a shared Docker
+  credential. Global credentials remain refused.
+- Loopback-only installs also reject cross-site API writes and rebinding Host
+  headers. Delayed session responses cannot replace another account cache.
+- Live access revocation and offline-cache identity checks, including delayed
+  responses arriving after a change of account.
+- Daily backups include attachment bytes and hashes; restore validates a staged
+  copy before replacement. Update helpers preserve the database and check the
+  new server before keeping the update, with rollback after failed startup.
+
+Human sign-in and real replies from Claude and Codex have been validated in
+separate Windows-hosted microVMs. A native Linux sandbox engine still requires
+manual validation. Python dependency changes are not rolled back by updates.
+
+
+
+## 0.6.0 beta — not published yet
+
+- Personal pins and archives, without changing anyone else's shared list.
+- Search filters by project, AI, dates and archives; permissions and filters
+  applied before ranking, for word and semantic results alike.
+- Work templates with fields, personal templates from a conversation's
+  settings and draft; creating from one never sends the request itself.
+- Richer reply rendering: headings, tables, lists, quotes, safe links and
+  code copying; keep the reading position while a reply is streamed.
+- Fix manual summaries using the server's accounts for guests; account-aware
+  model selection and routing, and the sender's access in orchestration synthesis.
+- Branches retain instructions, tools and independent copies of attachments.
+- Recover interrupted comparisons, delegations and scheduled run status;
+  explicit read-only routing when only a local model is available.
+
+## 0.5.0 beta — 2026-10-11
 
 - Regenerate the last reply (with the same AI or another one); edit a request
   in a new conversation that starts from there (a branch).
@@ -11,7 +75,7 @@
 - The server's dashboard (the owner's); reading without the PC on a device
   that chose it.
 
-## 0.4.0 beta — not published (part of 0.5)
+## 0.4.0 beta — included in 0.5
 
 - Files and images with a request (📎, a pasted screenshot, files dropped):
   a text file's text in the request, images seen by Codex and the local AI,

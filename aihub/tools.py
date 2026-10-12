@@ -116,10 +116,19 @@ class RunTools:
     env: dict = field(default_factory=dict)  # added to the CLI's environment
 
 
-def delegate_models(settings):
+def delegate_models(settings, *, commands=None, account_env=None):
     """The models a delegation may ask: those of the settings whose provider is connected."""
-    from . import config, routing
-    connected = routing.available()
+    from . import accounts, config, routing
+    from .providers import claude_code
+    if account_env:
+        import os
+        env = claude_code.clean_env(os.environ)
+        for name in accounts.SECRET_NAMES:
+            env.pop(name, None)
+        env.update(account_env)
+        connected = accounts.available_models(commands, env, str(Path.cwd()))
+    else:
+        connected = routing.available()
     out = []
     for model in settings.models:
         provider = config.provider_of(model)
@@ -148,7 +157,7 @@ def for_run(conn, conversation, settings, *, own=False, commands=None, project=T
         auto += [f"mcp__{VAULT}__{tool}" for tool in vault_mcp.TOOL_NAMES]
     env = {}
     db_path = project_access.database_path(conn)
-    models = delegate_models(settings)
+    models = delegate_models(settings, commands=commands, account_env=account_env) if DELEGATE in names else []
     if DELEGATE in names and db_path and models:
         args = ["-I", str(DELEGATE_SCRIPT), "--db", db_path, "--conversation", str(conversation["id"]),
                 "--models", ",".join(models)]

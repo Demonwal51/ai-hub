@@ -44,6 +44,44 @@ class Answer:
 
 
 class ChoiceTest(TempDirMixin, unittest.TestCase):
+    def test_backslash_traversal_duplicate_and_symlink_archives_are_rejected(self):
+        tmp = self.make_tempdir()
+        for name in ('ai-hub-9.0.0/aihub/../../dehors', 'ai-hub-9.0.0/..\\dehors',
+                     'ai-hub-9.0.0/C:/dehors', 'ai-hub-9.0.0/aihub/__init__.py'):
+            path = tmp / 'bad.zip'
+            path.write_bytes(release_zip(extra={name: 'bad'}))
+            with self.subTest(name=name), self.assertRaises(updater.UpdateError):
+                updater.verify(path, '9.0.0')
+        entry = zipfile.ZipInfo('ai-hub-9.0.0/aihub/link')
+        entry.create_system = 3
+        entry.external_attr = 0o120777 << 16
+        with zipfile.ZipFile(path, 'w') as archive:
+            archive.writestr('ai-hub-9.0.0/aihub/__init__.py', '__version__ = "9.0.0"')
+            archive.writestr(entry, '/outside')
+        with self.assertRaises(updater.UpdateError):
+            updater.verify(path, '9.0.0')
+    def test_extra_root_cannot_hide_beside_a_valid_release(self):
+        target = self.make_tempdir() / 'unexpected-root.zip'
+        with zipfile.ZipFile(target, 'w') as archive:
+            archive.writestr('ai-hub-9.0.0/aihub/__init__.py', '__version__ = "9.0.0"')
+            archive.writestr('other-root/extra.py', 'unexpected sibling')
+        with self.assertRaises(updater.UpdateError):
+            updater.verify(target, '9.0.0')
+
+    def test_windows_case_aliases_and_special_entries_are_refused(self):
+        import stat
+        for name, mode in [('AIHUB/__init__.py', stat.S_IFREG), ('aihub/pipe', stat.S_IFIFO),
+                           ('aihub/./extra.py', stat.S_IFREG), ('aihub/extra.py.', stat.S_IFREG)]:
+            with self.subTest(name=name):
+                target = self.make_tempdir() / 'bad.zip'
+                with zipfile.ZipFile(target, 'w') as archive:
+                    archive.writestr('ai-hub-9.0.0/aihub/__init__.py', '__version__ = "9.0.0"')
+                    entry = zipfile.ZipInfo('ai-hub-9.0.0/' + name)
+                    entry.external_attr = mode << 16
+                    archive.writestr(entry, 'unexpected')
+                with self.assertRaises(updater.UpdateError):
+                    updater.verify(target, '9.0.0')
+
     def test_versions_in_order_and_the_newest_newer_one(self):
         keys = [updater.version_key(v) for v in ("0.3.0b1", "0.3.0", "0.3.1b2", "0.3.1", "1.0.0")]
         self.assertEqual(keys, sorted(keys))
@@ -98,6 +136,48 @@ class ChoiceTest(TempDirMixin, unittest.TestCase):
 
 
 class ApplyTest(TempDirMixin, unittest.TestCase):
+    def test_unhealthy_restart_restores_migrated_database_and_code(self):
+        import sqlite3
+        root, zip_path = self.install()
+        database = root / 'data/aihub.db'
+        database.unlink()
+        conn = sqlite3.connect(database)
+        conn.execute('CREATE TABLE original (value TEXT)')
+        conn.execute("INSERT INTO original VALUES ('preserved')")
+        conn.commit(); conn.close()
+        starts = []
+        process = mock.Mock()
+        process.wait.return_value = 0
+        def launch(command, **options):
+            starts.append(options)
+            if len(starts) == 1:
+                conn = sqlite3.connect(database)
+                conn.execute('DROP TABLE original')
+                conn.execute('PRAGMA user_version = 999')
+                conn.commit(); conn.close()
+            return process
+        restart = ['python', '-m', 'aihub', '--db', str(database), 'serve', '--port', '12345']
+        with mock.patch('aihub.providers.claude_code._kill_tree') as kill, self.assertRaisesRegex(updater.UpdateError, 'rétablie'):
+            updater.apply(zip_path, '9.0.0', root, pip=False, restart=restart, popen=launch,
+                          health=lambda process, url, version, probe: False)
+        kill.assert_called_once_with(process)
+        self.assertEqual(len(starts), 2)
+        self.assertIn('AIHUB_UPDATE_PROBE', starts[0]['env'])
+        self.assertNotIn('env', starts[1])
+        conn = sqlite3.connect(database)
+        try:
+            self.assertEqual(conn.execute('SELECT value FROM original').fetchone()[0], 'preserved')
+            self.assertEqual(conn.execute('PRAGMA user_version').fetchone()[0], 0)
+        finally:
+            conn.close()
+        self.assertTrue((root / 'aihub/ancien.py').is_file())
+        self.assertFalse((root / 'aihub/nouveau.py').exists())
+
+    def test_live_server_prevents_replacement(self):
+        root, zip_path = self.install()
+        with mock.patch.object(updater, '_alive', return_value=True), self.assertRaisesRegex(updater.UpdateError, 'arrêté'):
+            updater.apply(zip_path, '9.0.0', root, pid=12345, wait_s=0, pip=False)
+        self.assertTrue((root / 'aihub/ancien.py').exists())
     def install(self):
         root = self.make_tempdir()
         (root / "aihub").mkdir()

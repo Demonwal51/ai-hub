@@ -12,12 +12,13 @@ import os
 import queue
 import secrets
 import shutil
+import sqlite3
 import subprocess
 import sys
 import threading
 import time
 from contextlib import asynccontextmanager, contextmanager
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 import segno
@@ -26,10 +27,10 @@ from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, Response
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
-from .. import VERSION_LABEL
+from .. import VERSION_LABEL, __version__
 from .. import (auth, autonomous, backup, config, db, eveil, memory, notify, obsidian, providers, routing, runner,
                 schedule, semantic, store, tools)
-from .. import access, accounts, attachments, compare, importer, updater, usage
+from .. import access, accounts, attachments, compare, importer, isolation, library, sandbox_results, updater, usage
 from ..providers import claude_code, codex, ollama
 from ..providers.claude_code import ProviderError
 from ..store import BypassConfirmationRequired, Busy, NotFound, StoreError
@@ -53,6 +54,20 @@ class NewConversation(BaseModel):
     mode: str = "single"            # single or orchestration
     conductor_model: str = "default"
     assignment_mode: str = "manual"  # orchestration: auto (benchmarks) or manual
+    template_id: str | None = None
+    variables: dict[str, str] = {}
+    isolation: dict | None = None
+
+
+class ConversationPreferences(BaseModel):
+    pinned: bool | None = None
+    archived: bool | None = None
+
+
+class NewTemplate(BaseModel):
+    conversation_id: int
+    title: str
+    prompt: str = ""
 
 
 class NewAgent(BaseModel):
@@ -142,6 +157,7 @@ class NewProject(BaseModel):
     description: str = ""
     workdir: str = ""
     instructions: str = ""            # what the AI always gets in its conversations
+    isolation: dict | None = None
 
 
 class ProjectChange(BaseModel):
@@ -149,6 +165,7 @@ class ProjectChange(BaseModel):
     description: str | None = None
     workdir: str | None = None        # "" clears it
     instructions: str | None = None   # what the AI always gets in its conversations ("" clears them)
+    isolation: dict | None = None
 
 
 class NewMessage(BaseModel):
@@ -265,6 +282,20 @@ class AccountCode(BaseModel):
     code: str
 
 
+class SandboxTarget(BaseModel):
+    provider: str
+    read_only: bool = False
+
+
+class SandboxCode(SandboxTarget):
+    code: str
+
+
+class SandboxApply(SandboxTarget):
+    files: dict[str, str | None]
+    confirm_delete: bool = False
+
+
 class FreshStart(BaseModel):
     # None: prepare, and say if the package is over its cap. Over it, the
     # user's choice: "raise" the cap, "auto" compress, or a "custom" package.
@@ -378,9 +409,25 @@ class Guard:
             if peer not in _LOOPBACK or relayed:
                 return await _deny(send, 403, "accès refusé : sans mot de passe, l'appli ne répond "
                                    "qu'à cet ordinateur (python -m aihub mot-de-passe)", "local_only")
+            # A remote site's DNS must not turn the loopback-only app into
+            # its own same-origin API. ASGI test transports use a fake server.
+            if (scope.get('server') or ('?', 0))[0] in _LOOPBACK:
+                from urllib.parse import urlsplit
+                try:
+                    host = urlsplit('//' + _headers(scope).get('host', '')).hostname
+                except ValueError:
+                    host = None
+                if host not in _LOOPBACK:
+                    return await _deny(send, 403, 'adresse locale requise', 'local_host')
+            if (scope['path'].startswith('/api/') and scope['method'] not in ('GET', 'HEAD', 'OPTIONS')
+                    and _headers(scope).get(CSRF_HEADER) != '1'):
+                return await _deny(send, 403, 'requête refusée : en-tête X-AIHub manquant', 'csrf')
         if self.check_session is None:
             return await self.app(scope, receive, send)
         path = scope["path"]
+        if path == '/api/health' and (scope.get('client') or ('?', 0))[0] in _LOOPBACK and not any(
+                key.lower() in _PROXY_HEADERS for key, _ in scope.get('headers', [])):
+            return await self.app(scope, receive, send)
         if path in PUBLIC_PATHS or path.startswith(PUBLIC_PREFIXES):
             return await self.app(scope, receive, send)
         import anyio
@@ -514,6 +561,9 @@ def create_app(db_path, *, command=None, env=None, allowed_roots=(), permission_
                       request_timeout_s=request_timeout_s, obsidian_vault=settings.obsidian_vault)
     people_accounts = accounts.Accounts(jobs.accounts_root, commands=commands, env=env,
                                         workdir=Path(db_path).resolve().parent)
+    space_accounts = {}
+    space_accounts_lock = threading.RLock()
+    space_stops = set()
     status_cache = {}
     refresh_lock = threading.Lock()
     refresh_state = {}
@@ -626,6 +676,12 @@ def create_app(db_path, *, command=None, env=None, allowed_roots=(), permission_
         return user
 
     app.add_middleware(Guard, check_session=check_session if authority else None, local_only=local_only)
+
+    @app.get('/api/health')
+    def health():
+        with database() as conn:
+            conn.execute('SELECT 1').fetchone()
+        return {'ready': True, 'version': __version__, 'probe': os.environ.get('AIHUB_UPDATE_PROBE')}
 
     @app.exception_handler(auth.Locked)
     def _locked(request: HttpRequest, exc):
@@ -812,7 +868,21 @@ def create_app(db_path, *, command=None, env=None, allowed_roots=(), permission_
                 auth.set_role(conn, uid, body.role)
             if body.disabled is not None:
                 auth.set_disabled(conn, uid, body.disabled)
-            return {"user": auth.get_user(conn, uid)}
+            person = auth.get_user(conn, uid)
+        if body.disabled or body.role is not None:
+            revoke_user_work(uid)
+        return {"user": person}
+
+    def revoke_user_work(uid):
+        jobs.stop_user(uid)
+        people_accounts.cancel_user(uid)
+        with space_accounts_lock:
+            names = [name for name, manager in space_accounts.items()
+                     if getattr(manager.execution, 'user_id', None) == uid]
+            managers = [space_accounts.pop(name) for name in names]
+        for manager in managers:
+            manager.cancel_user(uid)
+            manager.execution.stop()
 
     @app.post("/api/users", status_code=201)
     def create_user(body: NewUser):
@@ -828,6 +898,7 @@ def create_app(db_path, *, command=None, env=None, allowed_roots=(), permission_
         access.require_admin(me())
         with database() as conn:
             auth.delete_user(conn, uid)
+        revoke_user_work(uid)
         people_accounts.forget(uid)  # their AI accounts' folders go with them
         return {"deleted": uid}
 
@@ -1147,8 +1218,9 @@ def create_app(db_path, *, command=None, env=None, allowed_roots=(), permission_
             raise StoreError(f"dossier de travail non autorisé : {workdir} (autorisés : {allowed})")
         return str(workdir)
 
-    def agent_for(conn, model):
-        offered = (offered_models(current()) if config.provider_of(model) in (codex.PROVIDER, ollama.PROVIDER)
+    def agent_for(conn, model, *, isolated=False):
+        offered = (isolated_models(current()) if isolated and config.provider_of(model) in ('claude_code', 'codex') else
+                   offered_models(current()) if config.provider_of(model) in (codex.PROVIDER, ollama.PROVIDER)
                    else current().models)
         if model not in offered:
             raise StoreError(f"modèle non proposé : {model!r} (proposés : {', '.join(offered)})")
@@ -1302,20 +1374,36 @@ def create_app(db_path, *, command=None, env=None, allowed_roots=(), permission_
                     "codex_connected": bool(gpt_in), "own_accounts": account is not None,
                     "error": errors.get(claude_code.PROVIDER), "codex_error": errors.get(codex.PROVIDER)}
 
+    def connected_for(user):
+        if accounts.own_accounts(user):
+            return accounts.available_models(commands, people_accounts.env_for(user), str(Path(db_path).parent))
+        provider_status()
+        return routing.available()
+
     def offered_models(s):
         """The models of the settings this computer can run: a GPT model only
         when Codex is signed in and offers it."""
+        user = me()
+        if accounts.own_accounts(user):
+            connected = connected_for(user)
+            return [m for m in s.models if config.provider_of(m) in connected and
+                    (connected[config.provider_of(m)] is None or m in connected[config.provider_of(m)])] + \
+                   sorted(connected.get(ollama.PROVIDER) or ())
         state = provider_status()
         gpt = state["codex"]
         usable = set(gpt["models"] or ()) | {codex.DEFAULT_MODEL} if gpt["logged_in"] else set()
         # The local AI's models come from its Ollama, after those of the settings.
         return [m for m in s.models if config.provider_of(m) != codex.PROVIDER or m in usable] + state["local"]["models"]
 
+    def isolated_models(s):
+        return [m for m in s.models if config.provider_of(m) in ('claude_code', 'codex')
+                and commands.get(config.provider_of(m)) is not False] + local_status()['models']
+
     @app.get("/api/options")
     def options():
         s = current()
         vault = s.obsidian_vault
-        return {"models": offered_models(s), "default_model": s.default_model,
+        return {"models": offered_models(s), "isolated_models": isolated_models(s), "default_model": s.default_model,
                 "default_conductor": s.default_conductor, "quota_warning": s.quota_warning,
                 "permission_modes": list(store.PERMISSION_MODES),
                 "bypass_warning": store.BYPASS_WARNING, "check_warning": autonomous.CHECK_WARNING,
@@ -1360,10 +1448,43 @@ def create_app(db_path, *, command=None, env=None, allowed_roots=(), permission_
         with database() as conn:
             visible = access.visible_conversation_ids(conn, user)
             rows = [dict(r) for r in store.list_conversations(conn) if visible is None or r["id"] in visible]
+            prefs = library.preferences(conn, (user or {}).get("id"))
             for row in rows:
                 row["running"] = jobs.running(row["id"])
                 row["my_role"] = access.conversation_role(conn, user, row)
+                row.update(prefs.get(row["id"], {"pinned": False, "archived": False}))
+                row["model"] = (store.get_agent(conn, row["agent_id"])["model"] if row["agent_id"] else None)
         return {"conversations": rows}
+
+    @app.patch("/api/conversations/{cid}/preferences")
+    def conversation_preferences(cid: int, body: ConversationPreferences):
+        user = me()
+        with database() as conn:
+            access.require(conn, user, cid)
+            return library.set_preferences(conn, (user or {}).get("id"), cid, pinned=body.pinned, archived=body.archived)
+
+    @app.get("/api/templates")
+    def work_templates():
+        with database() as conn:
+            return {"templates": library.templates(conn, my_id())}
+
+    @app.post("/api/templates", status_code=201)
+    def save_work_template(body: NewTemplate):
+        user = me()
+        access.require_creator(user)
+        with database() as conn:
+            conv = access.require(conn, user, body.conversation_id, "owner")
+            settings = {"model": store.get_agent(conn, conv["agent_id"])["model"] if conv["agent_id"] else "default",
+                        "mode": conv["mode"], "permission_mode": "manual" if conv["permission_mode"] == "bypass"
+                        else conv["permission_mode"], "tools": tools.chosen(conv), "instructions": conv["instructions"] or ""}
+            library.save_template(conn, (user or {}).get("id"), body.title, body.prompt, settings)
+            return {"templates": library.templates(conn, (user or {}).get("id"))}
+
+    @app.delete("/api/templates/{tid}")
+    def delete_work_template(tid: str):
+        with database() as conn:
+            library.remove_template(conn, my_id(), tid)
+            return {"templates": library.templates(conn, my_id())}
 
     # --- projects ------------------------------------------------------------
 
@@ -1372,7 +1493,8 @@ def create_app(db_path, *, command=None, env=None, allowed_roots=(), permission_
         user = me(request)
         with database() as conn:
             visible = access.visible_project_ids(conn, user)
-            return {"projects": [dict(p) for p in store.list_projects(conn) if visible is None or p["id"] in visible]}
+            return {"projects": [dict(p, isolation=isolation.get(conn, project_id=p['id']) or isolation.DEFAULT.copy())
+                                 for p in store.list_projects(conn) if visible is None or p["id"] in visible]}
 
     @app.post("/api/projects", status_code=201)
     def create_project(body: NewProject, request: HttpRequest):
@@ -1381,9 +1503,13 @@ def create_app(db_path, *, command=None, env=None, allowed_roots=(), permission_
         # A member's project has no folder of the server's: its conversations get theirs.
         workdir = check_workdir(body.workdir) if body.workdir.strip() and access.trusted(user) else None
         with database() as conn:
+            if body.isolation is not None:
+                isolation.check(body.isolation)
             pid = store.create_project(conn, body.name, description=body.description, workdir=workdir)
             conn.execute("UPDATE projects SET instructions = ? WHERE id = ?", (store.check_instructions(body.instructions), pid))
             set_owner(conn, "projects", pid, user)
+            if body.isolation is not None:
+                isolation.save(conn, body.isolation, project_id=pid)
             return {"project": dict(store.get_project(conn, pid))}
 
     def set_owner(conn, table, row_id, user):
@@ -1406,6 +1532,7 @@ def create_app(db_path, *, command=None, env=None, allowed_roots=(), permission_
             if visible is not None and pid not in visible:
                 raise NotFound("projet introuvable")
             row = dict(store.get_project(conn, pid))
+            row['isolation'] = isolation.get(conn, project_id=pid) or isolation.DEFAULT.copy()
             seen = access.visible_conversation_ids(conn, user)
             convs = [dict(c) for c in store.project_conversations(conn, pid) if seen is None or c["id"] in seen]
             mine = access.project_role(conn, user, pid) == "owner"
@@ -1422,6 +1549,10 @@ def create_app(db_path, *, command=None, env=None, allowed_roots=(), permission_
             workdir = check_workdir(body.workdir) if body.workdir.strip() else ""
         with database() as conn:
             require_project(conn, user, pid)
+            if body.isolation is not None:
+                if any(jobs.running(row['id']) for row in store.project_conversations(conn, pid)):
+                    raise Busy('arrêtez les conversations du projet avant de changer leurs accès')
+                isolation.save(conn, body.isolation, project_id=pid)
             store.update_project(conn, pid, name=body.name, description=body.description, workdir=workdir)
             if body.instructions is not None:
                 conn.execute("UPDATE projects SET instructions = ? WHERE id = ?",
@@ -1449,8 +1580,265 @@ def create_app(db_path, *, command=None, env=None, allowed_roots=(), permission_
         user = me(request)
         access.require_creator(user)  # a guest takes part in shared conversations, creates none
         with database() as conn:
-            cid = new_conversation(conn, body, user)
-            return {"conversation": _row(store.get_conversation(conn, cid))}
+            item, prompt, template_tools = None, "", []
+            if body.template_id:
+                item = library.template(conn, (user or {}).get("id"), body.template_id)
+                if item is None:
+                    raise NotFound("modèle de travail introuvable")
+                prompt = library.render(item, body.variables)
+                template_tools = tools.check_choice(item["settings"].get("tools", []), current())
+                if not access.trusted(user) and set(template_tools) - set(MEMBER_TOOLS):
+                    raise access.Forbidden("ce modèle utilise des outils réservés au propriétaire")
+            with db.transaction(conn):
+                cid = new_conversation(conn, body, user)
+                if body.isolation is not None:
+                    isolation.save(conn, body.isolation, conversation_id=cid)
+                if item:
+                    if template_tools and isolation.effective(conn, store.get_conversation(conn, cid))['isolated']:
+                        raise StoreError('ce modèle utilise des outils du PC : choisissez un modèle sans outils')
+                    conn.execute("UPDATE conversations SET instructions = ? WHERE id = ?",
+                                 (store.check_instructions(item["settings"].get("instructions", "")), cid))
+                    store.set_tools(conn, cid, template_tools)
+            return {"conversation": _row(store.get_conversation(conn, cid)), "prompt": prompt}
+
+    @app.get('/api/conversations/{cid}/isolation')
+    def isolation_state(cid: int):
+        with database() as conn:
+            conv = access.require(conn, me(), cid)
+            parent = isolation.get(conn, project_id=conv['project_id']) or isolation.DEFAULT.copy()
+            return {'policy': isolation.effective(conn, conv), 'parent': parent,
+                    'inherited': isolation.get(conn, conversation_id=cid) is None}
+
+    @app.post('/api/conversations/{cid}/isolation/pause')
+    def isolation_pause(cid: int):
+        # Registration reads the switch while holding its own lock. A job
+        # registered before this commit is caught by stop; later jobs refuse.
+        with space_accounts_lock:
+            with database() as conn:
+                access.require(conn, me(), cid, 'owner')
+                isolation.suspend(conn, cid)
+            if cid in space_stops:
+                return {'paused': True, 'stopping': True, 'warnings': []}
+            space_stops.add(cid)
+            names = [name for name, m in space_accounts.items()
+                     if m.execution is not None and m.execution.conversation['id'] == cid]
+            managers = [(name, space_accounts.pop(name)) for name in names]
+        failures = []
+        try:
+            for name, manager in managers:
+                # All participants of this conversation, not just its owner.
+                if not manager.cancel_all():
+                    failures.append('une connexion ou son espace n’a pas confirmé son arrêt')
+                    with space_accounts_lock:
+                        space_accounts.setdefault(name, manager)  # allow an explicit retry
+            try:
+                jobs.stop(cid)
+            except (ProviderError, accounts.AccountError, OSError):
+                failures.append('le travail en cours n’a pas confirmé son arrêt')
+        finally:
+            with space_accounts_lock:
+                space_stops.discard(cid)
+        return {'paused': True, 'warnings': failures}
+
+    @app.post('/api/conversations/{cid}/isolation/resume')
+    def isolation_resume(cid: int):
+        with space_accounts_lock:
+            with database() as conn:
+                conv = access.require(conn, me(), cid, 'owner')
+                if cid in space_stops or jobs.running(cid):
+                    raise Busy('attendez la fin de l’arrêt avant de réactiver les accès')
+                isolation.suspend(conn, cid, False)
+                return {'policy': isolation.effective(conn, conv)}
+
+    diagnostics_lock = threading.Lock()
+    diagnostics_cache = {'until': 0, 'data': None}
+
+    @app.get('/api/diagnostics')
+    def diagnostics():
+        me()  # Guard enforces the session; results contain no participant data.
+        with diagnostics_lock:
+            if time.monotonic() < diagnostics_cache['until']:
+                return diagnostics_cache['data']
+            result = diagnostic_checks()
+            diagnostics_cache.update(until=time.monotonic() + 10, data=result)
+            return result
+
+    def diagnostic_checks():
+        # No logs, credential files, account names or server paths leave here.
+        from .. import sandbox
+        checks = []
+        try:
+            with database() as conn:
+                conn.execute('SELECT id FROM conversations LIMIT 1').fetchone()
+            database_ok = True
+        except (sqlite3.Error, db.SchemaError, OSError):
+            database_ok = False
+        checks.append({'name': 'Base de données', 'ok': database_ok,
+                       'detail': 'Lecture disponible.' if database_ok else 'La base ne peut pas être lue.',
+                       'action': '' if database_ok else 'Vérifiez le disque et le dossier de données avant de restaurer une sauvegarde.'})
+        try:
+            free = shutil.disk_usage(Path(db_path).resolve().parent).free
+        except OSError:
+            free = None
+        checks.append({'id': 'disk', 'name': 'Espace disque', 'ok': free is not None and free >= 1024**3,
+                       'detail': f'{free // (1024**2)} Mo libres.' if free is not None else 'Lecture du disque indisponible.',
+                       'action': 'Vérifiez ou libérez le disque du serveur.' if free is None or free < 1024**3 else ''})
+        try:
+            cli = sandbox.find_cli(current().sandbox_cli)
+            probe_env = {k: v for k, v in os.environ.items() if k.upper() in
+                         ('PATH', 'SYSTEMROOT', 'WINDIR', 'TEMP', 'TMP', 'HOME', 'USERPROFILE', 'APPDATA', 'LOCALAPPDATA')}
+            if current().sandbox_data:
+                probe_env['LOCALAPPDATA'] = current().sandbox_data
+            result = subprocess.run([cli, 'daemon', 'status'], env=probe_env, capture_output=True,
+                                    timeout=5, creationflags=claude_code.NO_WINDOW)
+            engine = result.returncode == 0
+        except (ProviderError, OSError, subprocess.TimeoutExpired):
+            engine = False
+        checks.append({'id': 'engine', 'name': 'Moteur des espaces isolés', 'ok': engine,
+                       'detail': 'Le moteur répond ; les accès seront contrôlés au lancement.' if engine else 'Le moteur ne répond pas.',
+                       'action': '' if engine else 'Sur le PC du serveur, démarrez Docker Sandboxes ou vérifiez son chemin dans Réglages.'})
+        return {'checks': checks, 'version': __version__}
+
+    @app.put('/api/conversations/{cid}/isolation')
+    def isolation_change(cid: int, body: dict):
+        if jobs.running(cid):
+            raise Busy('arrêtez les agents avant de changer leurs accès')
+        with database() as conn:
+            access.require(conn, me(), cid, 'owner')
+            return {'policy': isolation.save(conn, body, conversation_id=cid)}
+
+    @app.delete('/api/conversations/{cid}/isolation')
+    def isolation_inherit(cid: int):
+        if jobs.running(cid):
+            raise Busy('arrêtez les agents avant de changer leurs accès')
+        with database() as conn:
+            conv = access.require(conn, me(), cid, 'owner')
+            old = isolation.effective(conn, conv)
+            conn.execute('DELETE FROM execution_policies WHERE conversation_id = ?', (cid,))
+            if old['isolated'] and not isolation.effective(conn, conv)['isolated']:
+                conn.execute("UPDATE conversations SET permission_mode = 'manual' WHERE id = ? AND permission_mode = 'bypass'", (cid,))
+            conn.execute('UPDATE messages SET session_id = NULL WHERE conversation_id = ?', (cid,))
+            return {'policy': isolation.effective(conn, conv)}
+
+    def space_account(cid, provider, read_only=False, *, prepare=False):
+        if provider not in ('claude_code', 'codex') or commands.get(provider) is False:
+            raise StoreError('fournisseur isolé non proposé sur ce serveur')
+        user = me()
+        with database() as conn:
+            conv = access.require(conn, user, cid, 'write')
+            context = isolation.for_run(conn, conv, account_id=(user or {}).get('id'),
+                                        read_only=read_only, settings=current())
+        if context is None:
+            raise StoreError('cette conversation utilise le PC, pas un espace isolé')
+        name, _ = context.identity(provider)
+        with space_accounts_lock:
+            manager = space_accounts.get(name)
+        if manager is None:
+            if prepare and jobs.running(cid):
+                raise Busy('attendez la fin du travail avant de préparer une connexion')
+            if context.prepare(provider, create=prepare) is None:
+                return None
+            manager = accounts.Accounts(jobs.accounts_root, commands=commands, execution=context,
+                                        workdir=Path(db_path).resolve().parent)
+            with space_accounts_lock:
+                with database() as conn:
+                    access.require(conn, user, cid, 'write')
+                    paused = isolation.suspended(conn, cid)
+                if not paused:
+                    manager = space_accounts.setdefault(name, manager)
+            if paused:
+                manager.cancel_all()
+                raise ProviderError('accès suspendus : le propriétaire doit réactiver cet espace')
+        return manager
+
+    @app.get('/api/conversations/{cid}/sandbox/accounts')
+    def sandbox_accounts(cid: int, provider: str, read_only: bool = False):
+        manager = space_account(cid, provider, read_only)
+        if manager is None:
+            return {'prepared': False, 'provider': provider, 'login': None}
+        return {'prepared': True, **manager.status(me())[provider]}
+
+    @app.post('/api/conversations/{cid}/sandbox/login')
+    def sandbox_login(cid: int, body: SandboxTarget):
+        if jobs.running(cid):
+            raise Busy('attendez la fin du travail avant de connecter cet espace')
+        manager = space_account(cid, body.provider, body.read_only, prepare=True)
+        with space_accounts_lock:
+            # Suspension may have been committed while preparation was running.
+            with database() as conn:
+                access.require(conn, me(), cid, 'write')
+                if isolation.suspended(conn, cid):
+                    raise ProviderError('accès suspendus : le propriétaire doit réactiver cet espace')
+            return account_call(lambda: manager.start_login(me(), body.provider, wait_s=0))
+
+    @app.post('/api/conversations/{cid}/sandbox/code')
+    def sandbox_code(cid: int, body: SandboxCode):
+        manager = space_account(cid, body.provider, body.read_only)
+        if manager is None:
+            raise StoreError('aucune connexion n’attend de code')
+        with space_accounts_lock:
+            with database() as conn:
+                access.require(conn, me(), cid, 'write')
+                if isolation.suspended(conn, cid):
+                    raise ProviderError('accès suspendus : le propriétaire doit réactiver cet espace')
+            return account_call(lambda: manager.send_code(me(), body.provider, body.code, wait_s=0))
+
+    @app.post('/api/conversations/{cid}/sandbox/cancel-login')
+    def sandbox_cancel_login(cid: int, body: SandboxTarget):
+        manager = space_account(cid, body.provider, body.read_only)
+        if manager is not None:
+            manager.cancel_login(me(), body.provider)
+        return {'cancelled': True}
+
+    @app.post('/api/conversations/{cid}/sandbox/logout')
+    def sandbox_logout(cid: int, body: SandboxTarget):
+        if jobs.running(cid):
+            raise Busy('arrêtez le travail avant de déconnecter cet espace')
+        manager = space_account(cid, body.provider, body.read_only)
+        if manager is not None:
+            account_call(lambda: manager.logout(me(), body.provider))
+        return {'signed_in': False}
+
+    def result_context(cid, provider, read_only=False, *, apply=False):
+        if provider not in ('claude_code', 'codex'):
+            raise StoreError('fournisseur isolé non proposé')
+        if jobs.running(cid):
+            raise Busy('attendez la fin du travail avant de récupérer ses fichiers')
+        with database() as conn:
+            conv = access.require(conn, me(), cid, 'owner' if apply else 'write')
+            context = isolation.for_run(conn, conv, account_id=(me() or {}).get('id'),
+                                        read_only=read_only, settings=current())
+        if context is None:
+            raise StoreError('cette conversation n’utilise pas d’espace isolé')
+        return context
+
+    @app.get('/api/conversations/{cid}/sandbox/results')
+    def sandbox_results_list(cid: int, provider: str, read_only: bool = False):
+        context = result_context(cid, provider, read_only)
+        sandbox_results.collect(context, provider)
+        return {'files': sandbox_results.review(context, provider),
+                'can_apply': not read_only and context.policy['files'] == 'write',
+                'workdir': context.conversation['workdir']}
+
+    @app.get('/api/conversations/{cid}/sandbox/results/download')
+    def sandbox_results_download(cid: int, provider: str, read_only: bool = False):
+        context = result_context(cid, provider, read_only)
+        sandbox_results.collect(context, provider)
+        return Response(sandbox_results.download(context, provider), media_type='application/zip',
+                        headers={'Content-Disposition': f'attachment; filename="resultats-espace-{cid}-{provider}.zip"',
+                                 'Cache-Control': 'no-store', 'X-Content-Type-Options': 'nosniff'})
+
+    @app.get('/api/conversations/{cid}/sandbox/results/preview')
+    def sandbox_result_preview(cid: int, provider: str, name: str, read_only: bool = False):
+        context = result_context(cid, provider, read_only)
+        return sandbox_results.preview(context, provider, name)
+
+    @app.post('/api/conversations/{cid}/sandbox/results/apply')
+    def sandbox_results_apply(cid: int, body: SandboxApply):
+        context = result_context(cid, body.provider, body.read_only, apply=True)
+        context.prepare(body.provider, create=False)
+        context.stop()  # no guest background process can write during review/apply
+        return sandbox_results.apply(context, body.provider, body.files, confirm_delete=body.confirm_delete)
 
     # --- import (aihub/importer.py) --------------------------------------------
     # A reading is kept 30 minutes on the server, for the person who made it:
@@ -1544,22 +1932,33 @@ def create_app(db_path, *, command=None, env=None, allowed_roots=(), permission_
             raise StoreError(f"mode inconnu : {body.mode!r}")
         if body.project_id is not None and access.project_role(conn, user, body.project_id) != "owner":
             raise access.Forbidden("une conversation se crée dans un projet à soi")
+        parent = isolation.get(conn, project_id=body.project_id) or isolation.DEFAULT
+        profile = isolation.narrower(isolation.check(body.isolation), parent) if body.isolation is not None else parent
         if access.trusted(user):
             workdir = body.workdir
             if not workdir.strip() and body.project_id is not None:
                 workdir = store.get_project(conn, body.project_id)["workdir"] or ""
             if not workdir.strip():
-                raise StoreError("indiquez le dossier de travail (ou donnez-en un au projet)")
+                parent = isolation.get(conn, project_id=body.project_id) or isolation.DEFAULT
+                profile = isolation.check(body.isolation) if body.isolation is not None else parent
+                if profile['isolated'] and profile['files'] == 'none':
+                    workdir = own_space((user or {}).get('id') or 0, body.title)
+                else:
+                    raise StoreError("indiquez le dossier de travail (ou donnez-en un au projet)")
             workdir = check_workdir(workdir)
         else:
-            if body.permission_mode == "bypass":
+            if not profile['isolated']:
+                if body.isolation is not None:
+                    raise access.Forbidden('les membres créent leurs conversations dans un espace isolé')
+                profile = isolation.check({'isolated': True})
+            if body.permission_mode == "bypass" and not profile['isolated']:
                 raise access.Forbidden("le mode sans permission est réservé au propriétaire et aux admins")
             workdir = own_space(user["id"], body.title)
         if body.mode == "orchestration":
             # The conductor plans and sums up; the subtasks get their agents in the plan.
-            agent_id = conductor_id = agent_for(conn, body.conductor_model)
+            agent_id = conductor_id = agent_for(conn, body.conductor_model, isolated=profile['isolated'])
         else:
-            agent_id, conductor_id = agent_for(conn, body.model), None
+            agent_id, conductor_id = agent_for(conn, body.model, isolated=profile['isolated']), None
         cid = store.create_conversation(
             conn, body.title, mode=body.mode, agent_id=agent_id, conductor_agent_id=conductor_id,
             workdir=workdir, permission_mode=body.permission_mode,
@@ -1567,6 +1966,10 @@ def create_app(db_path, *, command=None, env=None, allowed_roots=(), permission_
             project_id=body.project_id,
         )
         set_owner(conn, "conversations", cid, user)
+        if not access.trusted(user):
+            isolation.save(conn, profile, conversation_id=cid)
+        if isolation.effective(conn, store.get_conversation(conn, cid))['isolated']:
+            store.set_tools(conn, cid, [])
         return cid
 
     @app.get("/api/conversations/{cid}/export")
@@ -1618,7 +2021,9 @@ def create_app(db_path, *, command=None, env=None, allowed_roots=(), permission_
         user = me(request)
         with database() as conn:
             conv = dict(access.require(conn, user, cid))
+            conv['isolation'] = isolation.effective(conn, conv)
             conv["my_role"] = access.conversation_role(conn, user, conv)
+            conv.update(library.preferences(conn, (user or {}).get("id")).get(cid, {"pinned": False, "archived": False}))
             names = {u["id"]: u["name"] for u in auth.list_users(conn)}
             agent = store.get_agent(conn, conv["agent_id"]) if conv["agent_id"] else None
             conductor = (store.get_agent(conn, conv["conductor_agent_id"])
@@ -1700,7 +2105,7 @@ def create_app(db_path, *, command=None, env=None, allowed_roots=(), permission_
             if body.kind is not None:
                 conv = store.get_conversation(conn, plan["conversation_id"])
                 if conv["assignment_mode"] == "auto":
-                    routing.follow_kind(conn, plan["id"], sid)
+                    routing.follow_kind(conn, plan["id"], sid, connected=connected_for(me()))
             return {"plan": store.get_plan(conn, plan["id"])}
 
     @app.post("/api/plans/{pid}/subtasks", status_code=201)
@@ -1759,7 +2164,7 @@ def create_app(db_path, *, command=None, env=None, allowed_roots=(), permission_
         with database() as conn:
             editable_plan(conn, pid)
             with db.transaction(conn):
-                routing.auto_assign(conn, pid)
+                routing.auto_assign(conn, pid, connected=connected_for(me()))
             return {"plan": store.get_plan(conn, pid)}
 
     @app.post("/api/plans/{pid}/adapt", status_code=202)
@@ -1801,7 +2206,7 @@ def create_app(db_path, *, command=None, env=None, allowed_roots=(), permission_
             access.require(conn, user, cid, "owner")  # its folder, mode, AI, tools, sharing: the owner's
             if not access.trusted(user):
                 # A member, in a conversation of theirs: nothing that reaches beyond their space.
-                if body.permission_mode == "bypass":
+                if body.permission_mode == "bypass" and not isolation.effective(conn, store.get_conversation(conn, cid))['isolated']:
                     raise access.Forbidden("le mode sans permission est réservé au propriétaire et aux admins")
                 if body.tools is not None and set(body.tools) - set(MEMBER_TOOLS):
                     raise access.Forbidden("seuls la recherche web et l'avis d'une autre IA sont permis ici")
@@ -1825,7 +2230,7 @@ def create_app(db_path, *, command=None, env=None, allowed_roots=(), permission_
                 store.set_tools(conn, cid, tools.check_choice(body.tools, current()))
             if body.model is not None:
                 # store.update_conversation refuses it while a request runs.
-                agent_id = agent_for(conn, body.model)
+                agent_id = agent_for(conn, body.model, isolated=isolation.effective(conn, store.get_conversation(conn, cid))['isolated'])
                 if store.get_conversation(conn, cid)["mode"] == "orchestration":
                     store.update_conversation(conn, cid, agent_id=agent_id, conductor_agent_id=agent_id)
                 else:
@@ -1905,6 +2310,7 @@ def create_app(db_path, *, command=None, env=None, allowed_roots=(), permission_
                 raise StoreError("aucun agent n'est choisi pour cette conversation")
             agent_id = conv["agent_id"]
             files = attachments.pending(conn, cid, (user or {}).get("id"), body.attachments)
+            isolation.for_run(conn, conv, account_id=(user or {}).get('id'), settings=current())
         if files and conv["mode"] == "orchestration":
             raise StoreError("les pièces jointes vont dans une conversation à une IA (pas encore à un chef d'orchestre)")
         if body.compare_with:
@@ -1943,6 +2349,8 @@ def create_app(db_path, *, command=None, env=None, allowed_roots=(), permission_
         user = me()
         with database() as conn:
             conv = access.require(conn, user, cid, "write")
+            if isolation.suspended(conn, cid):
+                raise StoreError('accès suspendus : réactivez cet espace avant de régénérer une réponse')
             if conv["mode"] != "single":
                 raise StoreError("on régénère dans une conversation à une IA")
             if jobs.running(cid):
@@ -1974,6 +2382,8 @@ def create_app(db_path, *, command=None, env=None, allowed_roots=(), permission_
         with database() as conn:
             message = store.get_message(conn, mid)
             conv = dict(access.require(conn, user, message["conversation_id"], "write"))
+            if isolation.suspended(conn, conv['id']):
+                raise StoreError('accès suspendus : réactivez cet espace avant de créer une branche')
             if message["role"] != "user":
                 raise StoreError("on modifie une demande, pas une réponse")
             if conv["mode"] != "single":
@@ -1986,10 +2396,26 @@ def create_app(db_path, *, command=None, env=None, allowed_roots=(), permission_
                 confirm_bypass=mode == "bypass",
                 project_id=conv["project_id"] if conv["project_id"] is not None
                 and access.project_role(conn, user, conv["project_id"]) == "owner" else None), user)
-            store.copy_messages(conn, message["conversation_id"], cid, mid)
+            try:
+                with db.transaction(conn):
+                    policy = isolation.effective(conn, conv)
+                    if policy['isolated']:
+                        isolation.save(conn, policy, conversation_id=cid)
+                    copied = store.copy_messages(conn, message["conversation_id"], cid, mid, with_ids=True)
+                    conn.execute("UPDATE conversations SET instructions = ?, tools_json = ?, rag_budget = ?, "
+                                 "shared = ? WHERE id = ?",
+                                 (conv["instructions"], '[]' if policy['isolated'] else conv["tools_json"] if access.trusted(user) else
+                                  json.dumps([name for name in tools.chosen(conv) if name in MEMBER_TOOLS]),
+                                  conv["rag_budget"], conv["shared"], cid))
+                    files = attachments.copy_for_branch(conn, pieces, message["conversation_id"], cid, mid,
+                                                        copied, (user or {}).get("id"))
+            except Exception:
+                store.delete_conversation(conn, cid)
+                attachments.forget_conversation(pieces, cid)
+                raise
             agent_id = store.get_conversation(conn, cid)["agent_id"]
         prompt = (body.prompt or "").strip() or message["content"]
-        jobs.start(cid, agent_id, prompt, user=user)
+        jobs.start(cid, agent_id, prompt, user=user, attachments=files)
         return {"conversation": cid}
 
     # --- files and images sent with a request (aihub/attachments.py) -------------
@@ -2101,9 +2527,11 @@ def create_app(db_path, *, command=None, env=None, allowed_roots=(), permission_
 
     # --- memory: fresh start and search ---------------------------------------
 
-    def summary_ai(conv):
+    def summary_ai(conv, conn):
         s = current()
-        return runner.summarizer(commands, conv["workdir"], s.summary_model, env=env)
+        return runner.summarizer(commands, conv["workdir"], s.summary_model, env=people_accounts.env_for(me()),
+                                 execution=isolation.for_run(conn, conv, account_id=(me() or {}).get('id'),
+                                                             read_only=True, settings=s))
 
     @app.post("/api/conversations/{cid}/fresh-start")
     def fresh_start(cid: int, body: FreshStart):
@@ -2117,7 +2545,9 @@ def create_app(db_path, *, command=None, env=None, allowed_roots=(), permission_
         with database() as conn:
             conv = access.require(conn, me(), cid, "write")
             budget = conv["rag_budget"] or s.rag_budget
-            summarize = summary_ai(conv)
+            if isolation.suspended(conn, cid):
+                raise StoreError('accès suspendus : réactivez cet espace avant de préparer une nouvelle session')
+            summarize = summary_ai(conv, conn)
             if body.decision == "custom":
                 package = _custom_package(body.package, budget)
                 if package["over"] and not body.allow_over:
@@ -2148,12 +2578,25 @@ def create_app(db_path, *, command=None, env=None, allowed_roots=(), permission_
         return {"ready": False}
 
     @app.get("/api/search")
-    def search(q: str = "", limit: int = 30):
+    def search(q: str = "", limit: int = 30, project_id: int | None = None, model: str | None = None,
+               after: str | None = None, before: str | None = None, archived: bool | None = None):
+        try:
+            start = datetime.strptime(after, "%Y-%m-%d").date().isoformat() if after else None
+            end = (datetime.strptime(before, "%Y-%m-%d") + timedelta(days=1)).date().isoformat() if before else None
+        except ValueError:
+            raise StoreError("dates : au format AAAA-MM-JJ") from None
+        if start and end and start >= end:
+            raise StoreError("la date de début doit précéder la date de fin")
         with database() as conn:
-            visible = access.visible_conversation_ids(conn, me())
-            found = memory.search(conn, q, limit=max(1, min(limit, 100)) if visible is None else 100)
-        if visible is not None:  # only in the conversations this person may see
-            found = [r for r in found if r["conversation_id"] in visible][:max(1, min(limit, 100))]
+            user = me()
+            visible = access.visible_conversation_ids(conn, user)
+            if archived is not None:
+                prefs = library.preferences(conn, (user or {}).get("id"))
+                visible = {row["id"] for row in store.list_conversations(conn)
+                           if (visible is None or row["id"] in visible) and
+                           prefs.get(row["id"], {}).get("archived", False) == archived}
+            found = memory.search(conn, q, limit=max(1, min(limit, 100)), conversation_ids=visible,
+                                  project_id=project_id, model=model, after=start, before=end)
         return {"results": found}
 
     @app.post("/api/conversations/{cid}/stop")
@@ -2171,22 +2614,28 @@ def create_app(db_path, *, command=None, env=None, allowed_roots=(), permission_
         return {"answered": permission_id}
 
     @app.get("/api/conversations/{cid}/events")
-    def events(cid: int):
+    def events(cid: int, request: HttpRequest):
         with database() as conn:
             access.require(conn, me(), cid, "read")
         q = jobs.hub.subscribe(cid)
         snapshot = jobs.snapshot(cid)
+        token = request.cookies.get(auth.COOKIE) if authority else None
+
+        def can_read():
+            with database() as conn:
+                user = authority.check(conn, token) if authority else None
+                if authority and user is None:
+                    return False
+                try:
+                    access.require(conn, user, cid, 'read')
+                    return True
+                except (access.Forbidden, NotFound):
+                    return False
 
         def stream():
             try:
-                yield _sse({"type": "snapshot", **snapshot})
-                while True:
-                    try:
-                        event = q.get(timeout=sse_ping_s)
-                    except queue.Empty:
-                        yield ": ping\n\n"
-                        continue
-                    yield _sse(event)
+                from .events import stream as live_stream
+                yield from live_stream(q, snapshot, can_read, ping_s=sse_ping_s)
             finally:
                 jobs.hub.unsubscribe(cid, q)
 

@@ -305,7 +305,9 @@ def propose_plan(conn, conversation_id, prompt, *, on_request=None, **request_kw
     plan_id = store.create_plan(conn, conversation_id, request_id, specs, summary=summary,
                                 max_parallel=parallel)
     if conversation["assignment_mode"] == "auto":
-        routing.auto_assign(conn, plan_id)
+        connected = (accounts.available_models(request_kwargs.get("command"), request_kwargs.get("env"),
+                                              conversation["workdir"]) if request_kwargs.get("account_id") else None)
+        routing.auto_assign(conn, plan_id, connected=connected)
     return plan_id, result
 
 
@@ -348,7 +350,9 @@ def adapt_plan(conn, plan_id, *, on_request=None, **request_kwargs):
     store.replace_plan(conn, plan_id, specs, summary=summary, max_parallel=parallel)
     if conversation["assignment_mode"] == "auto":
         # The conductor's own assignments stand; the table fills the gaps.
-        routing.auto_assign(conn, plan_id, only_unassigned=True)
+        connected = (accounts.available_models(request_kwargs.get("command"), request_kwargs.get("env"),
+                                              conversation["workdir"]) if request_kwargs.get("account_id") else None)
+        routing.auto_assign(conn, plan_id, only_unassigned=True, connected=connected)
     return result
 
 
@@ -515,12 +519,20 @@ class PlanExecution:
             env = self.env
             if given.env:
                 env = {**(env if env is not None else claude_code.clean_env(os.environ)), **given.env}
+            from . import isolation
+            execution = isolation.for_run(journal, conversation, account_id=self.account_id or self.user_id,
+                                          settings=self.settings)
+            if execution is not None:
+                if tools.chosen(conversation):
+                    raise ProviderError('les outils du PC ne sont pas disponibles dans un espace isolé')
+                given = tools.RunTools()
             run = providers.new_run(
-                provider, providers.command_for(command, provider), prompt=prompt,
+                provider, providers.command_for(command, provider, execution=execution), prompt=prompt,
                 workdir=conversation["workdir"], permission_mode=conversation["permission_mode"],
                 model=providers.default_model(provider, subtask["model"]),
                 ask_permission=lambda request: self._ask(journal, conversation, subtask, request),
                 on_text=on_text, timeout_s=self.timeout_s, env=env,
+                execution=execution,
                 mcp_config=given.mcp_config, auto_allow=given.auto_allow, web=given.web,
                 instructions=store.join_instructions(store.person_instructions(journal, conversation),
                                                      project_access.instructions(journal, conversation,
@@ -602,6 +614,7 @@ class PlanExecution:
                             record_prompt=False, resume=False, tools=READ_ONLY_TOOLS,
                             on_start=on_start, on_text=on_text, command=self.command, env=self.env,
                             timeout_s=self.timeout_s, settings=self.settings, account_id=self.account_id,
+                            user_id=self.user_id,
                             ask_permission=lambda r: Decision(False, "la synthèse ne fait que lire"))
         with self._lock:
             self._synthesis = synthesis

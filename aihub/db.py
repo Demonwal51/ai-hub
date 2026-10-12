@@ -10,7 +10,7 @@ import sqlite3
 from contextlib import contextmanager
 from datetime import datetime, timezone
 
-SCHEMA_VERSION = 19
+SCHEMA_VERSION = 24
 
 # One statement per string: triggers contain semicolons, so the schema
 # cannot be split on ";" and executescript() would commit mid-migration.
@@ -754,6 +754,60 @@ _SCHEMA_V19 = [
 ]
 
 
+_SCHEMA_V20 = [
+    """CREATE TABLE conversation_preferences (
+        id INTEGER PRIMARY KEY,
+        user_id INTEGER REFERENCES users(id) ON DELETE CASCADE,
+        conversation_id INTEGER NOT NULL REFERENCES conversations(id) ON DELETE CASCADE,
+        pinned INTEGER NOT NULL DEFAULT 0 CHECK (pinned IN (0, 1)),
+        archived INTEGER NOT NULL DEFAULT 0 CHECK (archived IN (0, 1))
+    )""",
+    "CREATE UNIQUE INDEX preferences_person ON conversation_preferences(COALESCE(user_id, 0), conversation_id)",
+    """CREATE TABLE work_templates (
+        id INTEGER PRIMARY KEY,
+        user_id INTEGER REFERENCES users(id) ON DELETE CASCADE,
+        title TEXT NOT NULL,
+        settings_json TEXT NOT NULL,
+        prompt TEXT NOT NULL DEFAULT '',
+        created_at TEXT NOT NULL
+    )""",
+    "CREATE INDEX templates_person ON work_templates(user_id, id)",
+]
+
+
+_SCHEMA_V21 = [
+    """CREATE TABLE execution_policies (
+        id INTEGER PRIMARY KEY,
+        conversation_id INTEGER UNIQUE REFERENCES conversations(id) ON DELETE CASCADE,
+        project_id INTEGER UNIQUE REFERENCES projects(id) ON DELETE CASCADE,
+        policy_json TEXT NOT NULL,
+        CHECK ((conversation_id IS NULL) != (project_id IS NULL))
+    )""",
+]
+
+
+_SCHEMA_V22 = [
+    """CREATE TABLE sandbox_principals (
+        user_id INTEGER PRIMARY KEY REFERENCES users(id) ON DELETE CASCADE,
+        nonce TEXT NOT NULL UNIQUE
+    )""",
+]
+
+
+_SCHEMA_V23 = [
+    """CREATE TABLE sandbox_contexts (
+        conversation_id INTEGER PRIMARY KEY REFERENCES conversations(id) ON DELETE CASCADE,
+        nonce TEXT NOT NULL UNIQUE
+    )""",
+]
+
+
+_SCHEMA_V24 = [
+    'CREATE TABLE execution_suspensions (conversation_id INTEGER PRIMARY KEY '
+    'REFERENCES conversations(id) ON DELETE CASCADE)',
+]
+
+
 class SchemaError(Exception):
     """The database file cannot be used by this version of the code."""
 
@@ -866,6 +920,21 @@ def migrate(conn: sqlite3.Connection) -> None:
                 conn.execute(statement)
         if version < 19:
             for statement in _SCHEMA_V19:
+                conn.execute(statement)
+        if version < 20:
+            for statement in _SCHEMA_V20:
+                conn.execute(statement)
+        if version < 21:
+            for statement in _SCHEMA_V21:
+                conn.execute(statement)
+        if version < 22:
+            for statement in _SCHEMA_V22:
+                conn.execute(statement)
+        if version < 23:
+            for statement in _SCHEMA_V23:
+                conn.execute(statement)
+        if version < 24:
+            for statement in _SCHEMA_V24:
                 conn.execute(statement)
         # PRAGMA does not accept bound parameters; SCHEMA_VERSION is an int constant.
         conn.execute(f"PRAGMA user_version = {SCHEMA_VERSION}")

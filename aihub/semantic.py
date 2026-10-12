@@ -123,7 +123,7 @@ def index_pending(conn, embed, model, limit=BATCH):
     return len(rows)
 
 
-def nearest(conn, text, *, conversation_id=None, limit=20, embed=None, model=None):
+def nearest(conn, text, *, conversation_id=None, limit=20, embed=None, model=None, allowed_keys=None):
     """[(score, message_id, subtask_id, conversation_id)] closest to `text`, or [] without the model."""
     current = _embedder
     embed = embed or (current.embed if current else None)
@@ -141,7 +141,9 @@ def nearest(conn, text, *, conversation_id=None, limit=20, embed=None, model=Non
     else:
         rows = conn.execute("SELECT message_id, subtask_id, conversation_id, vector FROM memory_vectors "
                             "WHERE model = ? AND conversation_id = ?", (model, conversation_id))
-    scored = [(dot(query, unpack(r["vector"])), r["message_id"], r["subtask_id"], r["conversation_id"]) for r in rows]
+    scored = [(dot(query, unpack(r["vector"])), r["message_id"], r["subtask_id"], r["conversation_id"]) for r in rows
+              if allowed_keys is None or (("m", r["message_id"]) if r["message_id"] is not None
+                                           else ("s", r["subtask_id"])) in allowed_keys]
     scored.sort(key=lambda s: -s[0])
     return scored[:limit]
 

@@ -171,7 +171,7 @@ class OllamaRun:
 
     def __init__(self, command, *, prompt, workdir, permission_mode, model=None, resume_session=None,
                  ask_permission=None, on_text=None, on_quota=None, timeout_s=None, env=None, tools=None,
-                 json_schema=None, mcp_config=None, auto_allow=(), instructions=None, web=True, images=()):
+                 json_schema=None, mcp_config=None, auto_allow=(), instructions=None, web=True, images=(), execution=None, image_data=()):
         if not isinstance(prompt, str) or not prompt.strip():
             raise ProviderError("demande vide")
         if not model:
@@ -186,6 +186,8 @@ class OllamaRun:
         self.instructions = instructions
         self.read_files = tools is None or bool(tools)  # tools=[]: nothing at all (a summary)
         self.images = list(images)  # pictures: a vision model sees them, another one ignores them
+        self.image_data = list(image_data)
+        self.execution = execution
         self._lock = threading.Lock()
         self._stop_reason = None
         self._response = None
@@ -215,11 +217,13 @@ class OllamaRun:
             timer = threading.Timer(self.timeout_s, self.stop, kwargs={"reason": "timeout"})
             timer.daemon = True
             timer.start()
-        folder = Folder(self.workdir)
+        folder = self.execution if self.execution is not None else Folder(self.workdir)
         system = SYSTEM + (f"\n\n{self.instructions}" if self.instructions else "")
         messages = [{"role": "system", "content": system}, {"role": "user", "content": self.prompt}]
         if self.images:
             messages[1]["images"] = [base64.b64encode(Path(p).read_bytes()).decode("ascii") for p in self.images]
+        elif self.image_data:
+            messages[1]['images'] = self.image_data
         result.usage = {"input_tokens": 0, "output_tokens": 0}
         text = ""
         try:
@@ -234,7 +238,9 @@ class OllamaRun:
                     name = str(function.get("name") or "?")
                     result.tool_calls.append(name)
                     messages.append({"role": "tool", "tool_name": name,
-                                     "content": folder.call(name, function.get("arguments"))})
+                                     "content": ('refusé : les outils sont désactivés pour cette demande' if not self.read_files else
+                                                 folder.file_tool(name, function.get('arguments')) if self.execution is not None
+                                                 else folder.call(name, function.get("arguments")))})
             else:
                 raise ProviderError(f"l'IA locale a enchaîné plus de {MAX_TOOL_ROUNDS} appels d'outils : arrêtée")
             result.text = text
@@ -252,6 +258,8 @@ class OllamaRun:
         finally:
             if timer:
                 timer.cancel()
+            if self.execution is not None:
+                self.execution.stop()
         result.tokens_in = result.usage.get("input_tokens")
         result.tokens_out = result.usage.get("output_tokens")
         result.duration_ms = int((time.monotonic() - started) * 1000)

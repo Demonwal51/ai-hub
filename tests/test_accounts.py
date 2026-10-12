@@ -18,6 +18,47 @@ GUEST = {"id": 7, "name": "Lou", "is_owner": False}
 OWNER = {"id": 1, "name": "Propriétaire", "is_owner": True}
 
 
+class LoginAddressTest(unittest.TestCase):
+    def test_cancelled_login_cannot_spawn_a_late_provider_process(self):
+        manager = accounts.Accounts('.', commands={})
+        for provider in ('claude_code', 'codex'):
+            login = accounts.Login(provider)
+            login.finish('cancelled')
+            with mock.patch('aihub.accounts.subprocess.Popen') as spawn, \
+                 mock.patch('aihub.accounts.codex._Server') as server:
+                if provider == 'claude_code':
+                    manager._claude_login(login, ['unused'], {})
+                else:
+                    manager._codex_login(login, ['unused'], {})
+                spawn.assert_not_called()
+                server.assert_not_called()
+
+    def test_emergency_cancel_continues_when_one_login_cannot_stop(self):
+        execution = mock.Mock()
+        manager = accounts.Accounts('.', commands={}, execution=execution)
+        failed, other = mock.Mock(), mock.Mock()
+        failed.done.is_set.return_value = other.done.is_set.return_value = False
+        failed.cancel.side_effect = accounts.ProviderError('unavailable')
+        other.cancel.return_value = True
+        manager._logins = {('a','claude_code'):failed, ('b','claude_code'):other}
+        self.assertFalse(manager.cancel_all())
+        other.cancel.assert_called_once()
+        execution.stop.assert_called_once()
+
+    def test_documentation_banner_cannot_hide_the_actual_auth_address(self):
+        self.assertIsNone(accounts.login_url_from_line('Help: https://code.claude.com/docs', 'claude_code', True))
+        self.assertIsNone(accounts.login_url_from_line('Help: https://claude.ai/docs', 'claude_code', True))
+        expected = 'https://claude.ai/oauth/authorize?client_id=fixture'
+        self.assertEqual(accounts.login_url_from_line('Help https://code.claude.com/docs Login: '+expected+'\x1b[0m',
+                                                       'claude_code', True), expected)
+        current = 'https://claude.com/cai/oauth/authorize?client_id=fixture'
+        self.assertEqual(accounts.login_url_from_line(current, 'claude_code', True), current)
+        for address in ('https://claude.ai.attacker.test/oauth/authorize', 'https://attacker.test/oauth/authorize',
+                        'https://user:pass@claude.ai/oauth/authorize', 'https://claude.ai:444/oauth/authorize'):
+            with self.subTest(address=address):
+                self.assertIsNone(accounts.login_url_from_line(address, 'claude_code', True))
+
+
 class RunEnvTest(TempDirMixin, unittest.TestCase):
     def test_the_owner_keeps_the_computer_s_accounts(self):
         base = {"PATH": "x", "ANTHROPIC_API_KEY": "k"}
@@ -211,10 +252,12 @@ class SignInTest(TempDirMixin, unittest.TestCase):
 
 
 class WebAccountsTest(SharingTestCase):
-    def test_a_guest_s_request_uses_their_account(self):
+    def test_a_admin_s_request_uses_their_account(self):
         guest, uid = self.guest()
+        conn = db.connect(self.db_path)
+        conn.execute("UPDATE users SET role = 'admin' WHERE id = ?", (uid,))
+        conn.close()
         cid = self.conversation()
-        self.share(uid, "write", conversation_id=cid)
         log = Path(self.env["FAKE_CLAUDE_LOG"])
         guest.post(f"/api/conversations/{cid}/messages", json={"prompt": "salut"}, headers=H)
         data = wait_idle(guest, cid)
@@ -255,10 +298,12 @@ class WebAccountsTest(SharingTestCase):
                          .json()["state"], "ok")
         return guest, uid
 
-    def test_a_delegation_asked_by_a_guest_names_their_account(self):
+    def test_a_delegation_asked_by_a_admin_names_their_account(self):
         guest, uid = self.signed_in_guest()
+        conn = db.connect(self.db_path)
+        conn.execute("UPDATE users SET role = 'admin' WHERE id = ?", (uid,))
+        conn.close()
         cid = self.conversation()
-        self.share(uid, "write", conversation_id=cid)
         conn = db.connect(self.db_path)
         store.set_tools(conn, cid, [tools.DELEGATE])
         conn.close()
@@ -272,15 +317,17 @@ class WebAccountsTest(SharingTestCase):
         self.assertEqual(servers[tools.DELEGATE]["env"], {"CLAUDE_CONFIG_DIR": str(folder / "claude"),
                                                           "CODEX_HOME": str(folder / "codex")})
 
-    def test_a_plan_launched_by_a_guest_runs_on_their_account(self):
+    def test_a_plan_launched_by_a_admin_runs_on_their_account(self):
         runs = self.make_tempdir()
         self.env["FAKE_CLAUDE_LOG_DIR"] = str(runs)
         self.env["FAKE_CLAUDE_SCENARIO"] = "auto"  # a plan, its subtasks, the synthesis
         guest, uid = self.signed_in_guest()
+        conn = db.connect(self.db_path)
+        conn.execute("UPDATE users SET role = 'admin' WHERE id = ?", (uid,))
+        conn.close()
         r = self.owner.post("/api/conversations", json={"title": "Plan", "workdir": str(self.workdir),
                                                          "mode": "orchestration", "conductor_model": "opus"}, headers=H)
         cid = r.json()["conversation"]["id"]
-        self.share(uid, "write", conversation_id=cid)
         agent = self.owner.post("/api/agents", json={"model": "sonnet"}, headers=H).json()["agent"]["id"]
         r = guest.post(f"/api/conversations/{cid}/messages", json={"prompt": "fais le projet"}, headers=H)
         data = wait_idle(guest, cid)
@@ -309,10 +356,12 @@ class WebAccountsTest(SharingTestCase):
         self.assertIsNotNone(data["claude_code"])
         self.assertIsNone(self.owner.get("/api/quota", headers=H).json()["claude_code"])  # not the owner's
 
-    def test_a_quota_met_during_a_guest_s_request_is_theirs(self):
+    def test_a_quota_met_during_a_admin_s_request_is_theirs(self):
         guest, uid = self.signed_in_guest()
+        conn = db.connect(self.db_path)
+        conn.execute("UPDATE users SET role = 'admin' WHERE id = ?", (uid,))
+        conn.close()
         cid = self.conversation()
-        self.share(uid, "write", conversation_id=cid)
         self.env["FAKE_CLAUDE_SCENARIO"] = "quota"
         guest.post(f"/api/conversations/{cid}/messages", json={"prompt": "salut"}, headers=H)
         wait_idle(guest, cid)

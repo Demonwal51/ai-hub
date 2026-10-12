@@ -234,7 +234,12 @@ def delete_project(conn, project_id, *, with_conversations=False):
         if with_conversations:
             conn.execute("DELETE FROM conversations WHERE project_id = ?", (project_id,))
         else:
+            from . import isolation
+            policies = [(row['id'], isolation.effective(conn, row)) for row in project_conversations(conn, project_id)]
             conn.execute("UPDATE conversations SET project_id = NULL WHERE project_id = ?", (project_id,))
+            for cid, policy in policies:
+                if policy['isolated']:
+                    isolation.save(conn, {k: v for k, v in policy.items() if k != 'paused'}, conversation_id=cid)
         conn.execute("DELETE FROM projects WHERE id = ?", (project_id,))
     conn.execute("PRAGMA wal_checkpoint(TRUNCATE)")
     return ids if with_conversations else []
@@ -242,11 +247,16 @@ def delete_project(conn, project_id, *, with_conversations=False):
 
 def move_conversation(conn, conversation_id, project_id):
     """Put a conversation in a project, or take it out (None)."""
-    get_conversation(conn, conversation_id)
+    conversation = get_conversation(conn, conversation_id)
+    from . import isolation
+    policy = isolation.effective(conn, conversation)
     if project_id is not None:
         get_project(conn, project_id)
-    conn.execute("UPDATE conversations SET project_id = ?, updated_at = ? WHERE id = ?",
-                 (project_id, utc_now(), conversation_id))
+    with transaction(conn):
+        conn.execute("UPDATE conversations SET project_id = ?, updated_at = ? WHERE id = ?",
+                     (project_id, utc_now(), conversation_id))
+        if policy['isolated']:
+            isolation.save(conn, {k: v for k, v in policy.items() if k != 'paused'}, conversation_id=conversation_id)
 
 
 def set_shared(conn, conversation_id, shared):
@@ -494,10 +504,12 @@ def mark_message_running(conn, message_id):
 
 def append_message_content(conn, message_id, chunk):
     """Add a streamed piece of text to a running reply."""
-    message = get_message(conn, message_id)
-    if message["status"] != "running":
+    # Do not read the entire growing reply back into Python for every token.
+    changed = conn.execute("UPDATE messages SET content = content || ? WHERE id = ? AND status = 'running'",
+                           (chunk, message_id)).rowcount
+    if not changed:
+        get_message(conn, message_id)  # retain NotFound for an unknown message
         raise StoreError("le message n'est pas en cours")
-    conn.execute("UPDATE messages SET content = content || ? WHERE id = ?", (chunk, message_id))
 
 
 def finish_message(conn, message_id, status, *, content=None, error=None,
@@ -634,6 +646,10 @@ def recover_interrupted(conn):
         plans = conn.execute(
             "UPDATE plans SET status = 'stopped', finished_at = ? WHERE status = 'running'", (now,)
         ).rowcount
+        conn.execute("UPDATE variants SET status = 'stopped', error = ? WHERE status = 'running'", (INTERRUPTED,))
+        conn.execute("UPDATE delegations SET status = 'error', error = ? WHERE status = 'running'", (INTERRUPTED,))
+        conn.execute("UPDATE schedules SET last_status = 'stopped', last_error = ? WHERE last_status = 'running'",
+                     (INTERRUPTED,))
     return replies + plans
 
 
@@ -1141,21 +1157,23 @@ def forget_exchange(conn, request_id, reply_id):
         conn.execute("DELETE FROM messages WHERE id IN (?, ?)", (reply_id, request_id))
 
 
-def copy_messages(conn, source_id, target_id, before_id):
+def copy_messages(conn, source_id, target_id, before_id, *, with_ids=False):
     """The finished messages of a conversation before `before_id`, copied into another (a branch).
     Returns how many. The copies have no session: the branch starts from the memory."""
     rows = conn.execute(
-        "SELECT role, provider, model, content, status, user_id, created_at, finished_at, tokens_in, tokens_out, "
+        "SELECT id, role, provider, model, content, status, user_id, created_at, finished_at, tokens_in, tokens_out, "
         "duration_ms FROM messages WHERE conversation_id = ? AND id < ? AND content <> '' "
         "AND status IN ('ok', 'stopped') ORDER BY id", (source_id, before_id)).fetchall()
+    copied = {}
     with transaction(conn):
-        conn.executemany(
-            "INSERT INTO messages (conversation_id, role, provider, model, content, status, user_id, created_at, "
-            "finished_at, tokens_in, tokens_out, duration_ms) VALUES (?, ?, ?, ?, ?, 'ok', ?, ?, ?, NULL, NULL, ?)",
-            # No provider: a copy cost nothing (the consumption counts the original once).
-            [(target_id, r["role"], None, r["model"], r["content"], r["user_id"], r["created_at"],
-              r["finished_at"], r["duration_ms"]) for r in rows])
-    return len(rows)
+        for r in rows:
+            cursor = conn.execute(
+                "INSERT INTO messages (conversation_id, role, provider, model, content, status, user_id, created_at, "
+                "finished_at, tokens_in, tokens_out, duration_ms) VALUES (?, ?, ?, ?, ?, 'ok', ?, ?, ?, NULL, NULL, ?)",
+                (target_id, r["role"], None, r["model"], r["content"], r["user_id"], r["created_at"],
+                 r["finished_at"], r["duration_ms"]))
+            copied[r["id"]] = cursor.lastrowid
+    return copied if with_ids else len(rows)
 
 
 # --- instructions the AI always gets (« Consignes ») --------------------------------------

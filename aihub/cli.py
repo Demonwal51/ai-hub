@@ -88,7 +88,7 @@ def _parser():
 
     sub.add_parser("mot-de-passe", help="définir ou changer le mot de passe (ferme toutes les sessions)")
 
-    startup = sub.add_parser("demarrage-auto", help="lancer le serveur à l'ouverture de la session Windows")
+    startup = sub.add_parser("demarrage-auto", help="lancer le serveur à l'ouverture de la session Windows ou Linux")
     startup.add_argument("action", choices=("activer", "desactiver", "etat"))
     startup.add_argument("options", nargs=argparse.REMAINDER,
                          help="options de serve, après « -- » (ex. -- --obsidian D:\\notes\\coffre)")
@@ -285,8 +285,8 @@ def _shortcut(mode, path, target="", arguments="", workdir=""):
 
 def cmd_startup(args, out):
     if os.name != "nt":
-        out("Le démarrage automatique n'est prévu que pour Windows.")
-        return 2
+        from .linux import startup
+        return startup(args, out)
     shortcut = startup_folder() / SHORTCUT_NAME
     if args.action == "activer":
         options = [o for o in args.options if o != "--"]
@@ -368,30 +368,13 @@ def cmd_restore(args, out, ask):
     db_path = Path(args.db).resolve()
     keep = db_path.with_name(f"avant-restauration-{datetime.now():%Y-%m-%d_%H%M%S}.db")
     try:
-        if db_path.exists():
-            current = sqlite3.connect(db_path)
-            try:
-                saved = sqlite3.connect(keep)
-                try:
-                    current.backup(saved)
-                finally:
-                    saved.close()
-            finally:
-                current.close()
-        source = sqlite3.connect(f"{chosen.resolve().as_uri()}?mode=ro", uri=True)
-        try:
-            target = sqlite3.connect(db_path)
-            try:
-                source.backup(target)  # page by page, through SQLite: the WAL stays consistent
-            finally:
-                target.close()
-        finally:
-            source.close()
-        db.connect(str(db_path)).close()  # brought up to the current schema
-    except sqlite3.Error as exc:
+        restored_files = backup.restore_database(chosen, db_path, keep)
+    except (OSError, sqlite3.Error, backup.BackupError) as exc:
         out(f"Restauration impossible : {exc}" + (f" (la base d'avant est dans {keep})" if keep.exists() else ""))
         return 1
     out(f"Base restaurée depuis {chosen.name}." + (f" L'ancienne est gardée : {keep}" if keep.exists() else ""))
+    if restored_files:
+        out(f"{restored_files} pièce(s) jointe(s) restaurée(s).")
     return 0
 
 

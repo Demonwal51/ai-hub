@@ -65,6 +65,8 @@ class Settings:
     ntfy_events: list = field(default_factory=lambda: list(NTFY_EVENTS))  # the alerts sent there
     ntfy_detail: str = "minimal"                         # minimal: what happened, not where
     tool_servers: list = field(default_factory=list)     # MCP servers a conversation may choose (aihub/tools.py)
+    sandbox_cli: str | None = None                      # optional explicit sbx executable
+    sandbox_data: str | None = None                     # process-only LOCALAPPDATA override (Windows)
 
     def to_dict(self):
         return asdict(self)
@@ -96,6 +98,8 @@ LABELS = {
     "ntfy_events": "Alertes envoyées à ntfy",
     "ntfy_detail": "Ce que disent les alertes ntfy",
     "tool_servers": "Serveurs d'outils (MCP) proposés aux conversations",
+    "sandbox_cli": "Docker Sandboxes : chemin de la commande sbx (vide : détection)",
+    "sandbox_data": "Docker Sandboxes : stockage Windows (vide : emplacement du moteur)",
 }
 NO_SUMMARY = "aucun"
 
@@ -201,6 +205,15 @@ def validate(data, base=None):
         out["tool_servers"] = check_catalog(merged["tool_servers"])
     except ToolError as exc:
         raise ConfigError(str(exc)) from None
+    cli = merged['sandbox_cli']
+    if cli not in (None, ''):
+        if not isinstance(cli, str) or not Path(cli).is_absolute() or not Path(cli).is_file():
+            raise ConfigError('Docker Sandboxes : indiquez le chemin complet du fichier sbx')
+        out['sandbox_cli'] = str(Path(cli).resolve())
+    else:
+        out['sandbox_cli'] = None
+    folder = merged['sandbox_data']
+    out['sandbox_data'] = _folder(folder, 'stockage Docker Sandboxes', must_exist=False) if folder not in (None, '') else None
     return Settings(**out)
 
 

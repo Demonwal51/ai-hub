@@ -26,6 +26,7 @@ import subprocess
 import threading
 import time
 from pathlib import Path
+from urllib.parse import urlsplit
 
 from . import providers
 from .providers import ProviderError, claude_code, codex
@@ -34,6 +35,7 @@ PROVIDERS = (claude_code.PROVIDER, codex.PROVIDER)
 NAMES = {claude_code.PROVIDER: claude_code.DISPLAY_NAME, codex.PROVIDER: codex.DISPLAY_NAME}
 LOGIN_TIMEOUT_S = 600   # a sign-in left waiting is given up after that
 _URL = re.compile(r"https://\S+")
+_ANSI = re.compile(r'\x1b\[[0-?]*[ -/]*[@-~]')
 # Keys that would make a CLI use an account other than the folders' one.
 SECRET_NAMES = ("ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN", "CLAUDE_CODE_OAUTH_TOKEN",
                 "OPENAI_API_KEY", "CODEX_API_KEY")
@@ -95,6 +97,51 @@ def claude_signed_in(command, env, timeout_s=60):
         raise ProviderError("état de connexion de Claude Code illisible") from None
 
 
+def available_models(commands, env, workdir):
+    """Read availability through the CLIs with these accounts only, without reading credentials."""
+    from .providers import ollama
+    found = {}
+    for provider in (claude_code.PROVIDER, codex.PROVIDER, ollama.PROVIDER):
+        try:
+            command = providers.command_for(commands, provider)
+            if provider == claude_code.PROVIDER:
+                if claude_signed_in(command, env):
+                    found[provider] = None
+            elif provider == codex.PROVIDER:
+                if codex.login_status(command, env=env):
+                    found[provider] = set(codex.list_models(command, workdir=workdir, env=env)) | {"codex"}
+            else:
+                models = ollama.list_models(command)
+                if models:
+                    found[provider] = set(models)
+        except (ProviderError, OSError, subprocess.SubprocessError):
+            continue
+    return found
+
+
+def isolated_login_url(provider, value):
+    try:
+        parsed = urlsplit(value)
+        hosts = ({'claude.ai', 'claude.com', 'platform.claude.com', 'console.anthropic.com'} if provider == 'claude_code'
+                 else {'auth.openai.com', 'chatgpt.com'})
+        return (parsed.scheme == 'https' and parsed.hostname in hosts and parsed.port in (None, 443)
+                and not parsed.username and not parsed.password)
+    except (ValueError, TypeError):
+        return False
+
+
+def login_url_from_line(line, provider, isolated=False):
+    """Ignore documentation banners; only a validated login URL reaches the UI."""
+    for match in _URL.finditer(_ANSI.sub('', line)):
+        value = match.group(0).rstrip(').,')
+        if not isolated:
+            return value
+        if isolated_login_url(provider, value):
+            if provider != 'claude_code' or urlsplit(value).path in ('/oauth/authorize', '/oauth/authorize/', '/cai/oauth/authorize', '/cai/oauth/authorize/', '/login'):
+                return value
+    return None
+
+
 class Login:
     """One sign-in under way, of one person to one provider."""
 
@@ -111,6 +158,7 @@ class Login:
         self._server = None
         self._login_id = None
         self._lock = threading.Lock()
+        self.execution = None
 
     def view(self):
         return {"provider": self.provider, "state": self.state, "url": self.url, "code": self.code,
@@ -122,31 +170,54 @@ class Login:
                 return
             self.state, self.error = state, error
             self.done.set()
+            if self.execution is not None:
+                self.execution.end_login()
 
     def cancel(self):
         self.finish("cancelled")
+        ok = True
         if self._server is not None and self._login_id:
-            self._server.request("account/login/cancel", {"loginId": self._login_id})
+            try:
+                self._server.request("account/login/cancel", {"loginId": self._login_id})
+            except (AccountError, ProviderError, OSError):
+                ok = False
         for proc in (self._proc, self._server.proc if self._server is not None else None):
             if proc is not None:
-                claude_code._kill_tree(proc)
+                try:
+                    if self.execution is not None:
+                        self.execution.stop()
+                except (AccountError, ProviderError, OSError):
+                    ok = False
+                finally:
+                    claude_code._kill_tree(proc)
+        return ok
 
 
 class Accounts:
     """The sign-ins of the hub's people. `commands`: as for the runs (tests give fakes)."""
 
-    def __init__(self, root, *, commands, env=None, workdir=None):
+    def __init__(self, root, *, commands, env=None, workdir=None, execution=None):
         self.root = Path(root)
         self.commands = commands
         self.env = env
         self.workdir = str(workdir or self.root)
+        self.execution = execution
+        if execution is not None:
+            execution.authentication = True
         self._logins = {}
         self._lock = threading.Lock()
 
     def _command(self, provider):
+        if self.execution is not None:
+            if provider != self.execution.provider:
+                raise AccountError('ce fournisseur ne correspond pas à cet espace')
+            return self.execution.transport(['claude' if provider == claude_code.PROVIDER else 'codex'],
+                                            guest_env={'BROWSER': 'none'})
         return providers.command_for(self.commands, provider)
 
     def env_for(self, user):
+        if self.execution is not None:
+            return self.execution.env
         env = run_env(self.env, user, self.root)
         return env if env is not None else claude_code.clean_env(os.environ)
 
@@ -155,6 +226,8 @@ class Accounts:
         env = self.env_for(user)
         out = {}
         for provider in PROVIDERS:
+            if self.execution is not None and provider != self.execution.provider:
+                continue
             entry = {"name": NAMES[provider], "signed_in": None, "error": None, "login": None}
             if isinstance(self.commands, dict) and self.commands.get(provider) is False:
                 continue  # not offered on this hub
@@ -188,7 +261,10 @@ class Accounts:
             old = self._logins.get(key)
             if old is not None and not old.done.is_set():
                 old.cancel()
+            if self.execution is not None:
+                self.execution.begin_login()
             login = self._logins[key] = Login(provider)
+            login.execution = self.execution
         command = self._command(provider)
         env = self.env_for(user)
         target = self._claude_login if provider == claude_code.PROVIDER else self._codex_login
@@ -198,20 +274,23 @@ class Accounts:
             time.sleep(0.05)
         return login.view()
 
-    def send_code(self, user, provider, code):
+    def send_code(self, user, provider, code, wait_s=60):
         """Hand the code shown by Claude's page to the waiting CLI; wait for its verdict."""
         login = self.login_of(user, provider)
         code = str(code or "").strip()
-        if login is None or login.done.is_set() or not login.needs_code or login._proc is None:
+        if login is None:
             raise AccountError("aucune connexion n'attend de code")
         if not code or len(code) > 512 or any(c.isspace() for c in code):
             raise AccountError("code invalide")
-        try:
-            login._proc.stdin.write(code + "\n")
-            login._proc.stdin.flush()
-        except (OSError, ValueError):
-            raise AccountError("la connexion s'est arrêtée") from None
-        login.done.wait(60)
+        with login._lock:
+            if login.done.is_set() or not login.needs_code or login._proc is None:
+                raise AccountError("aucune connexion n'attend de code")
+            try:
+                login._proc.stdin.write(code + "\n")
+                login._proc.stdin.flush()
+            except (OSError, ValueError):
+                raise AccountError("la connexion s'est arrêtée") from None
+        login.done.wait(wait_s)
         return login.view()
 
     def cancel_login(self, user, provider):
@@ -219,8 +298,27 @@ class Accounts:
         if login is not None and not login.done.is_set():
             login.cancel()
 
+    def cancel_all(self):
+        """Emergency suspension of a scoped space, including all pending logins."""
+        with self._lock:
+            logins = list(self._logins.values())
+        ok = True
+        for login in logins:
+            if not login.done.is_set():
+                try:
+                    if not login.cancel():
+                        ok = False
+                except (AccountError, ProviderError, OSError):
+                    ok = False
+        if self.execution is not None:
+            try:
+                self.execution.stop()
+            except (AccountError, ProviderError, OSError):
+                ok = False
+        return ok
+
     def logout(self, user, provider):
-        if not own_accounts(user):
+        if self.execution is None and not own_accounts(user):
             # Claude Code and Codex use them outside the hub too: that is done in a terminal.
             raise AccountError("les comptes de l'ordinateur se déconnectent dans un terminal, pas d'ici")
         if provider not in PROVIDERS:
@@ -234,13 +332,17 @@ class Accounts:
         except (OSError, subprocess.SubprocessError) as exc:
             raise AccountError(f"déconnexion impossible : {exc}") from None
 
-    def forget(self, user_id):
-        """The person is deleted: end their sign-ins, drop their folders."""
+    def cancel_user(self, user_id):
+        """End pending logins without reading or deleting credential files."""
         with self._lock:
             mine = [k for k in self._logins if k[0] == user_id]
             logins = [self._logins.pop(k) for k in mine]
         for login in logins:
             login.cancel()
+
+    def forget(self, user_id):
+        """The person is deleted: end their sign-ins, drop their folders."""
+        self.cancel_user(user_id)
         remove(self.root, user_id)
 
     # --- the two sign-in flows -------------------------------------------------
@@ -248,10 +350,14 @@ class Accounts:
     def _claude_login(self, login, command, env):
         env = dict(env, BROWSER="none")  # the page is opened by the person, on their device
         try:
-            proc = login._proc = subprocess.Popen(
-                list(command) + ["auth", "login", "--claudeai"], env=env, cwd=self.workdir,
-                stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True,
-                encoding="utf-8", errors="replace", bufsize=1, creationflags=claude_code.NO_WINDOW)
+            with login._lock:
+                if login.done.is_set():
+                    return
+                proc = login._proc = subprocess.Popen(
+                    list(command) + ["auth", "login", "--claudeai"], env=env, cwd=self.workdir,
+                    stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True,
+                    encoding="utf-8", errors="replace", bufsize=1, creationflags=claude_code.NO_WINDOW,
+                    start_new_session=(os.name != 'nt'))
         except OSError as exc:
             login.finish("error", f"impossible de lancer Claude Code : {exc}")
             return
@@ -268,9 +374,9 @@ class Accounts:
                     break
                 line += ch
                 if ch == "\n" or line.rstrip().endswith(">"):
-                    found = _URL.search(line)
+                    found = login_url_from_line(line, claude_code.PROVIDER, self.execution is not None)
                     if found and login.url is None:
-                        login.url = found.group(0)
+                        login.url = found
                     if "code" in line.lower() and line.rstrip().endswith(">"):
                         login.needs_code = True
                     if login.url and login.needs_code and login.state == "starting":
@@ -299,11 +405,16 @@ class Accounts:
             # Measured on the real CLI: « Paste code here if prompted > Login failed: … » on one line.
             detail = next((t for t in reversed(tail) if t and not t.endswith(">")), "").split(">")[-1].strip()
             login.finish("error", "connexion refusée" + (f" : {detail[:200]}" if detail else ""))
+        if self.execution is not None:
+            self.execution.stop()
 
     def _codex_login(self, login, command, env):
         try:
-            home = Path(env["CODEX_HOME"]) if env and env.get("CODEX_HOME") else codex.codex_home()
-            server = login._server = codex._Server(command, self.workdir, env, home)
+            with login._lock:
+                if login.done.is_set():
+                    return
+                home = (Path(env["CODEX_HOME"]) if env and env.get("CODEX_HOME") else codex.codex_home()) if self.execution is None else None
+                server = login._server = codex._Server(command, self.workdir, env, home, execution=self.execution)
         except ProviderError as exc:
             login.finish("error", str(exc))
             return
@@ -335,6 +446,10 @@ class Accounts:
                     start = server.request("account/login/start", {"type": "chatgptDeviceCode"})
                 elif start is not None and message.get("id") == start:
                     result = message.get("result") or {}
+                    if (self.execution is not None and result.get('verificationUrl')
+                            and not isolated_login_url(codex.PROVIDER, result['verificationUrl'])):
+                        login.finish('error', 'adresse de connexion inattendue')
+                        break
                     if "error" in message or not result.get("verificationUrl") or not result.get("userCode"):
                         detail = (message.get("error") or {}).get("message") or "pas de code reçu"
                         login.finish("error", f"{codex.DISPLAY_NAME} a refusé : {detail}")

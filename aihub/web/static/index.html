@@ -83,6 +83,16 @@
               title="Importer des conversations de ChatGPT, de Claude, de Claude Code ou de Codex, séparées ou fusionnées">Importer…</button>
       <input type="search" id="search" class="search" placeholder="Chercher dans les conversations…"
              aria-label="Chercher dans les conversations" autocomplete="off">
+      <details class="list-filters">
+        <summary>Ranger et filtrer</summary>
+        <label>Afficher <select id="list-scope"><option value="active">Conversations actives</option>
+          <option value="archived">Archives</option><option value="all">Toutes</option></select></label>
+        <label>Projet <select id="filter-project"><option value="">Tous les projets</option></select></label>
+        <label>IA <select id="filter-model"><option value="">Toutes les IA</option></select></label>
+        <label>Du <input type="date" id="filter-after"></label>
+        <label>Au <input type="date" id="filter-before"></label>
+        <button class="btn btn-ghost btn-small" id="clear-filters" type="button">Réinitialiser</button>
+      </details>
       <nav class="conversation-list" id="conversation-list" aria-label="Conversations"></nav>
       <button class="update-banner hidden" id="update-banner" type="button"></button>
       <button class="quota-mini" id="quota-mini" type="button" title="Quota de vos IA : le détail">Quota…</button>
@@ -95,6 +105,9 @@
             <button class="menu-item" id="offline-toggle" type="button"
                     title="Garder les conversations lisibles sur cet appareil quand le PC ne répond pas">Hors connexion : non</button>
             <button class="menu-item hidden" id="settings" type="button" title="Réglages de l'appli">Réglages</button>
+            <button class="menu-item" id="appearance" type="button">Apparence…</button>
+            <button class="menu-item" id="getting-started" type="button">Bien démarrer…</button>
+            <button class="menu-item" id="diagnostics" type="button">Diagnostic…</button>
             <button class="menu-item hidden" id="people" type="button" title="Inviter des personnes, gérer leurs accès">Personnes</button>
             <button class="menu-item hidden" id="consumption" type="button" title="Qui a utilisé combien d'IA">Consommation</button>
             <button class="menu-item hidden" id="server" type="button" title="État du serveur : disque, sauvegardes, journal">Serveur</button>
@@ -109,10 +122,18 @@
 
     <main class="main" id="main">
       <div class="empty" id="empty">
-        <img src="/static/icon-192.png" alt="" width="56" height="56">
-        <p>Choisissez une conversation à gauche, ou créez-en une.</p>
+        <div class="welcome-mark" aria-hidden="true">✦</div>
+        <p class="welcome-eyebrow">VOTRE ESPACE DE TRAVAIL AVEC LES IA</p>
+        <h1>Une idée. Plusieurs façons d’avancer.</h1>
+        <p class="welcome-lead">Retrouvez vos conversations, organisez vos projets et choisissez les accès de vos IA.</p>
         <button class="btn btn-primary" id="empty-new" type="button">Nouvelle conversation</button>
-        <p class="quota-note">Astuce : « Chercher dans les conversations » retrouve un passage par ses mots.</p>
+        <button class="btn btn-ghost" id="welcome-guide" type="button">Me guider pour commencer</button>
+        <div class="welcome-features">
+          <div><span aria-hidden="true">↗</span><strong>Commencer simplement</strong><p>Une demande, un document ou un modèle de travail.</p></div>
+          <div><span aria-hidden="true">◎</span><strong>Travailler ensemble</strong><p>Comparez les réponses ou répartissez le travail entre plusieurs IA.</p></div>
+          <div><span aria-hidden="true">◇</span><strong>Choisir les accès</strong><p>Créez un espace isolé et vérifiez ses fichiers avant de les appliquer.</p></div>
+        </div>
+        <p class="quota-note">La recherche retrouve les passages de vos conversations.</p>
       </div>
 
       <section class="conversation hidden" id="conversation">
@@ -121,6 +142,9 @@
           <div class="conv-title-wrap">
             <h1 class="conv-title" id="conv-title"></h1>
             <div class="conv-meta" id="conv-meta"></div>
+            <button class="btn btn-ghost btn-small hidden" id="isolation-accounts-quick" type="button">Comptes IA de cet espace</button>
+            <button class="btn btn-ghost btn-small" id="access-overview" type="button">Accès de cette IA</button>
+            <button class="btn btn-ghost btn-small hidden" id="results-quick" type="button">Vérifier les fichiers produits</button>
           </div>
           <div class="conv-actions">
             <select id="conv-model" aria-label="IA de la conversation"
@@ -134,6 +158,12 @@
               <button class="btn btn-ghost" id="conv-menu-button" type="button" aria-haspopup="menu" aria-expanded="false"
                       aria-label="Autres actions" title="Autres actions">⋯</button>
               <div class="menu" id="conv-menu" role="menu">
+                <button class="menu-item" id="pin-conversation" type="button">Épingler pour moi</button>
+                <button class="menu-item" id="archive-conversation" type="button">Archiver pour moi</button>
+                <button class="menu-item" id="save-template" type="button">Garder comme modèle de travail…</button>
+                <button class="menu-item" id="isolation-access" type="button">Espace et accès…</button>
+                <button class="menu-item hidden" id="isolation-accounts" type="button">Comptes de cet espace…</button>
+                <button class="menu-item hidden" id="isolation-results" type="button">Fichiers produits dans l’espace…</button>
                 <label class="menu-field">Projet
                   <select id="conv-project" aria-label="Projet de la conversation"></select>
                 </label>
@@ -166,6 +196,7 @@
         </header>
 
         <div class="messages" id="messages" aria-live="polite"></div>
+        <button class="btn btn-ghost latest-message hidden" id="latest-message" type="button">↓ Dernière réponse</button>
 
         <div class="running hidden" id="running">
           <span class="spinner" aria-hidden="true"></span>
@@ -216,6 +247,10 @@
   <dialog id="new-dialog" class="dialog">
     <form method="dialog" id="new-form">
       <h2>Nouvelle conversation</h2>
+      <label>Modèle de travail <select id="new-template"><option value="">Conversation libre</option></select></label>
+      <div id="template-variables"></div>
+      <p class="quota-note hidden" id="template-description"></p>
+      <button class="btn btn-ghost btn-small hidden" id="delete-template" type="button">Supprimer ce modèle personnel</button>
       <label>Titre
         <input name="title" required maxlength="120" placeholder="ex. Refonte du site">
       </label>
@@ -348,6 +383,16 @@
           <label>Dossier (vide : data/sauvegardes) <input id="set-backup_dir"></label>
           <label>Gardées <input id="set-backup_keep" type="number" min="1" max="365" step="1"></label>
         </div>
+      </fieldset>
+      <fieldset>
+        <legend>Espaces isolés</legend>
+        <p class="quota-note">Utilisez un moteur Docker Sandboxes dédié, sans comptes IA globaux ni outils du PC. Les comptes se connectent depuis chaque conversation isolée. Aucun téléchargement automatique.</p>
+        <label>Commande sbx (chemin complet, vide : détection automatique)
+          <input id="set-sandbox_cli" placeholder="Détection automatique">
+        </label>
+        <label>Stockage du moteur sous Windows (vide : stockage habituel)
+          <input id="set-sandbox_data" placeholder="Dossier réservé au moteur isolé">
+        </label>
       </fieldset>
       <fieldset>
         <legend>Accès et PC</legend>
@@ -837,6 +882,7 @@
     </form>
   </dialog>
 
+  <script src="/static/markdown.js"></script>
   <script src="/static/app.js"></script>
 </body>
 </html>

@@ -302,11 +302,17 @@ class ExecutionTests(OrchestrationTestCase):
                                   on_event=events.append)
         box = {}
         thread = threading.Thread(target=lambda: box.setdefault("status", execution.run()))
+        self.addCleanup(thread.join, 20)
+        self.addCleanup(execution.stop)
         thread.start()
 
         def two_children():
-            pids = [json.loads(p.read_text(encoding="utf-8")).get("child_pid")
-                    for p in self.logs.glob("run-*.json")]
+            pids = []
+            for path in self.logs.glob("run-*.json"):
+                try:
+                    pids.append(json.loads(path.read_text(encoding="utf-8")).get("child_pid"))
+                except (OSError, ValueError):
+                    pass  # The fake CLI may still be writing; retry until the deadline.
             return [p for p in pids if p]
 
         import time

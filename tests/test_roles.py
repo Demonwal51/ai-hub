@@ -135,8 +135,7 @@ class MemberTest(RolesTestCase):
         guest, gid = self.guest("Lou")
         self.assertEqual(guest.get(f"/api/conversations/{conv['id']}", headers=H).status_code, 404)
         # What stays out of a member's reach.
-        for body, said in (({"permission_mode": "bypass", "confirm_bypass": True}, "sans permission"),
-                           ({"tools": ["coffre"]}, "recherche web"), ({"obsidian": True}, "Obsidian")):
+        for body, said in (({"tools": ["coffre"]}, "recherche web"), ({"obsidian": True}, "Obsidian")):
             with self.subTest(body=body):
                 r = lea.patch(f"/api/conversations/{conv['id']}", json=body, headers=H)
                 self.assertEqual(r.status_code, 403, r.text)
@@ -144,7 +143,9 @@ class MemberTest(RolesTestCase):
         self.assertEqual(lea.patch(f"/api/conversations/{conv['id']}", json={"tools": ["web"]}, headers=H).status_code, 200)
         r = lea.post("/api/conversations", json={"title": "x", "permission_mode": "bypass", "confirm_bypass": True},
                      headers=H)
-        self.assertEqual(r.status_code, 403)
+        self.assertEqual(r.status_code, 201, r.text)
+        isolated = lea.get(f"/api/conversations/{r.json()['conversation']['id']}/isolation", headers=H).json()
+        self.assertTrue(isolated['policy']['isolated'])  # bypass is confined to the VM
         r = lea.post(f"/api/conversations/{conv['id']}/autonomous",
                      json={"goal": "x", "check_command": "dir", "confirm_check": True}, headers=H)
         self.assertEqual(r.status_code, 403)

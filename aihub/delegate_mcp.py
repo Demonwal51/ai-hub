@@ -22,7 +22,7 @@ from pathlib import Path
 # which must not be able to plant a module (-I); the package's own folder is added.
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from aihub import config, db, providers  # noqa: E402
+from aihub import config, db, isolation, providers  # noqa: E402
 from aihub.providers.claude_code import ProviderError  # noqa: E402
 
 SERVER = "deleguer"
@@ -74,10 +74,12 @@ class Delegate:
         self.calls += 1
         conn = db.connect(self.db_path)
         try:
-            conversation = conn.execute("SELECT workdir FROM conversations WHERE id = ?",
+            conversation = conn.execute("SELECT * FROM conversations WHERE id = ?",
                                         (self.conversation_id,)).fetchone()
             if conversation is None or not conversation["workdir"]:
                 raise Refused("conversation introuvable")
+            if isolation.effective(conn, conversation)['isolated']:
+                raise Refused('la délégation via un outil du PC est interdite dans un espace isolé')
             provider = config.provider_of(model)
             row = conn.execute(
                 "INSERT INTO delegations (conversation_id, provider, model, question, status, created_at) "

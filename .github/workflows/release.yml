@@ -1,0 +1,84 @@
+name: Publier les paquets AI Hub
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - aihub/__init__.py
+      - .github/workflows/release.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  release:
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      contents: write
+    steps:
+      - name: Lire le commit public exact
+        env:
+          REPOSITORY: ${{ github.repository }}
+          REVISION: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+          git init source
+          git -C source remote add origin "https://github.com/${REPOSITORY}.git"
+          git -C source fetch --depth=1 origin "$REVISION"
+          git -C source checkout --detach FETCH_HEAD
+
+      - name: Fabriquer et vérifier les paquets
+        working-directory: source
+        run: |
+          set -euo pipefail
+          python3 -B tools/build_release.py
+          python3 - <<'PY'
+          import hashlib, os, re, zipfile
+          from pathlib import Path
+          version = re.search(r'__version__ = "([^"]+)"', Path('aihub/__init__.py').read_text()).group(1)
+          if not re.fullmatch(r'\d+\.\d+\.\d+(?:b\d+)?', version):
+              raise SystemExit('Version invalide')
+          archive = Path('dist') / f'ai-hub-{version}.zip'
+          with zipfile.ZipFile(archive) as z:
+              names = z.namelist()
+              if any('/data/' in n or '/.venv/' in n or '/.git/' in n for n in names):
+                  raise SystemExit('Un fichier local est présent dans le paquet')
+              expected = z.read(f'ai-hub-{version}/aihub/__init__.py').decode()
+              if f'__version__ = "{version}"' not in expected:
+                  raise SystemExit('Version du paquet incohérente')
+          files = [archive, Path('dist') / f'ai-hub-{version}-linux.tar.gz']
+          Path('dist/SHA256SUMS').write_text(''.join(f'{hashlib.sha256(p.read_bytes()).hexdigest()}  {p.name}\n' for p in files))
+          with Path(os.environ['GITHUB_ENV']).open('a') as env:
+              env.write(f'AIHUB_VERSION={version}\n')
+          PY
+
+      - name: Publier une nouvelle version avec ses fichiers
+        working-directory: source
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          REVISION: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+          tag="v${AIHUB_VERSION}"
+          if gh release view "$tag" >/dev/null 2>&1; then
+            echo "Cette version est déjà publiée ; ses fichiers restent inchangés."
+            exit 0
+          fi
+          options=()
+          if [[ "$AIHUB_VERSION" == *b* ]]; then options+=(--prerelease); fi
+          gh release create "$tag" \
+            "dist/ai-hub-${AIHUB_VERSION}.zip" \
+            "dist/ai-hub-${AIHUB_VERSION}-linux.tar.gz" \
+            dist/SHA256SUMS \
+            --target "$REVISION" \
+            --title "AI Hub ${AIHUB_VERSION}" \
+            --notes-file .github/release-notes.md \
+            "${options[@]}"

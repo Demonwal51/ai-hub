@@ -57,6 +57,16 @@ class SemanticTest(TempDirMixin, unittest.TestCase):
     def index(self):
         return semantic.Indexer(self.db_path).tick()
 
+    def test_scoped_search_ranks_only_authorised_vectors(self):
+        private = store.create_conversation(self.conn, "Privée", agent_id=self.agent, workdir=str(self.tmp))
+        for _ in range(50):
+            self.say("couleur vert sapin", cid=private)
+        self.say("couleur vert sapin")
+        self.index()
+        rows = memory.search(self.conn, "teinte", limit=1, conversation_ids={self.cid})
+        self.assertEqual([row["conversation_id"] for row in rows], [self.cid])
+        self.assertTrue(rows[0]["by_meaning"])
+
     def test_the_vectors_are_made_once(self):
         self.say("Pour le logo, la couleur sera vert sapin.")
         self.assertEqual(self.index(), 2)  # the request and the reply

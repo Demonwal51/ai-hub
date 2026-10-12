@@ -71,7 +71,8 @@ def main():
     # The fake Codex too (GPT models): « écris », « commande », « quota », « attends », « pense ».
     env.update(FAKE_CODEX_SCENARIO="auto", FAKE_CODEX_MODELS="gpt-5.6-sol,gpt-5.6-terra,gpt-5.6-luna")
     app = create_app(str(db_path), command=FAKE_COMMAND, env=env, auth_policy=policy or None,
-                     settings=settings, config_path=config_path, codex_command=FAKE_CODEX)
+                     settings=settings, config_path=config_path, codex_command=FAKE_CODEX,
+                     local_only=policy is None)
     print(f"Interface d'essai (fausse CLI) : http://127.0.0.1:{args.port}/", flush=True)
     uvicorn.run(app, host="127.0.0.1", port=args.port, log_level="warning")
 

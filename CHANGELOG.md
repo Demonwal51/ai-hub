@@ -1,150 +1,154 @@
-# Changelog
+# Journal des versions
 
-## 1.0.1 — 2026-10-12, guided access and diagnostics
+## 1.0.1 — 12 octobre 2026 : accès guidés et diagnostic
 
-- Three editable access presets: discussion without PC files, analysis of
-  selected copies, and project work on copies reviewed before application.
-- Visible access overview and durable emergency suspension, with owner-only
-  reactivation. Suspension preserves project inheritance and private accounts.
-- Pending scoped sign-ins and running work are cancelled on suspension;
-  new jobs and sign-ins remain refused until reactivation.
-- First-space guidance, direct result-review button and created/modified/deleted
-  file counts. The composer shows why a suspended space cannot accept requests.
-- Cached diagnostics for database, disk and isolation engine, plus scoped
-  account status and concrete recovery steps without sending an AI message.
+- Trois profils d’accès personnalisables : discussion sans fichiers du PC,
+  analyse de copies sélectionnées et travail sur un projet dans une copie à
+  vérifier avant application.
+- Panneau des accès et suspension durable avec réactivation réservée au
+  propriétaire. La suspension conserve l’héritage du projet et les comptes IA.
+- Annulation des connexions en attente et arrêt demandé aux travaux en cours
+  lors d’une suspension. Les nouveaux lancements restent refusés jusqu’à la
+  réactivation.
+- Guide de premier espace, bouton direct pour revoir les résultats et
+  compteurs des fichiers créés, modifiés ou supprimés. Une conversation
+  suspendue explique pourquoi la saisie est bloquée.
+- Diagnostic de la base, du disque, du moteur d’isolation et du compte de
+  l’espace, avec actions proposées et sans envoyer de message à une IA.
 
+## 1.0.0 — 12 octobre 2026 : intégrée dans la publication 1.0.1
 
-## 1.0.0 — 2026-10-12, prepared for publication
+- Conversations et projets isolés avec des accès distincts aux fichiers, au
+  réseau et à la mémoire. Les limites d’un projet s’appliquent aussi aux
+  conversations déjà créées.
+- Exécution dans les microVMs Docker Sandboxes et connexion séparée par
+  personne et espace. Aucun repli automatique sur le PC, outil MCP de l’hôte
+  ni transmission de ses identifiants IA dans l’espace isolé.
+- Copies des fichiers sélectionnés pour lecture ou modification. Revue,
+  téléchargement et application explicite des résultats, avec contrôle des
+  conflits et sauvegarde des originaux.
+- Inférence Ollama conservée sur le service local en boucle locale, avec
+  outils de fichiers en lecture seule dans la VM.
+- Exécution isolée obligatoire pour les membres et invités ; arrêt des travaux
+  des comptes révoqués. Réutiliser un numéro de compte ou de conversation
+  supprimé ne permet pas de récupérer une ancienne VM connectée.
+- Installation, lanceurs et démarrage automatique sous Linux ; permissions
+  exécutables conservées dans le ZIP et paquet Linux tar.gz supplémentaire.
+  Installation de l’application testée sur Debian 13, Fedora 44 et Ubuntu 26.04.
+- Interface plus lisible, thèmes et densité par appareil, formulaires mobiles
+  et respect des préférences de réduction des animations. Bouton direct des
+  comptes et liens ouvrant le bon fournisseur dans l’espace choisi.
+- Claude utilise l’image de sa CLI officielle dans un profil shell neutre :
+  sa connexion OAuth reste dans sa VM et n’est pas capturée comme identifiant
+  Docker global partagé. Les identifiants globaux restent refusés.
+- Les installations réservées au PC refusent aussi les écritures depuis un
+  autre site et les en-têtes Host inattendus. Une réponse de session retardée
+  ne peut pas remplacer le cache d’un autre compte.
+- Contrôles de révocation pendant les flux et de l’identité des copies hors
+  connexion, y compris lorsqu’une ancienne réponse arrive après un changement
+  de compte.
+- Sauvegardes quotidiennes avec pièces jointes et empreintes. Restauration
+  préparée et vérifiée avant remplacement. Mise à jour avec sauvegarde de la
+  base, contrôle du nouveau serveur et retour après échec de démarrage.
 
-- Isolated conversations and projects with separate file, network and memory
-  access; project limits also constrain existing child conversations.
-- Docker Sandboxes microVM transport, private account sign-in per person and
-  space, no host fallback, host MCP tools or forwarded host AI credentials.
-- Selected files copied for read-only or copy-based editing. Review, download,
-  and explicitly apply results with original-file conflict checks and backups.
-- Local Ollama inference stays on loopback with read-only file tools in a VM.
-- Members and guests require isolated execution; revoked accounts stop work.
-  Recreated numeric user ids cannot reuse a deleted account's logged-in VM.
-  Recreated conversation ids also receive a fresh space identity.
-- Installers, launchers and desktop startup support for Linux; executable ZIP
-  scripts and a Linux tar.gz package. App installation tested on Debian 13,
-  Fedora 44 and Ubuntu 26.04. Docker's local engine requires a supported host.
-- Clearer interface, device-specific appearance and density, mobile access
-  forms and improved handling of reduced motion. Direct account button and
-  links open the right isolated account dialog.
-- Claude uses the official CLI image with a neutral shell profile: its OAuth
-  login stays inside its own VM instead of being captured as a shared Docker
-  credential. Global credentials remain refused.
-- Loopback-only installs also reject cross-site API writes and rebinding Host
-  headers. Delayed session responses cannot replace another account cache.
-- Live access revocation and offline-cache identity checks, including delayed
-  responses arriving after a change of account.
-- Daily backups include attachment bytes and hashes; restore validates a staged
-  copy before replacement. Update helpers preserve the database and check the
-  new server before keeping the update, with rollback after failed startup.
+Les connexions humaines et réponses réelles de Claude et Codex ont été
+vérifiées dans des microVMs distinctes sur un hôte Windows. Le moteur natif
+Linux avec KVM reste à valider séparément. Le retour de mise à jour ne restaure
+pas les dépendances Python modifiées.
 
-Human sign-in and real replies from Claude and Codex have been validated in
-separate Windows-hosted microVMs. A native Linux sandbox engine still requires
-manual validation. Python dependency changes are not rolled back by updates.
+## 0.6.0 bêta — intégrée dans la publication 1.0.1
 
+- Épingles et archives personnelles, sans modifier la liste des autres
+  participants d’une conversation partagée.
+- Filtres de recherche par projet, IA, date et archives. Permissions et
+  filtres appliqués avant le classement, pour les recherches par mots ou par sens.
+- Modèles de travail avec champs à remplir et modèles personnels enregistrés
+  depuis les réglages et le brouillon d’une conversation. Leur création
+  n’envoie jamais automatiquement la demande.
+- Rendu enrichi des réponses : titres, tableaux, listes, citations, liens sûrs
+  et copie du code. Position de lecture conservée pendant l’arrivée de la réponse.
+- Correction des résumés manuels qui utilisaient les comptes du serveur pour
+  les invités. Choix des modèles selon le compte et prise en compte des accès
+  de l’expéditeur dans la synthèse d’orchestration.
+- Branches conservant les consignes, outils et copies indépendantes des pièces.
+- Récupération des comparaisons et délégations interrompues et de l’état des
+  tâches planifiées. Routage explicite en lecture seule si seule une IA locale
+  est disponible.
 
+## 0.5.0 bêta — 11 octobre 2026
 
-## 0.6.0 beta — not published yet
+- Régénérer la dernière réponse avec la même IA ou une autre ; modifier une
+  demande dans une nouvelle conversation créée à partir de ce point, une branche.
+- Comparer deux IA : une seconde répond en lecture seule à la même demande,
+  à côté de la première réponse, avec l’action « Garder celle-ci ».
+- Consignes par conversation et projet, transmises à chaque demande.
+- Lecture à voix haute et raccourcis clavier : Ctrl+K, Ctrl+Maj+N, Échap et ?.
+- Tableau de bord du serveur pour son propriétaire et lecture sans connexion
+  au PC sur les appareils qui ont choisi de conserver une copie.
 
-- Personal pins and archives, without changing anyone else's shared list.
-- Search filters by project, AI, dates and archives; permissions and filters
-  applied before ranking, for word and semantic results alike.
-- Work templates with fields, personal templates from a conversation's
-  settings and draft; creating from one never sends the request itself.
-- Richer reply rendering: headings, tables, lists, quotes, safe links and
-  code copying; keep the reading position while a reply is streamed.
-- Fix manual summaries using the server's accounts for guests; account-aware
-  model selection and routing, and the sender's access in orchestration synthesis.
-- Branches retain instructions, tools and independent copies of attachments.
-- Recover interrupted comparisons, delegations and scheduled run status;
-  explicit read-only routing when only a local model is available.
+## 0.4.0 bêta — intégrée dans la publication 0.5
 
-## 0.5.0 beta — 2026-10-11
+- Fichiers et images joints à une demande : pièce jointe, capture collée ou
+  fichier déposé. Texte intégré à la demande, images transmises aux IA qui les
+  prennent en charge, pièces affichées sous la demande.
+- Dictée et demandes favorites conservées sur le serveur pour chaque personne.
+- Export de conversation en Markdown, JSON réimportable dans AI Hub ou page
+  à imprimer et enregistrer en PDF.
+- Consommation par personne et IA pour le propriétaire et les administrateurs.
+- Mise à jour depuis les versions GitHub, avec conservation de l’ancienne
+  version et retour en cas d’échec.
+- Installation par ZIP et `installer.bat`, avec raccourci sur le Bureau.
 
-- Regenerate the last reply (with the same AI or another one); edit a request
-  in a new conversation that starts from there (a branch).
-- Compare two AIs: another one answers the same request, read only, beside the
-  reply; « Garder celle-ci ».
-- Instructions for a conversation and for a project, at each request.
-- Read a reply aloud; keyboard shortcuts (Ctrl+K, Ctrl+Shift+N, Échap, ?).
-- The server's dashboard (the owner's); reading without the PC on a device
-  that chose it.
+## 0.3.0 bêta — 11 octobre 2026
 
-## 0.4.0 beta — included in 0.5
+- Création d’un serveur depuis sa page sur son propre PC : nom du propriétaire
+  et deux mots de passe facultatifs, pour le compte et pour le serveur.
+- Comptes sans mot de passe et mot de passe du serveur demandé une fois par
+  appareil. Ajout d’une personne par compte créé ou lien d’invitation.
+- Rôles invité, membre et administrateur, avec accès par projet ou conversation
+  en lecture ou écriture, choisis lors de l’ajout de la personne.
+- Connexion d’un téléphone à un compte par QR code valable 15 minutes ; nommage
+  des appareils dans « Appareils ».
+- Connexion de Claude ou ChatGPT guidée au premier accès ; connexion des comptes
+  du PC depuis l’interface pour le propriétaire.
+- Import des exports ChatGPT et Claude et des sessions locales Claude Code et
+  Codex, séparément ou fusionnés dans une conversation.
+- Nouvelle présentation : liste des conversations, quota sur une ligne, menus,
+  Entrée pour envoyer, brouillons, copie, marqueurs de nouveauté et chargement
+  progressif des longues conversations.
 
-- Files and images with a request (📎, a pasted screenshot, files dropped):
-  a text file's text in the request, images seen by Codex and the local AI,
-  read by Claude Code; shown under the request.
-- Dictation (🎤), favorite requests (★) kept on the server for each person.
-- Export of a conversation: Markdown, AI Hub's JSON (read back by the
-  import), a page to print or save as PDF.
-- Consumption per person and per AI (owner and admins).
-- One-click update from GitHub's releases, the old version kept, undone if
-  anything fails.
-- Installation: one .zip and installer.bat (a Desktop shortcut).
+## 0.2.0 bêta — 11 octobre 2026
 
-## 0.3.0 beta — 2026-10-11
+Plusieurs personnes sur un serveur, chacune avec ses propres comptes IA.
 
-- A new server is created from its page, on its own computer: the owner's
-  name, and two optional passwords (the owner's, the server's).
-- Accounts without a password; the server's own password, asked once per
-  device. Adding someone: the owner (or an admin) chooses the name and the
-  password, or makes a link and the person chooses.
-- Roles: invité (what is shared), membre (also their own conversations, in a
-  folder of theirs, within limits), admin (everything but the settings). The
-  role and the accesses (projects, conversations, read or write) are chosen
-  when the person is added.
-- A phone connected to an account by a QR code (once, 15 minutes), named
-  (« Téléphone de Lou »); devices named in « Appareils ».
-- First login: connect Claude and/or ChatGPT before going on; the owner
-  signs in the computer's accounts from the hub too.
-- Import: conversations of ChatGPT and Claude (their exports) and of Claude
-  Code and Codex (this computer's sessions), one by one or merged into one.
-- Interface: the conversation list first, the quota on one line, menus,
-  Entrée to send, drafts kept, « Copier », « nouveau » marks, long
-  conversations loaded in part.
+- Invitations par lien à usage unique valable sept jours ; connexion par nom
+  et mot de passe.
+- Partage d’une conversation ou d’un projet en lecture ou lecture et écriture.
+  Les contenus non partagés répondent « introuvable » ; les réglages réservés
+  au propriétaire le restent.
+- Comptes Claude et Codex propres à chaque personne dans « Mes comptes IA ».
+  Ses demandes, plans, délégations et quotas utilisent ses comptes.
+- Auteur indiqué sur chaque demande ; permission validée uniquement par son
+  expéditeur ; notifications limitées aux contenus partagés et quotas personnels.
+- Création directe de comptes et modification des noms par le propriétaire.
 
-## 0.2.0 beta — 2026-10-11
+## 0.1.0 bêta — 10 octobre 2026
 
-Several people on one server, each with their own AI accounts.
+Première version publiée.
 
-- People: the owner invites by a one-use link (7 days); each person has a
-  name and a password, and logs in with them.
-- Sharing of a conversation or of a whole project, read or read and write.
-  What is not shared answers "introuvable"; what is the owner's stays so.
-- Each person's own Claude and Codex accounts ("Mes comptes IA", sign-in
-  from the hub): their requests, plans, delegations and quota use them,
-  never the owner's.
-- Authors on the requests; a permission prompt answered only by the person
-  whose request it is; alerts only about what is shared with you, quota
-  alerts only about your own accounts.
-- The owner can also make an account directly (name and password to pass
-  on), and rename anyone, themselves too.
-
-## 0.1.0 beta — 2026-10-10
-
-First published version.
-
-- Providers: Claude Code (stream-json), Codex (`codex app-server`, JSON-RPC),
-  a local model through Ollama. Three permission modes: manual, plan,
-  bypass (with a warning to confirm).
-- Conversations with one AI, or orchestrated: the conductor plans, agents run
-  the subtasks in parallel without writing the same file at the same time,
-  the conductor sums up. Automatic assignment from independent benchmarks.
-- Changing the AI of a conversation: the next one starts from the memory.
-- Memory (RAG): an index of every message, by words (SQLite FTS5) and by
-  meaning (local embeddings), fresh starts within a token cap.
-- Projects: conversations that read each other (read-only MCP server).
-- Agentic work: autonomous runs with a check command, scheduled tasks, tools
-  per conversation (web search, Obsidian vault, MCP servers), delegation to
-  another AI.
-- Web interface, installable on a phone (PWA), through Tailscale, with a
-  password (scrypt), sessions of a year per device, lockout, encrypted phone
-  alerts (Web Push) or ntfy.
-- Daily backups, deletion for good (also from the backups), settings window,
-  project notes in an Obsidian vault.
+- Fournisseurs Claude Code, Codex et modèles locaux Ollama. Trois modes de
+  permission : manuel, plan et actions sans demande, avec confirmation préalable.
+- Conversations avec une IA ou orchestration : le chef prépare le plan,
+  les agents réalisent les tâches indépendantes en parallèle sans modifier
+  simultanément les mêmes fichiers, puis le chef produit la synthèse.
+- Affectation automatique selon les évaluations disponibles et changement d’IA
+  à partir de la mémoire de la conversation.
+- Mémoire et recherche par mots avec SQLite FTS5 ou par sens avec des vecteurs
+  locaux ; nouvelle session avec un contexte limité en tokens.
+- Projets dont les conversations peuvent se consulter via des outils en lecture seule.
+- Travail autonome avec commande de vérification, tâches planifiées, outils
+  par conversation, recherche web, coffre Obsidian, serveurs MCP et délégation.
+- Interface installable sur téléphone, accès Tailscale, mots de passe hachés,
+  sessions par appareil, protection contre les essais répétés et notifications.
+- Sauvegardes quotidiennes, suppression définitive aussi dans les sauvegardes,
+  fenêtre de réglages et notes de projet dans un coffre Obsidian.

@@ -65,7 +65,7 @@ exigent une confirmation explicite.
 ## Installation Windows
 
 1. Téléchargez `ai-hub-1.0.1.zip` dans les
-   [releases](https://github.com/Demonwal51/ai-hub/releases/latest), puis extrayez-le.
+   [versions publiées](https://github.com/Demonwal51/ai-hub/releases/latest), puis extrayez-le.
 2. Installez Python **3.12 ou plus** si nécessaire.
 3. Lancez `installer.bat`. Il prépare l’environnement Python, installe les
    dépendances et crée un raccourci sur le Bureau.

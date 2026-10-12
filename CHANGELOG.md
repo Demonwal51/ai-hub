@@ -1,5 +1,17 @@
 # Journal des versions
 
+## 1.0.2 — 12 octobre 2026 : création de fichiers et dossiers
+
+- Création du dossier de travail depuis les formulaires de conversation et
+  de projet, sans passer par l’explorateur du PC serveur.
+- Création d’un fichier vide ou d’un sous-dossier depuis le menu d’une
+  conversation, avec création facultative des parents manquants.
+- Opérations réservées au propriétaire et aux administrateurs, avec
+  vérification de leur mot de passe lorsque l’authentification est active.
+- Respect des dossiers autorisés et du périmètre de la conversation ; refus
+  des liens, jonctions, remontées de chemin et écrasements de fichiers existants.
+- La création manuelle ne modifie pas les permissions accordées à l’IA.
+
 ## 1.0.1 — 12 octobre 2026 : accès guidés et diagnostic
 
 - Trois profils d’accès personnalisables : discussion sans fichiers du PC,

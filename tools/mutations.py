@@ -1337,6 +1337,19 @@ MUTATIONS.extend([
      "    if policy.get('paused'):\n", '    if False:\n'),
 ])
 
+MUTATIONS.extend([
+    ('v102: overwrite accepted', 'aihub/filesystem.py',
+     'file_fd = os.open(walk, os.O_CREAT | os.O_EXCL | os.O_WRONLY', 'file_fd = os.open(walk, os.O_CREAT | os.O_WRONLY'),
+    ('v102: allowed roots ignored', 'aihub/filesystem.py',
+     '    if allowed and not any(p.is_relative_to(r) for r in allowed):', '    if False:'),
+    ('v102: untrusted server file creation accepted', 'aihub/web/app.py',
+     '        if not access.trusted(user):\n            raise access.Forbidden(\'la création sur le PC serveur',
+     '        if False:\n            raise access.Forbidden(\'la création sur le PC serveur'),
+    ('v102: junction creation accepted', 'aihub/filesystem.py',
+     '        if info.attributes & 0x400 or not info.attributes & 0x10:',
+     '        if not info.attributes & 0x10:'),
+])
+
 TEST_MODULES = []
 
 

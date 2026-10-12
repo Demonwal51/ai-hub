@@ -162,6 +162,7 @@
                 <button class="menu-item" id="archive-conversation" type="button">Archiver pour moi</button>
                 <button class="menu-item" id="save-template" type="button">Garder comme modèle de travail…</button>
                 <button class="menu-item" id="isolation-access" type="button">Espace et accès…</button>
+                <button class="menu-item hidden" id="create-path" type="button">Créer un fichier ou un dossier…</button>
                 <button class="menu-item hidden" id="isolation-accounts" type="button">Comptes de cet espace…</button>
                 <button class="menu-item hidden" id="isolation-results" type="button">Fichiers produits dans l’espace…</button>
                 <label class="menu-field">Projet
@@ -259,6 +260,7 @@
       </label>
       <label id="new-workdir-row">Dossier de travail (chemin complet)
         <input name="workdir" id="new-workdir" placeholder="D:\projets\mon-projet">
+        <button class="btn btn-ghost btn-small" id="new-create-folder" type="button">Créer ce dossier sur le serveur</button>
       </label>
       <label>Fonctionnement
         <select name="mode" id="new-kind">
@@ -330,6 +332,7 @@
       </label>
       <label>Dossier de travail par défaut (facultatif)
         <input name="workdir" id="project-workdir" placeholder="D:\projets\boutique">
+        <button class="btn btn-ghost btn-small" id="project-create-folder" type="button">Créer ce dossier sur le serveur</button>
       </label>
       <label>Consignes pour l'IA (facultatives, pour toutes les conversations du projet)
         <textarea id="project-instructions" rows="3" maxlength="4000"

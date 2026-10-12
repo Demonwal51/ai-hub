@@ -572,6 +572,8 @@ function renderConversation() {
   $("isolation-results").classList.toggle("hidden", !conv.isolation?.isolated || conv.my_role === "read");
   $("results-quick").classList.toggle("hidden", !conv.isolation?.isolated || conv.my_role === "read");
   $("access-overview").textContent = conv.isolation?.paused ? "Accès suspendus · voir" : "Accès de cette IA";
+  $("create-path").classList.toggle("hidden", !isAdmin() || conv.my_role !== "owner");
+  $("create-path").disabled = !!conv.isolation?.paused;
   $("pin-conversation").textContent = conv.pinned ? "Désépingler pour moi" : "Épingler pour moi";
   $("archive-conversation").textContent = conv.archived ? "Sortir de mes archives" : "Archiver pour moi";
   $("save-template").classList.toggle("hidden", !canCreate() || conv.my_role !== "owner");
@@ -1520,6 +1522,9 @@ document.addEventListener("DOMContentLoaded", () => {
   $("diagnostics").addEventListener("click", openDiagnostics);
   $("getting-started").addEventListener("click", openGettingStarted);
   $("welcome-guide").addEventListener("click", openGettingStarted);
+  $("create-path").addEventListener("click", () => openCreatePath({ conversation: state.data.conversation }));
+  $("new-create-folder").addEventListener("click", () => openCreatePath({ field: $("new-workdir") }));
+  $("project-create-folder").addEventListener("click", () => openCreatePath({ field: $("project-workdir") }));
   $("isolation-access").addEventListener("click", async () => {
     try {
       const data = await api("GET", `/api/conversations/${state.currentId}/isolation`);
@@ -1544,6 +1549,37 @@ document.addEventListener("DOMContentLoaded", () => {
     } catch (err) { toast(err.message); }
   });
 });
+
+async function openCreatePath({ field = null, conversation = null } = {}) {
+  const path = el("input", { required: true, maxlength: 1000, placeholder: conversation ? "src/resultat.txt" : "Chemin complet du dossier à créer", "aria-label": conversation ? "Nom ou chemin relatif" : "Chemin complet" });
+  path.value = field?.value.trim() || "";
+  const kind = el("select", { "aria-label": "Type à créer" }, el("option", { value: "directory", text: "Dossier" }), el("option", { value: "file", text: "Fichier vide" }));
+  const parents = el("input", { type: "checkbox", checked: true });
+  const password = el("input", { type: "password", autocomplete: "current-password", "aria-label": "Votre mot de passe AI Hub" });
+  const error = el("p", { class: "form-error", role: "alert" });
+  const submit = el("button", { type: "submit", class: "btn btn-primary", text: "Créer" });
+  const dialog = el("dialog", { class: "dialog dialog-content" });
+  const form = el("form", {}, el("h2", { text: conversation ? "Créer dans le dossier de travail" : "Créer le dossier de travail" }),
+    el("p", { class: "quota-note", text: conversation ? `Création sur le PC serveur, dans ${conversation.workdir}. Les accès de l’IA restent ceux que vous avez choisis.` : "Ce dossier sera créé sur le PC qui héberge AI Hub. Le chemin concerne ce serveur, même depuis un autre PC ou un téléphone." }),
+    conversation ? el("label", {}, "Type", kind) : null,
+    el("label", {}, conversation ? "Nom ou chemin relatif au dossier de travail" : "Chemin complet", path),
+    el("label", { class: "check" }, parents, "Créer aussi les dossiers parents manquants"),
+    state.me ? el("label", {}, "Votre mot de passe AI Hub (laissez vide si votre compte n’en a pas)", password) : null,
+    error, el("div", { class: "dialog-actions" }, el("button", { type: "button", class: "btn btn-ghost", text: "Annuler", onclick: () => dialog.close() }), submit));
+  form.addEventListener("submit", async (event) => {
+    event.preventDefault(); submit.disabled = true; error.textContent = "";
+    try {
+      const result = await api("POST", "/api/filesystem/create", { path: path.value.trim(), kind: conversation ? kind.value : "directory", parents: parents.checked,
+        conversation_id: conversation?.id || null, password: password.value });
+      password.value = "";
+      if (field) { field.value = result.path; field.dispatchEvent(new Event("input", { bubbles: true })); }
+      dialog.close(); toast(result.created ? (result.kind === "file" ? "Fichier vide créé." : "Dossier créé.") : "Ce dossier existe déjà ; vous pouvez l’utiliser.");
+    } catch (err) { error.textContent = err.message; password.value = ""; }
+    finally { submit.disabled = false; }
+  });
+  dialog.append(form); dialog.addEventListener("close", () => { password.value = ""; dialog.remove(); }, { once: true });
+  document.body.append(dialog); dialog.showModal(); path.focus();
+}
 
 function featureDialog(title, ...content) {
   const dialog = el("dialog", { class: "dialog dialog-content" }, el("h2", { text: title }), ...content);
@@ -1783,6 +1819,7 @@ function setupProjectDialog() {
     $("project-name").value = project ? project.name : "";
     $("project-description").value = project ? project.description || "" : "";
     $("project-workdir").value = project ? project.workdir || "" : "";
+    $("project-create-folder").classList.toggle("hidden", !isAdmin());
     $("project-instructions").value = project ? project.instructions || "" : "";
     accessEditor.set(project?.isolation || { isolated: false });
     $("project-delete").classList.toggle("hidden", !project);

@@ -30,7 +30,7 @@ from pydantic import BaseModel
 from .. import VERSION_LABEL, __version__
 from .. import (auth, autonomous, backup, config, db, eveil, memory, notify, obsidian, providers, routing, runner,
                 schedule, semantic, store, tools)
-from .. import access, accounts, attachments, compare, importer, isolation, library, sandbox_results, updater, usage
+from .. import access, accounts, attachments, compare, filesystem, importer, isolation, library, sandbox_results, updater, usage
 from ..providers import claude_code, codex, ollama
 from ..providers.claude_code import ProviderError
 from ..store import BypassConfirmationRequired, Busy, NotFound, StoreError
@@ -62,6 +62,14 @@ class NewConversation(BaseModel):
 class ConversationPreferences(BaseModel):
     pinned: bool | None = None
     archived: bool | None = None
+
+
+class CreatePath(BaseModel):
+    path: str
+    kind: str = 'directory'
+    parents: bool = True
+    conversation_id: int | None = None
+    password: str = ''
 
 
 class NewTemplate(BaseModel):
@@ -1217,6 +1225,25 @@ def create_app(db_path, *, command=None, env=None, allowed_roots=(), permission_
             allowed = ", ".join(str(r) for r in roots)
             raise StoreError(f"dossier de travail non autorisé : {workdir} (autorisés : {allowed})")
         return str(workdir)
+
+    @app.post('/api/filesystem/create')
+    def create_path(body: CreatePath, request: HttpRequest):
+        user = me()
+        if not access.trusted(user):
+            raise access.Forbidden('la création sur le PC serveur est réservée au propriétaire et aux administrateurs')
+        base = None
+        with database() as conn:
+            if body.conversation_id is not None:
+                conv = access.require(conn, user, body.conversation_id, 'owner')
+                if isolation.suspended(conn, conv['id']):
+                    raise StoreError('les accès de cette conversation sont suspendus')
+                base = check_workdir(conv['workdir'])
+            if authority is not None:
+                verified = authority.verify(conn, body.password, client_of(request.scope), name=user['name'])
+                if verified['id'] != user['id'] or not access.trusted(verified):
+                    raise access.Forbidden('les droits du compte ont changé : création refusée')
+        return filesystem.create(body.path, body.kind, roots=current().allowed_roots,
+                                 base=base, parents=body.parents)
 
     def agent_for(conn, model, *, isolated=False):
         offered = (isolated_models(current()) if isolated and config.provider_of(model) in ('claude_code', 'codex') else

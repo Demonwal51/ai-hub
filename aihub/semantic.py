@@ -186,7 +186,8 @@ class Indexer:
         made = 0
         try:
             while made < max_items and not self._stop.is_set():
-                done = index_pending(conn, current.embed, current.model)
+                from . import rag
+                done = index_pending(conn, current.embed, current.model) + rag.index_pending(conn, current)
                 if not done:
                     break
                 made += done

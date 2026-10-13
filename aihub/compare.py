@@ -12,7 +12,7 @@ and the next request starts from the memory (no session knows that text).
 import threading
 import time
 
-from . import attachments, config, db, isolation, memory, providers, store
+from . import access, attachments, config, db, isolation, memory, providers, rag, store
 from .providers import ProviderError
 from .providers.claude_code import Decision
 
@@ -77,6 +77,10 @@ class SideAnswer:
             try:
                 execution = isolation.for_run(conn, conversation, account_id=self.account_id or self.user_id,
                                               read_only=True, settings=self.settings)
+                project = access.reads_project(conn, self.user_id, conversation)
+                if execution is not None:
+                    project = project and execution.policy['memory'] == 'project'
+                prompt += rag.context(conn, conversation, request['content'], project=project)
                 run = providers.new_run(
                     provider, providers.command_for(self.commands, provider, execution=execution), prompt=prompt + files_text,
                     workdir=conversation["workdir"], permission_mode="plan",

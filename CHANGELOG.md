@@ -1,5 +1,17 @@
 # Journal des versions
 
+## 1.0.6 — 13 octobre 2026 : mémoire RAG de projet
+
+- Panneau « Mémoire RAG… » : recherche dans les conversations autorisées,
+  association explicite de documents texte et de notes au projet, aperçu des
+  passages et retrait des sources des recherches futures.
+- Documents découpés et indexés dans SQLite ; recherche par mots et, quand le
+  modèle local est disponible, par le sens. Aucun parcours automatique du coffre.
+- Passages sourcés transmis aux IA, au chef d’orchestre, aux sous-tâches et aux
+  réponses comparées. Les contenus sont présentés comme des références.
+- Respect des partages, des révocations et du périmètre mémoire des espaces
+  isolés. Le schéma passe à 25 ; les documents font partie des sauvegardes SQLite.
+
 ## 1.0.5 — 13 octobre 2026 : créer un coffre Obsidian
 
 - Création d’un nouveau coffre depuis Obsidian ou Réglages, sur le PC serveur,

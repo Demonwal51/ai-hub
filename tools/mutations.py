@@ -225,11 +225,11 @@ MUTATIONS = [
      "    if store.open_plan(conn, conversation_id) is not None:\n        # Checked before the conductor runs",
      "    if False:\n        # Checked before the conductor runs"),
     ("orch: discussion pas en lecture seule", "aihub/orchestrator.py",
-     "record_prompt=False, resume=True, tools=READ_ONLY_TOOLS, **request_kwargs)",
-     "record_prompt=False, resume=True, tools=None, **request_kwargs)"),
+     "record_prompt=False, resume=True, tools=READ_ONLY_TOOLS, retrieval_prompt=text, **request_kwargs)",
+     "record_prompt=False, resume=True, tools=None, retrieval_prompt=text, **request_kwargs)"),
     ("orch: discussion sans reprise de session", "aihub/orchestrator.py",
-     "record_prompt=False, resume=True, tools=READ_ONLY_TOOLS, **request_kwargs)",
-     "record_prompt=False, resume=False, tools=READ_ONLY_TOOLS, **request_kwargs)"),
+     "record_prompt=False, resume=True, tools=READ_ONLY_TOOLS, retrieval_prompt=text, **request_kwargs)",
+     "record_prompt=False, resume=False, tools=READ_ONLY_TOOLS, retrieval_prompt=text, **request_kwargs)"),
     ("orch: discussion sans le plan ouvert", "aihub/orchestrator.py",
      'plan = store.get_plan(conn, row["id"]) if row is not None and row["status"] == "proposed" else None',
      "plan = None"),
@@ -1350,6 +1350,14 @@ MUTATIONS.extend([
      '        if not info.attributes & 0x10:'),
 ])
 
+MUTATIONS.append(('v106: project documents without project access', 'aihub/web/app.py',
+    "and access.reads_project(conn, (user or {}).get('id'), conversation)",
+    'and True'))
+MUTATIONS.append(('v106: own isolated memory reads project documents', 'aihub/web/app.py',
+    "and (not policy['isolated'] or policy['memory'] == 'project')", 'and True'))
+MUTATIONS.append(('v106: project context ignores its scope', 'aihub/rag.py',
+    "    if not project or conversation['project_id'] is None:",
+    "    if conversation['project_id'] is None:"))
 MUTATIONS.append(('v103: cancellation not broadcast', 'aihub/web/app.py',
     '        jobs.hub.publish(stopped["conversation_id"], {"type": "plan_updated", "plan_id": pid})\n',
     '        # cancellation not broadcast\n'))

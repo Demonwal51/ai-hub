@@ -7,7 +7,7 @@ une interface en français. Discutez avec une IA, comparez leurs réponses ou
 faites travailler plusieurs agents ensemble. Retrouvez vos conversations et
 vos projets depuis votre ordinateur ou votre téléphone.
 
-**Version 1.0.5 · Windows et Linux · Licence GPL-3.0**
+**Version 1.0.6 · Windows et Linux · Licence GPL-3.0**
 
 [Télécharger la dernière version](https://github.com/Demonwal51/ai-hub/releases/latest)
 · [Voir les changements](CHANGELOG.md) · [Licence](LICENSE)
@@ -54,6 +54,24 @@ demandé. Les données et comptes sont conservés. Seule une réactivation
 explicite rétablit l’exécution ; changer les permissions ne lève pas la pause.
 Si un arrêt n’est pas confirmé, l’interface le signale et propose de réessayer.
 
+## Mémoire RAG des projets
+
+Dans une conversation, ouvrez **⋯ → Mémoire RAG…**. Retrouvez les passages des
+conversations auxquelles vous avez accès et ajoutez volontairement des documents
+ou notes au projet. Les formats texte Markdown, TXT, CSV, JSON et YAML sont
+acceptés ; vous pouvez aussi coller une note. Le propriétaire du projet gère
+ses sources, qui deviennent consultables par ses lecteurs.
+
+Les documents sont découpés et indexés dans SQLite. Les passages pertinents,
+avec leurs sources, accompagnent les demandes aux IA. La recherche par mots
+fonctionne sans Ollama ; la recherche par le sens s’y ajoute lorsque son modèle
+d’embeddings est disponible. Aucun modèle n’est téléchargé automatiquement.
+
+Un espace isolé limité à sa propre mémoire ne reçoit pas les documents du
+projet. Aucun coffre Obsidian n’est parcouru automatiquement : associez les notes
+choisies comme fichiers Markdown. Le retrait d’une source l’exclut des recherches
+futures ; il n’efface pas les réponses déjà produites ni le fichier original.
+
 ## Vérifier les résultats avant de les appliquer
 
 **Vérifier les fichiers produits** affiche les fichiers créés, modifiés ou
@@ -77,7 +95,7 @@ de l’IA restent celles choisies pour l’espace.
 
 ## Installation Windows
 
-1. Téléchargez `ai-hub-1.0.5.zip` dans les
+1. Téléchargez `ai-hub-1.0.6.zip` dans les
    [versions publiées](https://github.com/Demonwal51/ai-hub/releases/latest), puis extrayez-le.
 2. Installez Python **3.12 ou plus** si nécessaire.
 3. Lancez `installer.bat`. Il prépare l’environnement Python, installe les
@@ -94,7 +112,7 @@ L’installation et le démarrage de l’application ont été vérifiés sur
 
 1. Installez Python **3.12 ou plus**, ainsi que le support `venv` et `pip` de
    votre distribution.
-2. Téléchargez et extrayez `ai-hub-1.0.5-linux.tar.gz`.
+2. Téléchargez et extrayez `ai-hub-1.0.6-linux.tar.gz`.
 3. Depuis le dossier extrait, lancez :
 
 ```sh

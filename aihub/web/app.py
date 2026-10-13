@@ -25,12 +25,12 @@ import segno
 from fastapi import Depends, FastAPI, Request as HttpRequest
 from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, Response, StreamingResponse
 from fastapi.staticfiles import StaticFiles
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 from .. import VERSION_LABEL, __version__
 from .. import (auth, autonomous, backup, config, db, eveil, memory, notify, obsidian, providers, routing, runner,
                 schedule, semantic, store, tools)
-from .. import access, accounts, attachments, compare, filesystem, importer, isolation, library, sandbox_results, updater, usage
+from .. import access, accounts, attachments, compare, filesystem, importer, isolation, library, rag, sandbox_results, updater, usage
 from ..providers import claude_code, codex, ollama
 from ..providers.claude_code import ProviderError
 from ..store import BypassConfirmationRequired, Busy, NotFound, StoreError
@@ -70,6 +70,11 @@ class CreatePath(BaseModel):
     parents: bool = True
     conversation_id: int | None = None
     password: str = ''
+
+
+class MemoryDocument(BaseModel):
+    name: str = Field(min_length=1, max_length=120)
+    content: str = Field(min_length=1, max_length=rag.MAX_CHARS)
 
 
 class NewTemplate(BaseModel):
@@ -1564,6 +1569,49 @@ def create_app(db_path, *, command=None, env=None, allowed_roots=(), permission_
             raise NotFound("projet introuvable")
         if role != "owner":
             raise access.Forbidden("seul celui qui a créé le projet (ou un admin) le modifie")
+
+    @app.post('/api/projects/{pid}/memory/documents', status_code=201)
+    def add_memory_document(pid: int, body: MemoryDocument):
+        with database() as conn:
+            store.get_project(conn, pid)
+            require_project(conn, me(), pid)
+            did = rag.add(conn, pid, body.name, body.content)
+            return {'document': next(d for d in rag.documents(conn, pid) if d['id'] == did)}
+
+    @app.delete('/api/projects/{pid}/memory/documents/{did}')
+    def remove_memory_document(pid: int, did: int):
+        with database() as conn:
+            store.get_project(conn, pid)
+            require_project(conn, me(), pid)
+            if not rag.remove(conn, pid, did):
+                raise NotFound('document introuvable dans ce projet')
+        return {'removed': did}
+
+    @app.get('/api/conversations/{cid}/memory')
+    def conversation_memory(cid: int, q: str = ''):
+        if len(q) > 2000:
+            raise StoreError('recherche trop longue (2 000 caractères au maximum)')
+        user = me()
+        with database() as conn:
+            conversation = access.require(conn, user, cid, 'read')
+            policy = isolation.effective(conn, conversation)
+            project_allowed = (conversation['project_id'] is not None
+                               and access.reads_project(conn, (user or {}).get('id'), conversation)
+                               and (not policy['isolated'] or policy['memory'] == 'project')
+                               and not isolation.suspended(conn, cid))
+            ids = {cid}
+            if project_allowed and conversation['shared']:
+                visible = access.visible_conversation_ids(conn, user)
+                ids.update(row['id'] for row in store.project_conversations(conn, conversation['project_id'])
+                           if row['shared'] and (visible is None or row['id'] in visible))
+            pid = conversation['project_id'] if project_allowed else None
+            return {'project_id': pid,
+                    'can_manage': pid is not None and access.project_role(conn, user, pid) == 'owner',
+                    'semantic_model': semantic.embedder().model if semantic.embedder() else None,
+                    'documents': rag.documents(conn, pid) if pid is not None else [],
+                    'conversations': memory.search(conn, q, limit=12, conversation_ids=ids) if q.strip() else [],
+                    'passages': rag.search(conn, pid, q) if q.strip() else [],
+                    'indexed': conn.execute('SELECT COUNT(*) FROM memory WHERE conversation_id = ?', (cid,)).fetchone()[0]}
 
     @app.get("/api/projects/{pid}")
     def project(pid: int, request: HttpRequest):

@@ -10,7 +10,7 @@ import sqlite3
 from contextlib import contextmanager
 from datetime import datetime, timezone
 
-SCHEMA_VERSION = 24
+SCHEMA_VERSION = 25
 
 # One statement per string: triggers contain semicolons, so the schema
 # cannot be split on ";" and executescript() would commit mid-migration.
@@ -807,6 +807,33 @@ _SCHEMA_V24 = [
     'REFERENCES conversations(id) ON DELETE CASCADE)',
 ]
 
+_SCHEMA_V25 = [
+    '''CREATE TABLE rag_documents (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        project_id INTEGER NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+        name TEXT NOT NULL,
+        content TEXT NOT NULL,
+        created_at TEXT NOT NULL
+    )''',
+    'CREATE INDEX rag_documents_project ON rag_documents(project_id, id)',
+    '''CREATE TABLE rag_chunks (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        document_id INTEGER NOT NULL REFERENCES rag_documents(id) ON DELETE CASCADE,
+        position INTEGER NOT NULL,
+        content TEXT NOT NULL,
+        model TEXT,
+        vector BLOB,
+        UNIQUE(document_id, position)
+    )''',
+    "CREATE VIRTUAL TABLE rag_fts USING fts5(content, content='rag_chunks', content_rowid='id')",
+    '''CREATE TRIGGER rag_chunks_insert AFTER INSERT ON rag_chunks BEGIN
+        INSERT INTO rag_fts(rowid, content) VALUES (new.id, new.content);
+    END''',
+    '''CREATE TRIGGER rag_chunks_delete AFTER DELETE ON rag_chunks BEGIN
+        INSERT INTO rag_fts(rag_fts, rowid, content) VALUES ('delete', old.id, old.content);
+    END''',
+]
+
 
 class SchemaError(Exception):
     """The database file cannot be used by this version of the code."""
@@ -935,6 +962,9 @@ def migrate(conn: sqlite3.Connection) -> None:
                 conn.execute(statement)
         if version < 24:
             for statement in _SCHEMA_V24:
+                conn.execute(statement)
+        if version < 25:
+            for statement in _SCHEMA_V25:
                 conn.execute(statement)
         # PRAGMA does not accept bound parameters; SCHEMA_VERSION is an int constant.
         conn.execute(f"PRAGMA user_version = {SCHEMA_VERSION}")

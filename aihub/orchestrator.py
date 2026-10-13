@@ -17,7 +17,7 @@ import queue
 import threading
 from pathlib import Path
 
-from . import access, accounts, config, db, project_access, providers, routing, store, tools
+from . import access, accounts, config, db, project_access, providers, rag, routing, store, tools
 from .providers import claude_code
 from .providers.claude_code import Decision, ProviderError
 from .runner import Request
@@ -185,7 +185,7 @@ def discuss(conn, conversation_id, text, *, on_request=None, **request_kwargs):
     agents_by_id = {a["id"]: a for a in store.list_agents(conn)}
     store.add_user_message(conn, conversation_id, text, request_kwargs.get("user_id"))
     run = Request(conn, conversation_id, conductor, discussion_prompt(text, plan, agents_by_id),
-                  record_prompt=False, resume=True, tools=READ_ONLY_TOOLS, **request_kwargs)
+                  record_prompt=False, resume=True, tools=READ_ONLY_TOOLS, retrieval_prompt=text, **request_kwargs)
     if on_request:
         on_request(run)
     return run.run()
@@ -293,7 +293,7 @@ def propose_plan(conn, conversation_id, prompt, *, on_request=None, **request_kw
             return str(exc)
         return None
 
-    run = Request(conn, conversation_id, conductor, planning_prompt(prompt), record_prompt=False,
+    run = Request(conn, conversation_id, conductor, planning_prompt(prompt), record_prompt=False, retrieval_prompt=prompt,
                   resume=False, tools=READ_ONLY_TOOLS, json_schema=plan_schema(),
                   format_content=_plan_message, check_result=check, **request_kwargs)
     if on_request:
@@ -336,7 +336,7 @@ def adapt_plan(conn, plan_id, *, on_request=None, **request_kwargs):
 
     run = Request(conn, plan["conversation_id"], conductor,
                   adapt_prompt(request_text, plan, agents, agents_by_id, discussion_since(conn, plan)),
-                  record_prompt=False,
+                  record_prompt=False, retrieval_prompt=request_text,
                   resume=False, tools=READ_ONLY_TOOLS,
                   json_schema=plan_schema([a["name"] for a in agents]),
                   format_content=lambda r: "Plan adapté : " + str((r.structured or {}).get("summary") or ""),
@@ -523,11 +523,13 @@ class PlanExecution:
             execution = isolation.for_run(journal, conversation, account_id=self.account_id or self.user_id,
                                           settings=self.settings)
             if execution is not None:
+                project = project and execution.policy['memory'] == 'project'
                 if tools.chosen(conversation):
                     raise ProviderError('les outils du PC ne sont pas disponibles dans un espace isolé')
                 given = tools.RunTools()
             run = providers.new_run(
-                provider, providers.command_for(command, provider, execution=execution), prompt=prompt,
+                provider, providers.command_for(command, provider, execution=execution),
+                prompt=prompt + rag.context(journal, conversation, subtask['title'] + ' ' + subtask['description'], project=project),
                 workdir=conversation["workdir"], permission_mode=conversation["permission_mode"],
                 model=providers.default_model(provider, subtask["model"]),
                 ask_permission=lambda request: self._ask(journal, conversation, subtask, request),
@@ -614,7 +616,7 @@ class PlanExecution:
                             record_prompt=False, resume=False, tools=READ_ONLY_TOOLS,
                             on_start=on_start, on_text=on_text, command=self.command, env=self.env,
                             timeout_s=self.timeout_s, settings=self.settings, account_id=self.account_id,
-                            user_id=self.user_id,
+                            user_id=self.user_id, retrieval_prompt=request_text,
                             ask_permission=lambda r: Decision(False, "la synthèse ne fait que lire"))
         with self._lock:
             self._synthesis = synthesis

@@ -10,7 +10,7 @@ import os
 import threading
 from pathlib import Path
 
-from . import access, accounts, attachments, config, isolation, memory, project_access, providers, routing, store, tools
+from . import access, accounts, attachments, config, isolation, memory, project_access, providers, rag, routing, store, tools
 from .providers import claude_code
 from .providers.claude_code import ProviderError
 
@@ -88,7 +88,7 @@ class Request:
                  on_text=None, on_start=None, command=None, timeout_s=None, env=None,
                  record_prompt=True, resume=True, tools=None, json_schema=None,
                  format_content=None, check_result=None, settings=None, on_quota=None, user_id=None,
-                 account_id=None, attachments=()):
+                 account_id=None, attachments=(), retrieval_prompt=None):
         """`record_prompt=False` and `resume=False` serve the conductor: its
         planning and synthesis prompts are built by the hub, not typed by the
         user, and each starts a fresh session. `tools` and `json_schema` are
@@ -101,6 +101,7 @@ class Request:
         self.conversation_id = conversation_id
         self.agent_id = agent_id
         self.prompt = prompt
+        self.retrieval_prompt = prompt if retrieval_prompt is None else retrieval_prompt
         self.ask_permission = ask_permission
         self.on_text = on_text
         self.on_start = on_start
@@ -237,6 +238,7 @@ class Request:
                 raise ProviderError('retirez les outils du PC avant d’utiliser un espace isolé')
         joined = project_access.prefetch(self.conn, conversation, self.prompt, automatic=self.record_prompt,
                                          project=project)
+        joined += rag.context(self.conn, conversation, self.retrieval_prompt, project=project)
         if package is not None:
             used = memory.package_tokens(package)
             # Already in the package, or the request itself (indexed as soon as recorded).

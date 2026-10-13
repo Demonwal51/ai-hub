@@ -1607,6 +1607,75 @@ function featureDialog(title, ...content) {
   document.body.append(dialog); dialog.showModal(); return dialog;
 }
 
+async function openMemoryRag() {
+  const cid = state.currentId;
+  const dialog = el('dialog', { class: 'dialog dialog-wide dialog-content' });
+  const status = el('p', { class: 'quota-note' });
+  const error = el('p', { class: 'form-error', role: 'alert' });
+  const query = el('input', { placeholder: 'Une décision, une information ou un sujet…', maxlength: 2000, 'aria-label': 'Chercher dans la mémoire' });
+  const searchButton = el('button', { type: 'submit', class: 'btn btn-primary', text: 'Rechercher' });
+  const searchForm = el('form', {}, el('label', {}, 'Chercher dans la mémoire', query), searchButton);
+  const results = el('div');
+  const documents = el('div');
+  const upload = el('input', { type: 'file', accept: '.md,.txt,.csv,.json,.yaml,.yml', 'aria-label': 'Document à associer au projet' });
+  const name = el('input', { maxlength: 120, placeholder: 'Decisions.md', 'aria-label': 'Nom de la note' });
+  const text = el('textarea', { rows: 4, maxlength: 200000, placeholder: 'Collez ici une note à garder pour ce projet.', 'aria-label': 'Texte de la note' });
+  const add = el('button', { type: 'button', class: 'btn btn-primary', text: 'Associer cette note au projet' });
+  const manage = el('section', {},
+    el('p', { class: 'quota-note', text: 'Documents et notes ajoutés volontairement, accessibles aux personnes qui peuvent lire le projet. Texte uniquement : Markdown, TXT, CSV, JSON et YAML ; 200 000 caractères par document. Aucun coffre n’est parcouru automatiquement.' }),
+    el('label', {}, 'Ajouter un document au projet', upload),
+    el('label', {}, 'Ou écrire une note — nom du fichier', name), text, add);
+  let data = null;
+  async function refresh() {
+    data = await api('GET', `/api/conversations/${cid}/memory?q=${encodeURIComponent(query.value.trim())}`);
+    status.textContent = `${data.indexed} passage(s) de cette conversation indexés. Recherche par mots active` +
+      (data.semantic_model ? ` et par le sens (${data.semantic_model}).` : ' ; recherche par le sens disponible quand le modèle local Ollama est prêt.') +
+      (data.project_id === null ? ' Aucun document de projet accessible dans cet espace.' : ' Documents explicitement associés au projet inclus.');
+    manage.classList.toggle('hidden', !data.can_manage);
+    documents.replaceChildren(...[el('h3', { text: 'Documents du projet' }),
+      ...data.documents.map(doc => el('div', { class: 'field-row' },
+        el('span', { text: `${doc.name} · ${doc.passages} passage(s)` }),
+        data.can_manage ? el('button', { type: 'button', class: 'btn btn-danger-ghost btn-small', text: 'Retirer', onclick: async () => {
+          if (!await confirmDialog({ title: 'Retirer ce document de la mémoire ?', text: `${doc.name} sera retiré des recherches futures du projet. Le fichier original et les réponses déjà produites restent inchangés.`, okText: 'Retirer' })) return;
+          try { await api('DELETE', `/api/projects/${data.project_id}/memory/documents/${doc.id}`); await refresh(); }
+          catch (err) { error.textContent = err.message; }
+        } }) : null)),
+      !data.documents.length ? el('p', { class: 'quota-note', text: 'Aucun document associé.' }) : null].filter(Boolean));
+    results.replaceChildren(...[...data.passages.map(hit => el('article', {},
+      el('h3', { text: `${hit.name} · passage ${hit.position}` }), el('pre', { class: 'result-diff', text: hit.content }))),
+      ...data.conversations.map(hit => el('article', {}, el('h3', { text: `Conversation : ${hit.title}` }),
+        el('p', { text: hit.excerpt.replace(/\[\[|\]\]/g, '') }))),
+      query.value.trim() && !data.passages.length && !data.conversations.length ? el('p', { text: 'Aucun passage pertinent trouvé.' }) : null].filter(Boolean));
+  }
+  async function associate(filename, content) {
+    if (!data?.can_manage) return;
+    error.textContent = ''; add.disabled = true; upload.disabled = true;
+    try {
+      await api('POST', `/api/projects/${data.project_id}/memory/documents`, { name: filename, content });
+      text.value = ''; name.value = ''; upload.value = ''; await refresh();
+      toast('Document associé et indexé dans la mémoire du projet.');
+    } catch (err) { error.textContent = err.message; }
+    finally { add.disabled = false; upload.disabled = false; }
+  }
+  upload.addEventListener('change', async () => {
+    const file = upload.files?.[0];
+    if (!file) return;
+    if (file.size > 800000) { error.textContent = 'Document trop volumineux (800 Ko au maximum).'; upload.value = ''; return; }
+    try { await associate(file.name, await file.text()); } catch (err) { error.textContent = err.message; }
+  });
+  add.addEventListener('click', () => associate(name.value.trim(), text.value));
+  searchForm.addEventListener('submit', async event => {
+    event.preventDefault(); error.textContent = ''; searchButton.disabled = true;
+    try { await refresh(); } catch (err) { error.textContent = err.message; }
+    finally { searchButton.disabled = false; }
+  });
+  dialog.append(el('h2', { text: 'Mémoire RAG' }), status, searchForm, results, documents, manage, error,
+    el('div', { class: 'dialog-actions' }, el('button', { type: 'button', class: 'btn btn-ghost', text: 'Fermer', onclick: () => dialog.close() })));
+  dialog.addEventListener('close', () => dialog.remove(), { once: true });
+  document.body.append(dialog); dialog.showModal();
+  try { await refresh(); } catch (err) { error.textContent = err.message; }
+}
+
 async function openAccessOverview() {
   const cid = state.currentId;
   const conv = state.data?.conversation;
@@ -2100,6 +2169,7 @@ function setupNewDialog() {
 // --- Obsidian project note ------------------------------------------------------------------
 
 function setupObsidianDialog() {
+  $('memory-rag').addEventListener('click', openMemoryRag);
   const dialog = $("obsidian-dialog");
   const refresh = () => {
     const conv = state.data.conversation;

@@ -17,7 +17,7 @@ import queue
 import threading
 from pathlib import Path
 
-from . import access, accounts, config, db, memory, project_access, providers, rag, routing, store, tools
+from . import access, accounts, config, db, memory, project_access, providers, rag, resumption, routing, store, tools
 from .providers import claude_code
 from .providers.claude_code import Decision, ProviderError
 from .runner import Request
@@ -511,7 +511,7 @@ class PlanExecution:
         status = result.status
         if status == "stopped":
             # Stopped by the user: stop_plan marks the rest.
-            store.finish_subtask(conn, sid, "stopped", duration_ms=result.duration_ms)
+            store.finish_subtask(conn, sid, "stopped", duration_ms=result.duration_ms, session_id=result.session_id)
         else:
             store.finish_subtask(conn, sid, status, result=result.text if status == "ok" else None,
                                  error=result.error, duration_ms=result.duration_ms,
@@ -525,6 +525,8 @@ class PlanExecution:
         length = [0]
         try:
             def on_text(chunk):
+                journal.execute("UPDATE subtasks SET checkpoint = substr(checkpoint || ?, -200000) WHERE id = ? AND status = 'running'",
+                                (chunk, subtask['id']))
                 offset = length[0]
                 length[0] += len(chunk)
                 self.on_event({"type": "subtask_text", "subtask_id": subtask["id"],
@@ -545,13 +547,22 @@ class PlanExecution:
                 if tools.chosen(conversation):
                     raise ProviderError('les outils du PC ne sont pas disponibles dans un espace isolé')
                 given = tools.RunTools()
+            scope = resumption.scope(journal, conversation, self.account_id or self.user_id)
+            saved_session = subtask['session_id'] if subtask['session_scope'] == scope else None
+            continuing = subtask['attempts'] > 0
+            if continuing:
+                prompt = resumption.prompt(prompt, subtask['checkpoint'], subtask['error'])
+            def on_session(session):
+                journal.execute("UPDATE subtasks SET session_id = ?, session_scope = ? WHERE id = ? AND status = 'running'",
+                                (session, scope, subtask['id']))
             run = providers.new_run(
                 provider, providers.command_for(command, provider, execution=execution),
                 prompt=prompt + rag.context(journal, conversation, subtask['title'] + ' ' + subtask['description'], project=project),
                 workdir=conversation["workdir"], permission_mode=conversation["permission_mode"],
                 model=providers.default_model(provider, subtask["model"]),
+                resume_session=saved_session if continuing else None,
                 ask_permission=lambda request: self._ask(journal, conversation, subtask, request),
-                on_text=on_text, timeout_s=self.timeout_s, env=env,
+                on_text=on_text, on_session=on_session, timeout_s=self.timeout_s, env=env,
                 execution=execution,
                 mcp_config=given.mcp_config, auto_allow=given.auto_allow, web=given.web,
                 instructions=store.join_instructions(store.person_instructions(journal, conversation),
@@ -563,7 +574,25 @@ class PlanExecution:
                 stopping = self._stopping
             if stopping:
                 run.stop()
-            done.put((subtask["id"], run.run(), None))
+            result = run.run()
+            if saved_session and result.status == 'error' and providers.lost_session(provider, result.error) and not self._stopping:
+                journal.execute('UPDATE subtasks SET session_id = NULL WHERE id = ?', (subtask['id'],))
+                fresh = providers.new_run(provider, providers.command_for(command, provider, execution=execution),
+                    prompt=prompt, workdir=conversation['workdir'], permission_mode=conversation['permission_mode'],
+                    model=providers.default_model(provider, subtask['model']), ask_permission=lambda request: self._ask(journal, conversation, subtask, request),
+                    on_text=on_text, on_session=on_session, timeout_s=self.timeout_s, env=env, execution=execution,
+                    mcp_config=given.mcp_config, auto_allow=given.auto_allow, web=given.web,
+                    instructions=store.person_instructions(journal, conversation))
+                with self._lock:
+                    self._runs[subtask['id']] = fresh
+                    stopping = self._stopping
+                if stopping:
+                    fresh.stop()
+                result = fresh.run()
+            if result.text and not length[0]:
+                journal.execute("UPDATE subtasks SET checkpoint = substr(checkpoint || ?, -200000) WHERE id = ?", (result.text, subtask['id']))
+            journal.execute('UPDATE subtasks SET session_scope = ? WHERE id = ?', (scope, subtask['id']))
+            done.put((subtask["id"], result, None))
         except Exception as exc:  # reported as the subtask's failure, never lost
             done.put((subtask["id"], None, exc))
         finally:
@@ -630,8 +659,14 @@ class PlanExecution:
             self.on_event({"type": "text", "message_id": self.synthesis_message_id,
                            "offset": offset, "chunk": chunk})
 
-        synthesis = Request(conn, conversation["id"], conductor, synthesis_prompt(request_text, plan),
-                            record_prompt=False, resume=False, tools=READ_ONLY_TOOLS,
+        previous = store.get_message(conn, plan['synthesis_message_id']) if plan['synthesis_message_id'] else None
+        synthesis_text = synthesis_prompt(request_text, plan)
+        continuing_synthesis = previous is not None and previous['status'] in ('error', 'stopped')
+        if continuing_synthesis:
+            synthesis_text = resumption.prompt(synthesis_text, previous['content'], previous['error'])
+        synthesis = Request(conn, conversation["id"], conductor, synthesis_text,
+                            record_prompt=False, resume=continuing_synthesis, tools=READ_ONLY_TOOLS,
+                            resume_message_id=previous['id'] if continuing_synthesis else None,
                             on_start=on_start, on_text=on_text, command=self.command, env=self.env,
                             timeout_s=self.timeout_s, settings=self.settings, account_id=self.account_id,
                             user_id=self.user_id, retrieval_prompt=request_text,

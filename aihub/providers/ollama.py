@@ -170,7 +170,7 @@ class OllamaRun:
     """One request to the local AI. Same interface as ClaudeCodeRun (`run()`, `stop()`)."""
 
     def __init__(self, command, *, prompt, workdir, permission_mode, model=None, resume_session=None,
-                 ask_permission=None, on_text=None, on_quota=None, timeout_s=None, env=None, tools=None,
+                 ask_permission=None, on_text=None, on_quota=None, on_session=None, timeout_s=None, env=None, tools=None,
                  json_schema=None, mcp_config=None, auto_allow=(), instructions=None, web=True, images=(), execution=None, image_data=()):
         if not isinstance(prompt, str) or not prompt.strip():
             raise ProviderError("demande vide")

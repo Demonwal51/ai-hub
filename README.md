@@ -7,7 +7,7 @@ une interface en français. Discutez avec une IA, comparez leurs réponses ou
 faites travailler plusieurs agents ensemble. Retrouvez vos conversations et
 vos projets depuis votre ordinateur ou votre téléphone.
 
-**Version 1.0.7 · Windows et Linux · Licence GPL-3.0**
+**Version 1.0.8 · Windows et Linux · Licence GPL-3.0**
 
 [Télécharger la dernière version](https://github.com/Demonwal51/ai-hub/releases/latest)
 · [Voir les changements](CHANGELOG.md) · [Licence](LICENSE)
@@ -54,6 +54,20 @@ demandé. Les données et comptes sont conservés. Seule une réactivation
 explicite rétablit l’exécution ; changer les permissions ne lève pas la pause.
 Si un arrêt n’est pas confirmé, l’interface le signale et propose de réessayer.
 
+## Reprendre un travail interrompu
+
+La dernière réponse interrompue propose **Reprendre**. Un plan déjà validé et
+interrompu propose **Reprendre le plan** : seules ses tâches inachevées repartent,
+les résultats acquis restent conservés. Si seule la synthèse a été interrompue,
+elle peut être reprise sans rejouer les tâches.
+
+Les points de reprise et sessions sont enregistrés pendant le travail. La
+reprise est manuelle et utilise les accès et comptes IA actuels. Une session
+appartient à son compte et à son contexte ; si elle n’est plus disponible, l’IA
+repart avec le dernier texte sauvegardé et doit vérifier l’état des fichiers.
+Une commande externe coupée en cours ne peut pas être restaurée à l’instruction
+près. Le dossier de travail d’un plan commencé doit rester le même.
+
 ## Mémoire RAG des projets
 
 Dans une conversation, ouvrez **⋯ → Mémoire RAG…**. Retrouvez les passages des
@@ -95,7 +109,7 @@ de l’IA restent celles choisies pour l’espace.
 
 ## Installation Windows
 
-1. Téléchargez `ai-hub-1.0.7.zip` dans les
+1. Téléchargez `ai-hub-1.0.8.zip` dans les
    [versions publiées](https://github.com/Demonwal51/ai-hub/releases/latest), puis extrayez-le.
 2. Installez Python **3.12 ou plus** si nécessaire.
 3. Lancez `installer.bat`. Il prépare l’environnement Python, installe les
@@ -112,7 +126,7 @@ L’installation et le démarrage de l’application ont été vérifiés sur
 
 1. Installez Python **3.12 ou plus**, ainsi que le support `venv` et `pip` de
    votre distribution.
-2. Téléchargez et extrayez `ai-hub-1.0.7-linux.tar.gz`.
+2. Téléchargez et extrayez `ai-hub-1.0.8-linux.tar.gz`.
 3. Depuis le dossier extrait, lancez :
 
 ```sh

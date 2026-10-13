@@ -127,11 +127,15 @@ def save(conn, value, *, conversation_id=None, project_id=None):
     # A change of access context invalidates CLI resume sessions from its former context.
     if conversation_id is not None:
         conn.execute('UPDATE messages SET session_id = NULL WHERE conversation_id = ?', (conversation_id,))
+        conn.execute('UPDATE subtasks SET session_id = NULL WHERE plan_id IN '
+                     '(SELECT id FROM plans WHERE conversation_id = ?)', (conversation_id,))
         if policy['isolated']:
             conn.execute("UPDATE conversations SET tools_json = '[]' WHERE id = ?", (conversation_id,))
     else:
         conn.execute('UPDATE messages SET session_id = NULL WHERE conversation_id IN '
                      '(SELECT id FROM conversations WHERE project_id = ?)', (project_id,))
+        conn.execute('UPDATE subtasks SET session_id = NULL WHERE plan_id IN '
+                     '(SELECT p.id FROM plans p JOIN conversations c ON c.id = p.conversation_id WHERE c.project_id = ?)', (project_id,))
         if policy['isolated']:
             conn.execute("UPDATE conversations SET tools_json = '[]' WHERE project_id = ?", (project_id,))
     return policy

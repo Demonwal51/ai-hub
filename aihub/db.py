@@ -10,7 +10,7 @@ import sqlite3
 from contextlib import contextmanager
 from datetime import datetime, timezone
 
-SCHEMA_VERSION = 25
+SCHEMA_VERSION = 26
 
 # One statement per string: triggers contain semicolons, so the schema
 # cannot be split on ";" and executescript() would commit mid-migration.
@@ -835,6 +835,15 @@ _SCHEMA_V25 = [
 ]
 
 
+_SCHEMA_V26 = [
+    'ALTER TABLE plans ADD COLUMN execution_root TEXT',
+    'ALTER TABLE messages ADD COLUMN session_scope TEXT',
+    "ALTER TABLE subtasks ADD COLUMN checkpoint TEXT NOT NULL DEFAULT ''",
+    'ALTER TABLE subtasks ADD COLUMN session_scope TEXT',
+    'ALTER TABLE subtasks ADD COLUMN attempts INTEGER NOT NULL DEFAULT 0',
+]
+
+
 class SchemaError(Exception):
     """The database file cannot be used by this version of the code."""
 
@@ -965,6 +974,9 @@ def migrate(conn: sqlite3.Connection) -> None:
                 conn.execute(statement)
         if version < 25:
             for statement in _SCHEMA_V25:
+                conn.execute(statement)
+        if version < 26:
+            for statement in _SCHEMA_V26:
                 conn.execute(statement)
         # PRAGMA does not accept bound parameters; SCHEMA_VERSION is an int constant.
         conn.execute(f"PRAGMA user_version = {SCHEMA_VERSION}")

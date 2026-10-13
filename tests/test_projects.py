@@ -503,7 +503,11 @@ if WebTestCase is not None:
             other = self.in_project(pid, "Accueil")
             self.assertIn("Rien trouvé", self.reply(other, "consulte cherche budget")["content"])
             self.client.patch(f"/api/conversations/{other}", json={"shared": False})
-            self.assertEqual(self.reply(other, "consulte liste")["content"], "aucun accès aux autres conversations")
+            # A changed sharing context starts a fresh session with its own
+            # memory tool. Project access must still be refused by that server.
+            self.assertEqual(self.reply(other, "consulte liste")["content"],
+                             "le partage est coupé pour cette conversation : elle ne voit pas les autres")
+            self.assertTrue(read_log(self.log)['mcp_call']['is_error'])
 
         def test_moving_changes_what_is_seen(self):
             first, second = self.project("Un"), self.project("Deux")

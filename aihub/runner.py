@@ -10,9 +10,10 @@ import os
 import threading
 from pathlib import Path
 
-from . import access, accounts, attachments, config, isolation, memory, project_access, providers, rag, routing, store, tools
+from . import access, accounts, attachments, config, isolation, memory, project_access, providers, rag, resumption, routing, store, tools
 from .providers import claude_code
 from .providers.claude_code import ProviderError
+from .store import StoreError
 
 
 # Codex's lightest models, in order: « Fast and affordable model for easier
@@ -88,7 +89,7 @@ class Request:
                  on_text=None, on_start=None, command=None, timeout_s=None, env=None,
                  record_prompt=True, resume=True, tools=None, json_schema=None,
                  format_content=None, check_result=None, settings=None, on_quota=None, user_id=None,
-                 account_id=None, attachments=(), retrieval_prompt=None):
+                 account_id=None, attachments=(), retrieval_prompt=None, preserve_attachments=False, resume_message_id=None):
         """`record_prompt=False` and `resume=False` serve the conductor: its
         planning and synthesis prompts are built by the hub, not typed by the
         user, and each starts a fresh session. `tools` and `json_schema` are
@@ -119,6 +120,8 @@ class Request:
         self.user_id = user_id    # who sends it (None: the owner)
         self.account_id = account_id  # whose own AI accounts `env` names (None: the computer's)
         self.attachments = list(attachments)  # files sent with the request (aihub/attachments.py)
+        self.preserve_attachments = preserve_attachments
+        self.resume_message_id = resume_message_id
         self.message_id = None
         self._run = None
         self._stopped = threading.Event()
@@ -151,13 +154,15 @@ class Request:
         """
         conversation, agent = self._prepare()
         self.provider = agent["provider"]
+        self.session_scope = resumption.scope(self.conn, conversation, self.account_id or self.user_id)
         self.execution = isolation.for_run(self.conn, conversation, account_id=self.account_id or self.user_id,
                                             settings=self.settings)
         command = providers.command_for(self.command, self.provider, execution=self.execution)
         self.request_id = None
         if self.record_prompt:
             self.request_id = store.add_user_message(self.conn, self.conversation_id, self.prompt, self.user_id)
-            attachments.attach(self.conn, self.attachments, self.request_id)
+            if not self.preserve_attachments:
+                attachments.attach(self.conn, self.attachments, self.request_id)
         self.message_id = store.start_request(self.conn, self.conversation_id, self.agent_id)
         try:
             store.mark_message_running(self.conn, self.message_id)
@@ -166,7 +171,12 @@ class Request:
             # A fresh start asked for (« Repartir de zéro »): no resume, the
             # starting package instead of the history.
             package = memory.load_package(conversation) if self.resume else None
-            last = store.last_session(self.conn, self.conversation_id) if self.resume and package is None else None
+            last = store.last_session(self.conn, self.conversation_id, session_scope=self.session_scope) if self.resume and package is None else None
+            if self.resume_message_id is not None and package is None:
+                source = store.get_message(self.conn, self.resume_message_id)
+                if source['conversation_id'] != self.conversation_id or source['status'] not in ('stopped', 'error'):
+                    raise StoreError('point de reprise invalide')
+                last = ((source['provider'], source['session_id']) if source['session_id'] and source['session_scope'] == self.session_scope else None)
             resume_id = last[1] if last and last[0] == self.provider else None
             switched = last is not None and resume_id is None
             # Replies already there but no session at all: an imported conversation
@@ -223,7 +233,7 @@ class Request:
             duration_ms=result.duration_ms,
             tokens_in=result.tokens_in,
             tokens_out=result.tokens_out,
-            session_id=result.session_id,
+            session_id=result.session_id, session_scope=self.session_scope,
         )
         return result
 
@@ -267,6 +277,9 @@ class Request:
             resume_session=resume_id,
             ask_permission=self._ask,
             on_text=self._text,
+            on_session=lambda session: self.conn.execute('UPDATE messages SET session_id = ?, session_scope = ? '
+                                                         "WHERE id = ? AND status IN ('pending', 'running')",
+                                                         (session, self.session_scope, self.message_id)),
             on_quota=self._quota,
             timeout_s=self.timeout_s,
             env=env,

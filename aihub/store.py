@@ -7,6 +7,7 @@ as is; the database constraints stay the last line of defence.
 
 import json
 import sqlite3
+from pathlib import Path
 
 from .db import transaction, utc_now
 
@@ -513,7 +514,7 @@ def append_message_content(conn, message_id, chunk):
 
 
 def finish_message(conn, message_id, status, *, content=None, error=None,
-                   duration_ms=None, tokens_in=None, tokens_out=None, session_id=None):
+                   duration_ms=None, tokens_in=None, tokens_out=None, session_id=None, session_scope=None):
     """Close a reply as ok, error or stopped, with its measurements."""
     if status not in FINAL_STATUSES:
         raise StoreError(f"statut final inconnu : {status!r}")
@@ -528,11 +529,11 @@ def finish_message(conn, message_id, status, *, content=None, error=None,
             UPDATE messages
             SET status = ?, content = COALESCE(?, content), error = ?, duration_ms = ?,
                 tokens_in = ?, tokens_out = ?, session_id = COALESCE(?, session_id),
-                finished_at = ?
+                finished_at = ?, session_scope = COALESCE(?, session_scope)
             WHERE id = ?
             """,
             (status, content, error, duration_ms, tokens_in, tokens_out, session_id,
-             utc_now(), message_id),
+             utc_now(), session_scope, message_id),
         )
         _touch(conn, message["conversation_id"])
 
@@ -545,7 +546,7 @@ def set_tools(conn, conversation_id, names):
     conn.execute("UPDATE conversations SET tools_json = ? WHERE id = ?", (json.dumps(list(names)), conversation_id))
 
 
-def last_session(conn, conversation_id):
+def last_session(conn, conversation_id, *, session_scope=None):
     """(provider, session_id) of the conversation's latest session, whatever the AI, or None.
 
     The next request resumes it only with the same provider: a session of
@@ -554,12 +555,14 @@ def last_session(conn, conversation_id):
     row = _one(
         conn,
         """
-        SELECT provider, session_id FROM messages
+        SELECT provider, session_id, session_scope FROM messages
         WHERE conversation_id = ? AND session_id IS NOT NULL
         ORDER BY id DESC LIMIT 1
         """,
         (conversation_id,),
     )
+    if row and session_scope is not None and row['session_scope'] != session_scope:
+        return None
     return (row["provider"], row["session_id"]) if row else None
 
 
@@ -829,8 +832,10 @@ def get_plan(conn, plan_id):
     plan["subtasks"] = []
     for row in rows:
         subtask = dict(row, depends_on=deps.get(row["id"], []))
+        subtask['checkpoint'] = subtask['checkpoint'][-6000:]
         subtask["files"] = json.loads(subtask.pop("files_json")) if row["files_json"] else []
         plan["subtasks"].append(subtask)
+    plan['resumable'] = can_resume_plan(conn, plan)
     return plan
 
 
@@ -993,7 +998,8 @@ def start_plan(conn, plan_id):
     plan = _get_plan_row(conn, plan_id)
     if plan["status"] != "validated":
         raise StoreError("seul un plan validé peut être lancé")
-    conn.execute("UPDATE plans SET status = 'running' WHERE id = ?", (plan_id,))
+    conn.execute("UPDATE plans SET status = 'running', execution_root = COALESCE(execution_root, "
+                 '(SELECT workdir FROM conversations WHERE id = plans.conversation_id)) WHERE id = ?', (plan_id,))
 
 
 def ready_subtasks(conn, plan_id):
@@ -1023,13 +1029,13 @@ def start_subtask(conn, subtask_id):
     if subtask["id"] not in {r["id"] for r in ready_subtasks(conn, subtask["plan_id"])}:
         raise StoreError(f"la sous-tâche {subtask['position']} ne peut pas démarrer maintenant")
     conn.execute(
-        "UPDATE subtasks SET status = 'running', started_at = ? WHERE id = ?",
+        "UPDATE subtasks SET status = 'running', started_at = ?, attempts = attempts + 1 WHERE id = ?",
         (utc_now(), subtask_id),
     )
 
 
 def finish_subtask(conn, subtask_id, status, *, result=None, error=None,
-                   duration_ms=None, tokens_in=None, tokens_out=None, session_id=None):
+                   duration_ms=None, tokens_in=None, tokens_out=None, session_id=None, session_scope=None):
     if status not in FINAL_STATUSES:
         raise StoreError(f"statut final inconnu : {status!r}")
     for value, what in ((duration_ms, "durée"), (tokens_in, "tokens envoyés"),
@@ -1041,10 +1047,10 @@ def finish_subtask(conn, subtask_id, status, *, result=None, error=None,
         """
         UPDATE subtasks
         SET status = ?, result = ?, error = ?, duration_ms = ?, tokens_in = ?,
-            tokens_out = ?, session_id = ?, finished_at = ?
+            tokens_out = ?, session_id = COALESCE(?, session_id), finished_at = ?, session_scope = COALESCE(?, session_scope)
         WHERE id = ?
         """,
-        (status, result, error, duration_ms, tokens_in, tokens_out, session_id, utc_now(),
+        (status, result, error, duration_ms, tokens_in, tokens_out, session_id, utc_now(), session_scope,
          subtask_id),
     )
 
@@ -1074,6 +1080,38 @@ def finish_plan(conn, plan_id):
             "UPDATE plans SET status = ?, finished_at = ? WHERE id = ?",
             ("error" if failed else "done", now, plan_id),
         )
+
+
+def can_resume_plan(conn, plan):
+    if not plan['validated_at']:
+        return False
+    if plan['status'] in ('stopped', 'error', 'validated'):
+        return True
+    if plan['status'] == 'done' and plan['synthesis_message_id']:
+        message = get_message(conn, plan['synthesis_message_id'])
+        return message['status'] in ('stopped', 'error')
+    return False
+
+
+def resume_plan(conn, plan_id):
+    plan = _get_plan_row(conn, plan_id)
+    if not can_resume_plan(conn, plan):
+        raise StoreError('ce plan ne peut pas être repris : il doit avoir été validé et interrompu')
+    current = get_conversation(conn, plan['conversation_id'])
+    if plan['execution_root'] and Path(plan['execution_root']).resolve() != Path(current['workdir'] or '').resolve():
+        raise StoreError('le dossier de travail a changé : ce plan se reprend dans son dossier initial')
+    active = open_plan(conn, plan['conversation_id'])
+    if active is not None and active['id'] != plan_id:
+        raise Busy('un autre plan est ouvert : lancez-le ou annulez-le avant de reprendre celui-ci')
+    if active_request(conn, plan['conversation_id']):
+        raise Busy('une IA travaille encore dans cette conversation')
+    invalid = conn.execute('SELECT 1 FROM subtasks s LEFT JOIN agents a ON a.id = s.agent_id '
+                           "WHERE s.plan_id = ? AND s.status <> 'ok' AND (a.id IS NULL OR a.enabled = 0)", (plan_id,)).fetchone()
+    if invalid:
+        raise StoreError('un agent de ce plan est absent ou désactivé')
+    with transaction(conn):
+        conn.execute("UPDATE subtasks SET status = 'pending', finished_at = NULL WHERE plan_id = ? AND status <> 'ok'", (plan_id,))
+        conn.execute("UPDATE plans SET status = 'validated', finished_at = NULL WHERE id = ?", (plan_id,))
 
 
 def stop_plan(conn, plan_id):

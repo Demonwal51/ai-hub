@@ -1,5 +1,16 @@
 # Journal des versions
 
+## 1.0.8 — 13 octobre 2026 : reprise des travaux interrompus
+
+- « Reprendre » sous la dernière réponse interrompue et « Reprendre le plan »
+  pour les plans validés : les tâches terminées ne sont pas rejouées.
+- Points de reprise et sessions sauvegardés pendant le travail, conservés après
+  un redémarrage. Synthèse reprise seule lorsque les tâches sont déjà terminées.
+- Sessions liées au compte et au contexte d’accès ; repli sur le texte sauvegardé
+  si la session a disparu. Pièces jointes originales et erreurs antérieures conservées.
+- Réactivation explicite nécessaire pour un espace suspendu ; pas de reprise
+  automatique. Schéma26, avec migration des données existantes.
+
 ## 1.0.7 — 13 octobre 2026 : demander un plan sans prompt
 
 - « Demander un plan » fonctionne avec un champ vide. Le chef reçoit un

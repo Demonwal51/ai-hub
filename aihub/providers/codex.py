@@ -386,7 +386,7 @@ class CodexRun:
     """
 
     def __init__(self, command, *, prompt, workdir, permission_mode, model=None,
-                 resume_session=None, ask_permission=None, on_text=None, on_quota=None,
+                 resume_session=None, ask_permission=None, on_text=None, on_quota=None, on_session=None,
                  timeout_s=None, env=None, tools=None, json_schema=None,
                  mcp_config=None, auto_allow=(), instructions=None, home=None,
                  warning_from=_WARNING_FROM, web=True, images=(), execution=None):
@@ -402,6 +402,7 @@ class CodexRun:
         self.resume_session = resume_session
         self.ask_permission = ask_permission
         self.on_text = on_text
+        self.on_session = on_session
         self.on_quota = on_quota
         self.timeout_s = timeout_s
         self.env = env
@@ -510,6 +511,8 @@ class CodexRun:
             elif rid == ids.get("thread"):
                 thread = reply.get("thread") or {}
                 result.session_id = thread.get("id") or self.resume_session
+                if self.on_session and result.session_id:
+                    self.on_session(result.session_id)
                 result.model = reply.get("model") or result.model
                 turn = {"threadId": result.session_id, "input": [{"type": "text", "text": self.prompt}]
                         + [{"type": "localImage", "path": p} for p in self.images]}

@@ -30,7 +30,7 @@ from pydantic import BaseModel, Field
 from .. import VERSION_LABEL, __version__
 from .. import (auth, autonomous, backup, config, db, eveil, memory, notify, obsidian, providers, routing, runner,
                 schedule, semantic, store, tools)
-from .. import access, accounts, attachments, compare, filesystem, importer, isolation, library, rag, sandbox_results, updater, usage
+from .. import access, accounts, attachments, compare, filesystem, importer, isolation, library, rag, resumption, sandbox_results, updater, usage
 from ..providers import claude_code, codex, ollama
 from ..providers.claude_code import ProviderError
 from ..store import BypassConfirmationRequired, Busy, NotFound, StoreError
@@ -2279,6 +2279,18 @@ def create_app(db_path, *, command=None, env=None, allowed_roots=(), permission_
             raise
         return {"plan_id": pid}
 
+    @app.post('/api/plans/{pid}/resume', status_code=202)
+    def resume_plan(pid: int):
+        user = me()
+        with database() as conn:
+            plan = editable_plan(conn, pid)
+            conv = access.require(conn, user, plan['conversation_id'], 'write')
+            if not store.can_resume_plan(conn, plan):
+                raise StoreError('ce plan ne peut pas être repris')
+            check_workdir(conv['workdir'])
+            isolation.for_run(conn, conv, account_id=(user or {}).get('id'), settings=current())
+        return {'plan_id': jobs.resume_execution(plan['conversation_id'], pid, user=user)}
+
     @app.post("/api/plans/{pid}/cancel")
     def cancel(pid: int):
         with database() as conn:
@@ -2463,6 +2475,34 @@ def create_app(db_path, *, command=None, env=None, allowed_roots=(), permission_
             store.forget_exchange(conn, request["id"], reply["id"])
             files = attachments.pending(conn, cid, (user or {}).get("id"), [f["id"] for f in files])
         return {"message_id": jobs.start(cid, agent_id, request["content"], user=user, attachments=files)}
+
+    @app.post('/api/messages/{mid}/resume', status_code=202)
+    def resume_message(mid: int):
+        user = me()
+        with database() as conn:
+            reply = store.get_message(conn, mid)
+            conv = access.require(conn, user, reply['conversation_id'], 'write')
+            latest = conn.execute('SELECT id FROM messages WHERE conversation_id = ? ORDER BY id DESC LIMIT 1', (conv['id'],)).fetchone()
+            if reply['role'] != 'assistant' or reply['status'] not in ('stopped', 'error') or latest['id'] != mid:
+                raise StoreError('seule la dernière réponse interrompue peut être reprise')
+            request = conn.execute("SELECT * FROM messages WHERE conversation_id = ? AND id < ? AND role = 'user' ORDER BY id DESC LIMIT 1", (conv['id'], mid)).fetchone()
+            if request is None:
+                raise StoreError('demande initiale introuvable')
+            check_workdir(conv['workdir'])
+            isolation.for_run(conn, conv, account_id=(user or {}).get('id'), settings=current())
+            prompt = resumption.prompt(request['content'], reply['content'], reply['error'])
+            if conv['mode'] == 'orchestration':
+                if conn.execute('SELECT 1 FROM plans WHERE synthesis_message_id = ?', (mid,)).fetchone():
+                    raise StoreError('reprenez la synthèse avec le bouton Reprendre de son plan')
+                agent_id = None
+                files = []
+            else:
+                agent_id = conv['agent_id']
+                files = [dict(row) for row in conn.execute('SELECT * FROM attachments WHERE message_id = ?', (request['id'],))]
+        if agent_id is None and conv['mode'] == 'orchestration':
+            return {'message_id': jobs.start_planning(conv['id'], prompt, user=user)}
+        return {'message_id': jobs.start(conv['id'], agent_id, prompt, user=user, attachments=files,
+                                         preserve_attachments=True, resume_message_id=mid)}
 
     @app.post("/api/messages/{mid}/branch", status_code=201)
     def branch(mid: int, body: Branch):

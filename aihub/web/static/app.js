@@ -711,6 +711,16 @@ function renderMessages(messages) {
     const node = el("div", { class: "msg assistant", "data-id": m.id }, body);
     if (m.status === "error") node.append(el("div", { class: "msg-error", text: m.error || "erreur" }));
     if (m.status === "stopped") node.append(el("div", { class: "msg-stopped", text: m.error || "Requête arrêtée." }));
+    if (['stopped', 'error'].includes(m.status) && m.id === messages[messages.length - 1]?.id && !state.data.running
+        && state.data.conversation.my_role !== 'read' && !state.data.conversation.isolation?.paused
+        && !(state.data.plans || []).some(plan => plan.synthesis_message_id === m.id)) {
+      node.append(el('button', { type: 'button', class: 'btn btn-primary btn-small', text: 'Reprendre',
+        onclick: async event => {
+          event.target.disabled = true;
+          try { await api('POST', `/api/messages/${m.id}/resume`); await refreshConversation(); }
+          catch (err) { toast(err.message); event.target.disabled = false; }
+        } }));
+    }
     if (!live) {
       // Short under the reply; what it cost, on hover.
       const meta = [formatDuration(m.duration_ms)];
@@ -1177,6 +1187,13 @@ function planCard(plan) {
   card.append(rows);
 
   if (editable) card.append(planTools(plan));
+  if (plan.resumable && state.data.conversation.my_role !== 'read') card.append(el('button', { type: 'button', class: 'btn btn-primary', text: 'Reprendre le plan',
+    disabled: Boolean(state.data.running || state.data.conversation.isolation?.paused), onclick: async () => {
+      const remaining = plan.subtasks.filter(task => task.status !== 'ok').length;
+      if (!await confirmDialog({ title: 'Reprendre ce plan ?',
+        text: `${remaining} tâche(s) à poursuivre. Les tâches terminées ne seront pas rejouées. La reprise utilise les accès et comptes IA actuels.`, okText: 'Reprendre' })) return;
+      await planAction('POST', `/api/plans/${plan.id}/resume`);
+    } }));
   return card;
 }
 
@@ -1240,6 +1257,8 @@ function subtaskRow(plan, st, positions, editable) {
       text: state.subtaskLive.get(st.id) || "…" }));
   }
   if (st.status === "error" && st.error) row.append(el("div", { class: "msg-error plan-result", text: st.error }));
+  if (st.checkpoint && ['stopped', 'error'].includes(st.status)) row.append(el('details', { class: 'plan-result' },
+    el('summary', { text: 'Dernier point sauvegardé' }), el('pre', { class: 'result-diff', text: st.checkpoint })));
   if (st.result) {
     const details = el("details", { class: "plan-result" }, el("summary", { text: "Compte rendu de l'agent" }));
     const body = el("div", { class: "msg-body" });

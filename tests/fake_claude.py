@@ -286,6 +286,8 @@ def main():
     if SCENARIO == "auto":
         if option("--json-schema"):
             SCENARIO = "conductor"
+        elif prompt.startswith('Reprends le travail interrompu'):
+            SCENARIO = 'text'  # a manual resumption, rather than hanging again on the quoted old request
         elif "Écris la synthèse finale" in prompt:
             SCENARIO = "synthesis"
         elif prompt.startswith("Discussion avec l'utilisateur."):

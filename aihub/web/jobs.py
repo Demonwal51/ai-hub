@@ -138,7 +138,7 @@ class JobManager:
     # --- starting and stopping --------------------------------------------
 
     def start(self, conversation_id, agent_id, prompt, *, wait_s=30, schedule_id=None, user=None, attachments=(),
-              compare_with=None):
+              compare_with=None, preserve_attachments=False, resume_message_id=None):
         """Start a single reply; return its message id once it exists.
 
         Refusals (a request already running, no working folder...) are
@@ -147,8 +147,12 @@ class JobManager:
         the files sent with it (rows of aihub/attachments.py, checked already).
         """
         def body(job, conn):
+            if resume_message_id is not None:
+                latest = conn.execute('SELECT id FROM messages WHERE conversation_id = ? ORDER BY id DESC LIMIT 1', (conversation_id,)).fetchone()
+                if latest is None or latest['id'] != resume_message_id:
+                    raise store.StoreError('la conversation a avancé : ce point de reprise n’est plus le dernier')
             job.schedule_id = schedule_id
-            return self._single(job, conn, agent_id, prompt, attachments, compare_with)
+            return self._single(job, conn, agent_id, prompt, attachments, compare_with, preserve_attachments, resume_message_id)
         return self._launch(conversation_id, "single", body, wait_s, user)
 
     def start_planning(self, conversation_id, prompt, *, wait_s=30, user=None):
@@ -186,6 +190,13 @@ class JobManager:
         """Run a validated plan; return the plan id once it is running."""
         self._launch(conversation_id, "execution",
                      lambda job, conn: self._execution(job, plan_id), wait_s, user)
+        return plan_id
+
+    def resume_execution(self, conversation_id, plan_id, *, wait_s=30, user=None):
+        def body(job, conn):
+            store.resume_plan(conn, plan_id)
+            return self._execution(job, plan_id)
+        self._launch(conversation_id, 'execution', body, wait_s, user)
         return plan_id
 
     def _launch(self, conversation_id, kind, body, wait_s, user=None):
@@ -467,7 +478,7 @@ class JobManager:
                 "duration_ms": result.duration_ms, "tokens_in": result.tokens_in,
                 "tokens_out": result.tokens_out, "fresh_start": getattr(result, "fresh_start", None)}
 
-    def _single(self, job, conn, agent_id, prompt, attachments=(), compare_with=None):
+    def _single(self, job, conn, agent_id, prompt, attachments=(), compare_with=None, preserve_attachments=False, resume_message_id=None):
         callbacks = self._reply_callbacks(job)
         holder, side_thread = {}, []
         side = None
@@ -490,7 +501,7 @@ class JobManager:
                 thread.start()
             callbacks["on_start"] = on_start
         request = holder["request"] = Request(conn, job.conversation_id, agent_id, prompt, attachments=attachments,
-                                              **callbacks)
+                                              preserve_attachments=preserve_attachments, resume_message_id=resume_message_id, **callbacks)
         self._attach(job, _Both(request, side) if side else request)
         result = request.run()
         for thread in side_thread:

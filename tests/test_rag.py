@@ -116,7 +116,7 @@ class MigrationTests(TempDirMixin, unittest.TestCase):
             old.close()
         conn = db.connect(str(path))
         self.addCleanup(conn.close)
-        self.assertEqual(conn.execute('PRAGMA user_version').fetchone()[0], 25)
+        self.assertEqual(conn.execute('PRAGMA user_version').fetchone()[0], db.SCHEMA_VERSION)
         self.assertEqual(store.get_project(conn, pid)['name'], 'Ancien projet')
         self.assertEqual(rag.documents(conn, pid), [])
 

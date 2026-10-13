@@ -500,7 +500,7 @@ MUTATIONS = [
      "                                                 project_access.instructions(self.conn, conversation, project=project)),",
      "                                                 None),"),
     ("acces: sous-taches sans serveur", "aihub/orchestrator.py",
-     "mcp_config=given.mcp_config, auto_allow", "mcp_config=None, auto_allow"),
+     "\n                mcp_config=given.mcp_config, auto_allow", "\n                mcp_config=None, auto_allow"),
     ("cc: tout outil autorise sans demander", "aihub/providers/claude_code.py",
      "        if _allowed(ask.tool_name, self.auto_allow):\n", "        if True:\n"),
     ("cc: outils du hub demandes", "aihub/providers/claude_code.py",
@@ -647,7 +647,7 @@ MUTATIONS = [
      "            package = memory.load_package(conversation) if self.resume else None\n",
      "            package = None\n"),
     ("runner: reprise malgre le depart", "aihub/runner.py",
-     "self.conversation_id) if self.resume and package is None else None", "self.conversation_id) if self.resume else None"),
+     "session_scope=self.session_scope) if self.resume and package is None else None", "session_scope=self.session_scope) if self.resume else None"),
     ("runner: paquet garde apres usage", "aihub/runner.py",
      "                memory.store_package(self.conn, self.conversation_id, None)  # done", "                pass  # done"),
     ("runner: session perdue sans relance", "aihub/runner.py",
@@ -1350,6 +1350,14 @@ MUTATIONS.extend([
      '        if not info.attributes & 0x10:'),
 ])
 
+MUTATIONS.append(('v108: finished tasks replayed', 'aihub/store.py',
+    "UPDATE subtasks SET status = 'pending', finished_at = NULL WHERE plan_id = ? AND status <> 'ok'",
+    "UPDATE subtasks SET status = 'pending', finished_at = NULL WHERE plan_id = ?"))
+MUTATIONS.append(('v108: another account session resumed', 'aihub/runner.py',
+    "source['session_id'] and source['session_scope'] == self.session_scope", "source['session_id']"))
+MUTATIONS.append(('v108: subtask checkpoint not persisted', 'aihub/orchestrator.py',
+    '                journal.execute("UPDATE subtasks SET checkpoint = substr(checkpoint || ?, -200000) WHERE id = ? AND status = \'running\'",\n                                (chunk, subtask[\'id\']))',
+    '                pass'))
 MUTATIONS.append(('v106: project documents without project access', 'aihub/web/app.py',
     "and access.reads_project(conn, (user or {}).get('id'), conversation)",
     'and True'))

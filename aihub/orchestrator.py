@@ -17,7 +17,7 @@ import queue
 import threading
 from pathlib import Path
 
-from . import access, accounts, config, db, project_access, providers, rag, routing, store, tools
+from . import access, accounts, config, db, memory, project_access, providers, rag, routing, store, tools
 from .providers import claude_code
 from .providers.claude_code import Decision, ProviderError
 from .runner import Request
@@ -283,6 +283,24 @@ def propose_plan(conn, conversation_id, prompt, *, on_request=None, **request_kw
     if store.open_plan(conn, conversation_id) is not None:
         # Checked before the conductor runs: a refused plan must cost no quota.
         raise store.Busy("un plan est déjà ouvert : lancez-le ou annulez-le, ou discutez-en avec le chef")
+    context = ''
+    retrieval = prompt
+    if not str(prompt or '').strip():
+        prompt = 'Prépare un plan à partir de notre discussion et du contexte du projet.'
+        exchanges = memory.last_exchanges(conn, conversation_id, 6)
+        recent, used = [], 0
+        for entry in reversed(exchanges):
+            excerpt = entry['content'][:1500]
+            if used + len(excerpt) > 10000:
+                break
+            recent.append({'role': entry['role'], 'texte': excerpt})
+            used += len(excerpt)
+        summary = (memory.get_summary(conn, conversation_id) or {}).get('content', '')[:2000]
+        payload = json.dumps({'resume': summary, 'discussion': list(reversed(recent))}, ensure_ascii=False).replace('<', '\\u003c')
+        context = ('\n\nContexte de cette conversation (échanges antérieurs) :\n' + payload +
+                   '\nBase le plan sur les objectifs discutés. Si aucun objectif précis n’est connu, '
+                   'propose une étape de clarification ou d’analyse initiale ; n’invente pas de besoin.')
+        retrieval = next((e['content'][:2000] for e in reversed(exchanges) if e['role'] == 'user'), conversation['title'])
     request_id = store.add_user_message(conn, conversation_id, prompt, request_kwargs.get("user_id"))
     parsed = {}
 
@@ -293,7 +311,7 @@ def propose_plan(conn, conversation_id, prompt, *, on_request=None, **request_kw
             return str(exc)
         return None
 
-    run = Request(conn, conversation_id, conductor, planning_prompt(prompt), record_prompt=False, retrieval_prompt=prompt,
+    run = Request(conn, conversation_id, conductor, planning_prompt(prompt) + context, record_prompt=False, retrieval_prompt=retrieval,
                   resume=False, tools=READ_ONLY_TOOLS, json_schema=plan_schema(),
                   format_content=_plan_message, check_result=check, **request_kwargs)
     if on_request:

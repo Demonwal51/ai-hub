@@ -693,6 +693,31 @@ class OrchestrationWebTests(WebTestCase):
     def orchestration(self):
         return self.new_conversation(mode="orchestration", conductor_model="opus")
 
+    def test_plan_without_prompt_uses_the_discussion(self):
+        cid = self.orchestration()
+        self.client.post(f'/api/conversations/{cid}/messages', json={'kind':'discuss','prompt':'Le projet Boréale doit utiliser PostgreSQL.'})
+        self.wait_idle(cid)
+        result = self.client.post(f'/api/conversations/{cid}/messages', json={'kind':'plan'})
+        self.assertEqual(result.status_code, 202, result.text)
+        data = self.wait_idle(cid)
+        self.assertEqual(data['plans'][0]['status'], 'proposed')
+        log = read_log(self.log)['user_message']['message']['content']
+        self.assertIn('PostgreSQL', log)
+        self.assertIn('échanges antérieurs', log)
+        self.assertEqual(self.client.post(f'/api/conversations/{cid}/messages', json={'kind':'plan'}).status_code, 409)
+
+    def test_first_plan_can_be_requested_without_any_prompt(self):
+        cid = self.orchestration()
+        response = self.client.post(f'/api/conversations/{cid}/messages', json={'prompt':'   '})
+        self.assertEqual(response.status_code, 202, response.text)
+        self.assertTrue(self.wait_idle(cid)['plans'])
+
+    def test_empty_discussion_and_single_message_remain_refused(self):
+        cid = self.orchestration()
+        self.assertEqual(self.client.post(f'/api/conversations/{cid}/messages', json={'kind':'discuss'}).status_code, 400)
+        cid = self.new_conversation()
+        self.assertEqual(self.client.post(f'/api/conversations/{cid}/messages', json={}).status_code, 400)
+
     def plan_of(self, cid):
         return self.conversation(cid)["plans"][-1]
 

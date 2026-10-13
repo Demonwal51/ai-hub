@@ -966,7 +966,7 @@ function updateComposer(running) {
   $("prompt").placeholder = !orchestration
     ? (KEYBOARD ? "Votre demande… (Entrée pour envoyer, Maj+Entrée pour aller à la ligne)" : "Votre demande…")
     : plan ? "Une question ou un changement pour le chef ? Ensuite, « Adapter le plan »."
-      : "Votre demande, ou une question pour le chef…";
+      : "Demande facultative : sans texte, le plan reprend la discussion et le projet.";
 }
 
 function renderRunning() {
@@ -2285,8 +2285,9 @@ function setupActions() {
     if (files.some((f) => f.uploading)) { toast("Attendez la fin de l'envoi des fichiers."); return; }
     // Files alone: a request that says so.
     const prompt = $("prompt").value.trim() || (files.length ? "Voici les fichiers joints." : "");
-    if (!prompt || state.currentId === null) return;
     const kind = (event.submitter || primaryButton()).value || "plan";
+    const contextualPlan = state.data?.conversation.mode === 'orchestration' && kind === 'plan';
+    if ((!prompt && !contextualPlan) || state.currentId === null) return;
     $("send").disabled = true;
     $("discuss").disabled = true;
     const sentTo = state.currentId;  // another conversation may be open when the answer comes

@@ -1,5 +1,14 @@
 # Journal des versions
 
+## 1.0.7 — 13 octobre 2026 : demander un plan sans prompt
+
+- « Demander un plan » fonctionne avec un champ vide. Le chef reçoit un
+  contexte borné des échanges récents et du résumé existant de la conversation.
+- Le texte reste facultatif : il permet de préciser la nouvelle demande.
+  Sans objectif connu, le chef est invité à proposer une clarification ou une
+  analyse initiale. Aucun travail n’est lancé avant validation du plan.
+- Une discussion ou un message à une seule IA requiert toujours un texte.
+
 ## 1.0.6 — 13 octobre 2026 : mémoire RAG de projet
 
 - Panneau « Mémoire RAG… » : recherche dans les conversations autorisées,

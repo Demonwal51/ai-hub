@@ -182,7 +182,7 @@ class ProjectChange(BaseModel):
 
 
 class NewMessage(BaseModel):
-    prompt: str
+    prompt: str = ''
     # Orchestration only: "plan" asks the conductor for a plan, "discuss" talks with it.
     kind: str = "plan"
     attachments: list[int] = []   # files sent first (POST …/attachments), taken by this request

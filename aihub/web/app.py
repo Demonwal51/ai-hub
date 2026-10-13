@@ -1245,6 +1245,20 @@ def create_app(db_path, *, command=None, env=None, allowed_roots=(), permission_
         return filesystem.create(body.path, body.kind, roots=current().allowed_roots,
                                  base=base, parents=body.parents)
 
+    @app.post('/api/obsidian/vaults', status_code=201)
+    def create_obsidian_vault(body: CreatePath, request: HttpRequest):
+        user = me()
+        access.require_owner(user)
+        if body.conversation_id is not None or body.kind != 'directory':
+            raise StoreError('indiquez le chemin complet d’un nouveau coffre')
+        with database() as conn:
+            if authority is not None:
+                verified = authority.verify(conn, body.password, client_of(request.scope), name=user['name'])
+                if verified['id'] != user['id']:
+                    raise access.Forbidden('les droits du compte ont changé : création refusée')
+                access.require_owner(verified)
+        return obsidian.create_vault(body.path, roots=current().allowed_roots, parents=body.parents)
+
     def agent_for(conn, model, *, isolated=False):
         offered = (isolated_models(current()) if isolated and config.provider_of(model) in ('claude_code', 'codex') else
                    offered_models(current()) if config.provider_of(model) in (codex.PROVIDER, ollama.PROVIDER)

@@ -67,7 +67,7 @@ def _windows_directory(path):
     return lambda: close(handle)
 
 
-def create(path, kind, *, roots=(), base=None, parents=True):
+def create(path, kind, *, roots=(), base=None, parents=True, exclusive=False):
     if kind not in ('file', 'directory'):
         raise StoreError('choisissez un fichier ou un dossier')
     p = target(path, roots, base)
@@ -102,6 +102,8 @@ def create(path, kind, *, roots=(), base=None, parents=True):
                         if leaf:
                             created = True
                     except FileExistsError:
+                        if leaf and exclusive:
+                            raise
                         pass
                 if os.name == 'nt':
                     stack.callback(_windows_directory(walk))
@@ -114,4 +116,6 @@ def create(path, kind, *, roots=(), base=None, parents=True):
         raise StoreError('ce chemin existe déjà : aucun fichier n’a été écrasé') from None
     except OSError:
         raise StoreError('création impossible : vérifiez les droits, les dossiers parents et l’absence de liens') from None
+    if exclusive and not created:
+        raise StoreError('ce chemin existe déjà : choisissez un nouveau dossier')
     return {'path': str(p), 'kind': kind, 'created': created}

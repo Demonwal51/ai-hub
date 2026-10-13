@@ -4,12 +4,25 @@ import unittest
 from pathlib import Path
 from unittest import mock
 
-from aihub import filesystem, isolation, db, store
+from aihub import filesystem, isolation, db, store, obsidian
 from .helpers import TempDirMixin
 from .test_sharing import H, SharingTestCase
 
 
 class FilesystemTest(TempDirMixin, unittest.TestCase):
+    def test_new_vault_is_empty_and_existing_folder_is_not_changed(self):
+        root = self.make_tempdir()
+        result = obsidian.create_vault(str(root / 'Notes neuves'), roots=[root])
+        self.assertTrue(result['created'])
+        self.assertEqual(list((root / 'Notes neuves').iterdir()), [root / 'Notes neuves' / '.obsidian'])
+        note = root / 'Notes neuves' / 'Note.md'
+        note.write_text('Ne pas modifier', encoding='utf-8')
+        with self.assertRaises(store.StoreError):
+            obsidian.create_vault(str(root / 'Notes neuves'), roots=[root])
+        self.assertEqual(note.read_text(encoding='utf-8'), 'Ne pas modifier')
+        with self.assertRaises(store.StoreError):
+            obsidian.create_vault(str(root.anchor))
+
     def test_create_parents_empty_file_and_existing_directory(self):
         root = self.make_tempdir()
         folder = root / 'project' / 'src'
@@ -58,6 +71,24 @@ class FilesystemTest(TempDirMixin, unittest.TestCase):
 
 
 class FilesystemWebTest(SharingTestCase):
+    def test_owner_creates_vault_without_changing_active_configuration(self):
+        before = self.owner.get('/api/config').json()['settings']['obsidian_vault']
+        folder = self.workdir / 'Nouveau coffre'
+        result = self.owner.post('/api/obsidian/vaults', json={'path':str(folder),'password':self.password}, headers=H)
+        self.assertEqual(result.status_code, 201, result.text)
+        self.assertTrue((folder / '.obsidian').is_dir())
+        self.assertEqual(self.owner.get('/api/config').json()['settings']['obsidian_vault'], before)
+        self.assertEqual(self.owner.post('/api/obsidian/vaults', json={'path':str(folder),'password':self.password}, headers=H).status_code, 400)
+
+    def test_vault_creation_requires_owner_password_and_csrf(self):
+        folder = self.workdir / 'Refuse'
+        guest, uid = self.guest('vault-admin')
+        self.owner.patch(f'/api/users/{uid}', json={'role':'admin'}, headers=H)
+        self.assertEqual(guest.post('/api/obsidian/vaults', json={'path':str(folder)}, headers=H).status_code, 403)
+        self.assertEqual(self.owner.post('/api/obsidian/vaults', json={'path':str(folder),'password':'wrong'}, headers=H).status_code, 401)
+        self.assertEqual(self.owner.post('/api/obsidian/vaults', json={'path':str(folder),'password':self.password}).status_code, 403)
+        self.assertFalse(folder.exists())
+
     def create(self, path, **extra):
         return self.owner.post('/api/filesystem/create', json={'path':str(path), 'password':self.password, **extra}, headers=H)
 

@@ -303,6 +303,7 @@
     <form method="dialog" id="obsidian-form">
       <h2>Note de projet dans Obsidian</h2>
       <p id="obsidian-state"></p>
+      <button class="btn btn-ghost" type="button" id="obsidian-create-vault">Créer un nouveau coffre…</button>
       <p class="quota-note">Coffre : <span id="obsidian-vault"></span>. La note reçoit la création du projet puis
         une mise à jour après chaque plan exécuté. Les conversations n'y vont pas : une réponse n'y va que si
         vous cliquez « Noter dans Obsidian » sous elle.</p>
@@ -367,6 +368,9 @@
         <label>Coffre Obsidian des notes de projet (vide : pas de notes)
           <input id="set-obsidian_vault" placeholder="D:\notes\coffre">
         </label>
+        <button class="btn btn-ghost" type="button" id="settings-create-vault">Créer un nouveau coffre…</button>
+        <p class="quota-note">Le coffre est créé sur le PC serveur. Enregistrez les réglages pour l’utiliser.
+          Changer de coffre ne déplace pas les anciennes notes.</p>
       </fieldset>
       <fieldset>
         <legend>IA</legend>

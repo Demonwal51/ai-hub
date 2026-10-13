@@ -612,7 +612,7 @@ function renderConversation() {
   const others = state.conversations.filter((c) => inProject && c.project_id === conv.project_id && c.id !== conv.id);
   $("cite").classList.toggle("hidden", !inProject || !conv.shared || !others.length);
   const vault = (state.options.obsidian || {}).enabled;
-  $("obsidian").classList.toggle("hidden", !vault);
+  $("obsidian").classList.toggle("hidden", !vault && !isOwner());
   $("obsidian").classList.toggle("on", Boolean(conv.obsidian_note));
   $("obsidian").textContent = conv.obsidian_note ? "Obsidian ✓" : "Obsidian";
   // Shared with someone: what is the owner's stays hidden, and reading only means no composer.
@@ -1569,16 +1569,16 @@ document.addEventListener("DOMContentLoaded", () => {
   });
 });
 
-async function openCreatePath({ field = null, conversation = null } = {}) {
+async function openCreatePath({ field = null, conversation = null, vault = false } = {}) {
   const path = el("input", { required: true, maxlength: 1000, placeholder: conversation ? "src/resultat.txt" : "Chemin complet du dossier à créer", "aria-label": conversation ? "Nom ou chemin relatif" : "Chemin complet" });
-  path.value = field?.value.trim() || "";
+  path.value = vault ? "" : field?.value.trim() || "";
   const kind = el("select", { "aria-label": "Type à créer" }, el("option", { value: "directory", text: "Dossier" }), el("option", { value: "file", text: "Fichier vide" }));
   const parents = el("input", { type: "checkbox", checked: true });
   const password = el("input", { type: "password", autocomplete: "current-password", "aria-label": "Votre mot de passe AI Hub" });
   const error = el("p", { class: "form-error", role: "alert" });
   const submit = el("button", { type: "submit", class: "btn btn-primary", text: "Créer" });
   const dialog = el("dialog", { class: "dialog dialog-content" });
-  const form = el("form", {}, el("h2", { text: conversation ? "Créer dans le dossier de travail" : "Créer le dossier de travail" }),
+  const form = el("form", {}, el("h2", { text: vault ? "Créer un nouveau coffre Obsidian" : conversation ? "Créer dans le dossier de travail" : "Créer le dossier de travail" }),
     el("p", { class: "quota-note", text: conversation ? `Création sur le PC serveur, dans ${conversation.workdir}. Les accès de l’IA restent ceux que vous avez choisis.` : "Ce dossier sera créé sur le PC qui héberge AI Hub. Le chemin concerne ce serveur, même depuis un autre PC ou un téléphone." }),
     conversation ? el("label", {}, "Type", kind) : null,
     el("label", {}, conversation ? "Nom ou chemin relatif au dossier de travail" : "Chemin complet", path),
@@ -1588,11 +1588,11 @@ async function openCreatePath({ field = null, conversation = null } = {}) {
   form.addEventListener("submit", async (event) => {
     event.preventDefault(); submit.disabled = true; error.textContent = "";
     try {
-      const result = await api("POST", "/api/filesystem/create", { path: path.value.trim(), kind: conversation ? kind.value : "directory", parents: parents.checked,
+      const result = await api("POST", vault ? "/api/obsidian/vaults" : "/api/filesystem/create", { path: path.value.trim(), kind: conversation ? kind.value : "directory", parents: parents.checked,
         conversation_id: conversation?.id || null, password: password.value });
       password.value = "";
       if (field) { field.value = result.path; field.dispatchEvent(new Event("input", { bubbles: true })); }
-      dialog.close(); toast(result.created ? (result.kind === "file" ? "Fichier vide créé." : "Dossier créé.") : "Ce dossier existe déjà ; vous pouvez l’utiliser.");
+      dialog.close(); toast(vault ? "Coffre créé. Enregistrez les réglages pour l’utiliser." : result.created ? (result.kind === "file" ? "Fichier vide créé." : "Dossier créé.") : "Ce dossier existe déjà ; vous pouvez l’utiliser.");
     } catch (err) { error.textContent = err.message; password.value = ""; }
     finally { submit.disabled = false; }
   });
@@ -2103,10 +2103,12 @@ function setupObsidianDialog() {
   const dialog = $("obsidian-dialog");
   const refresh = () => {
     const conv = state.data.conversation;
-    $("obsidian-vault").textContent = (state.options.obsidian || {}).vault || "";
+    const configured = Boolean((state.options.obsidian || {}).enabled);
+    $("obsidian-vault").textContent = (state.options.obsidian || {}).vault || "aucun coffre configuré";
     $("obsidian-state").textContent = conv.obsidian_note
       ? `Note activée : ${conv.obsidian_note}`
-      : "La note n'est pas activée pour cette conversation.";
+      : configured ? "La note n'est pas activée pour cette conversation." : "Créez un coffre ou choisissez son dossier dans les réglages.";
+    $("obsidian-on").disabled = !configured;
     $("obsidian-path").value = conv.obsidian_note || `Projets AI Hub/${conv.title.replace(/[<>:"/\\|?*]/g, "-")}.md`;
     $("obsidian-path").disabled = Boolean(conv.obsidian_note);
     $("obsidian-on").classList.toggle("hidden", Boolean(conv.obsidian_note));
@@ -2125,6 +2127,9 @@ function setupObsidianDialog() {
   };
   $("obsidian").addEventListener("click", () => { refresh(); dialog.showModal(); });
   $("obsidian-close").addEventListener("click", () => dialog.close());
+  $("obsidian-create-vault").addEventListener("click", () => {
+    dialog.close(); openSettingsDialog({ createVault: true });
+  });
   $("obsidian-on").addEventListener("click", () => change({ obsidian: true, obsidian_note: $("obsidian-path").value.trim() }));
   $("obsidian-off").addEventListener("click", () => change({ obsidian: false }));
   $("obsidian-rewrite").addEventListener("click", async () => {
@@ -2678,6 +2683,7 @@ function setupPushDialog() {
 const SETTING_NUMBERS = ["backup_keep", "quota_warning", "idle_days", "max_failures", "lock_minutes",
   "rag_budget", "rag_exchanges"];
 const SETTING_BOOLS = ["backup_enabled", "keep_awake"];
+let openSettingsDialog = null;
 
 function setupSettingsDialog() {
   const dialog = $("settings-dialog");
@@ -2742,9 +2748,14 @@ function setupSettingsDialog() {
     ...Object.fromEntries(SETTING_NUMBERS.map((n) => [n, Number($(`set-${n}`).value)])),
     ...Object.fromEntries(SETTING_BOOLS.map((n) => [n, $(`set-${n}`).checked])),
   });
-  $("settings").addEventListener("click", async () => {
-    try { fill(await api("GET", "/api/config")); dialog.showModal(); } catch (err) { toast(err.message); }
-  });
+  openSettingsDialog = async ({ createVault = false } = {}) => {
+    try {
+      fill(await api("GET", "/api/config")); dialog.showModal();
+      if (createVault) openCreatePath({ field: $("set-obsidian_vault"), vault: true });
+    } catch (err) { toast(err.message); }
+  };
+  $("settings").addEventListener("click", () => openSettingsDialog());
+  $("settings-create-vault").addEventListener("click", () => openCreatePath({ field: $("set-obsidian_vault"), vault: true }));
   $("settings-cancel").addEventListener("click", () => dialog.close());
   $("settings-form").addEventListener("submit", async (event) => {
     event.preventDefault();

@@ -9,7 +9,7 @@
 // the PC does not answer (the page reads it, never writes), and dropped when
 // the choice is undone or at the logout.
 
-const CACHE = "aihub-v9";
+const CACHE = "aihub-v10";
 const OFFLINE = "aihub-hors-ligne";
 const SHELL = ["/", "/static/style.css", "/static/markdown.js", "/static/app.js", "/static/icon-192.png", "/manifest.webmanifest"];
 // What may be read without the PC: the lists, a conversation, the state the page starts with.

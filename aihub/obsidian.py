@@ -14,6 +14,7 @@ import os
 import re
 from datetime import datetime
 from pathlib import Path
+from . import filesystem
 
 FOLDER = "Projets AI Hub"
 EXCERPT = 6000          # characters of a synthesis or reply kept in a note
@@ -22,6 +23,13 @@ _UNSAFE = re.compile(r'[<>:"/\\|?*\x00-\x1f]')
 
 class ObsidianError(Exception):
     """The note cannot be written; the message is fit for the user."""
+
+
+def create_vault(path, *, roots=(), parents=True):
+    """Prepare a new vault only; existing folders and configuration stay intact."""
+    result = filesystem.create(path, 'directory', roots=roots, parents=parents, exclusive=True)
+    filesystem.create(str(Path(result['path']) / '.obsidian'), 'directory', roots=roots, parents=False)
+    return result
 
 
 def default_note_path(title):

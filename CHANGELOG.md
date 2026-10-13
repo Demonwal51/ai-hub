@@ -1,5 +1,14 @@
 # Journal des versions
 
+## 1.0.5 — 13 octobre 2026 : créer un coffre Obsidian
+
+- Création d’un nouveau coffre depuis Obsidian ou Réglages, sur le PC serveur,
+  avec son dossier `.obsidian` et création facultative des dossiers parents.
+- Le chemin est proposé dans les réglages ; l’utilisateur les enregistre pour
+  utiliser ce coffre. Les anciennes notes ne sont pas déplacées.
+- Création réservée au propriétaire, vérification du mot de passe, respect des
+  dossiers autorisés et refus des chemins existants ou passant par un lien.
+
 ## 1.0.4 — 13 octobre 2026 : connexion après une interruption
 
 - L’écran de connexion peut réessayer quand le serveur revient, au lieu de

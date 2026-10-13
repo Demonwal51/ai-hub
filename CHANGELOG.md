@@ -1,5 +1,14 @@
 # Journal des versions
 
+## 1.0.4 — 13 octobre 2026 : connexion après une interruption
+
+- L’écran de connexion peut réessayer quand le serveur revient, au lieu de
+  conserver « Se connecter » désactivé après une première erreur réseau.
+- Bouton « Réessayer la connexion », reprise automatique et délai maximal
+  de 15 secondes pour obtenir une réponse aux requêtes de connexion.
+- Aucune retransmission automatique des mots de passe ; la protection contre
+  les tentatives répétées reste active.
+
 ## 1.0.3 — 13 octobre 2026 : reprendre après un plan annulé ou refusé
 
 - Annuler un plan d’orchestration libère immédiatement la saisie, même si

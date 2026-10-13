@@ -66,7 +66,19 @@ async function api(method, path, body) {
   // X-AIHub: a header no other site can make the browser send (see app.py).
   const headers = { "X-AIHub": "1" };
   if (body) headers["Content-Type"] = "application/json";
-  const res = await fetch(path, { method, headers, body: body ? JSON.stringify(body) : undefined });
+  const controller = new AbortController();
+  const loginRequest = path === '/api/auth/session' || path === '/api/auth/login';
+  const timeout = loginRequest ? setTimeout(() => controller.abort(), 15000) : null;
+  let res;
+  try {
+    res = await fetch(path, { method, headers, body: body ? JSON.stringify(body) : undefined,
+      signal: controller.signal });
+  } catch (err) {
+    if (controller.signal.aborted) throw new Error('Le serveur ne répond pas. Réessayez la connexion.');
+    throw err;
+  } finally {
+    if (timeout !== null) clearTimeout(timeout);
+  }
   // Served by this device's copy (« Hors connexion »), or by the PC again.
   if (res.headers.get("X-AIHub-Hors-Ligne") === "1") setOffline(true);
   else if (res.ok) setOffline(false);
@@ -2321,6 +2333,39 @@ function setupActions() {
 // --- login ---------------------------------------------------------------------------
 
 let loginDone = null;  // resolves when the user is logged in
+let loginRetry = null;
+let loginLoading = false;
+
+async function loadLoginSession() {
+  loginLoading = true;
+  while (true) {
+    $('login-submit').disabled = true;
+    try {
+      const session = await api('GET', '/api/auth/session');
+      $('login-submit').textContent = 'Se connecter';
+      $('login-submit').disabled = false;
+      loginLoading = false;
+      return session;
+    } catch (err) {
+      showLogin(err.status ? err.message : 'Le PC ne répond pas. Vérifiez Tailscale ou réessayez la connexion.');
+      $('login-submit').textContent = 'Réessayer la connexion';
+      $('login-submit').disabled = false;
+      // Retry on a click, network recovery, or after a short delay. No password
+      // is sent until the server's session state has actually been received.
+      await new Promise(resolve => {
+        const retry = () => {
+          clearTimeout(timer);
+          window.removeEventListener('online', retry);
+          loginRetry = null;
+          resolve();
+        };
+        const timer = setTimeout(retry, 5000);
+        loginRetry = retry;
+        window.addEventListener('online', retry, { once: true });
+      });
+    }
+  }
+}
 
 function showLogin(text) {
   if (state.events) { state.events.close(); state.events = null; }
@@ -2338,6 +2383,8 @@ function setupLogin() {
   let unlockTimer = null;
   $("login-form").addEventListener("submit", async (event) => {
     event.preventDefault();
+    if (loginRetry) { loginRetry(); return; }
+    if (loginLoading) return;
     $("login-submit").disabled = true;
     try {
       await api("POST", "/api/auth/login", { name: $("login-name").value.trim(), password: $("login-password").value,
@@ -2829,16 +2876,7 @@ function setupDevicesDialog() {
 async function ensureLoggedIn() {
   let session;
   await acceptDeviceLink();  // a QR code first: it may log this device in
-  try {
-    session = await api("GET", "/api/auth/session");
-  } catch (err) {
-    // Either the PC answered with a refusal (err.status), or the page came
-    // from the phone's cache and the PC does not answer at all.
-    showLogin(err.status ? err.message
-      : "Le PC ne répond pas : il est éteint, ou Tailscale est coupé. Réessayez plus tard.");
-    $("login-submit").disabled = true;
-    await new Promise(() => {});  // nothing else can work
-  }
+  session = await loadLoginSession();
   state.session = session;
   for (const id of ["devices", "logout"]) $(id).classList.toggle("hidden", !session.required);
   const invitation = new URLSearchParams(location.search).get("invitation");

@@ -1,5 +1,16 @@
 # Journal des versions
 
+## 1.0.3 — 13 octobre 2026 : reprendre après un plan annulé ou refusé
+
+- Annuler un plan d’orchestration libère immédiatement la saisie, même si
+  l’actualisation suivante échoue ; les autres appareils ouverts sont avertis.
+- Refuser le plan proposé par Claude termine la requête en attente et libère
+  la conversation pour une nouvelle demande, sans autoriser le plan.
+- Les demandes d’autorisation encore en mémoire de la requête arrêtée sont
+  ignorées ; les permissions choisies pour la conversation restent inchangées.
+- Message explicite après le refus et confirmation d’annulation plus claire :
+  « Annuler le plan » ou « Conserver le plan ».
+
 ## 1.0.2 — 12 octobre 2026 : création de fichiers et dossiers
 
 - Création du dossier de travail depuis les formulaires de conversation et

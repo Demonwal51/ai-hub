@@ -389,7 +389,7 @@ class ClaudeCodeRun:
         self.execution = execution
         self._lock = threading.Lock()
         self._proc = None
-        self._stop_reason = None  # "user" or "timeout"
+        self._stop_reason = None  # "user", "plan_rejected" or "timeout"
         self._stderr = []
 
     def arguments(self):
@@ -488,10 +488,16 @@ class ClaudeCodeRun:
                         else ask.input}
         else:
             response = {"behavior": "deny", "message": decision.message or "refusé par l'utilisateur"}
+            if ask.tool_name == 'ExitPlanMode':
+                response['interrupt'] = True
             result.permission_denials.append({"tool_name": ask.tool_name, "message": response["message"]})
         self._send(proc, {"type": "control_response", "response": {
             "subtype": "success", "request_id": request_id, "response": response,
         }})
+        if ask.tool_name == 'ExitPlanMode' and not decision.allow:
+            # One request carries one user turn. A refused plan must release it,
+            # even when the CLI waits for another input instead of a final result.
+            self.stop(reason='plan_rejected')
 
     def run(self):
         if not self.workdir or not Path(self.workdir).is_dir():
@@ -590,6 +596,10 @@ class ClaudeCodeRun:
                         self.on_quota(quota)
             elif kind == "control_request":
                 self._answer_permission(proc, event, result)
+                with self._lock:
+                    stopped = self._stop_reason is not None
+                if stopped:
+                    break  # discard buffered requests from the rejected/stopped turn
             elif kind == "result":
                 result.text = event.get("result") if isinstance(event.get("result"), str) else "".join(streamed)
                 result.session_id = event.get("session_id") or result.session_id
@@ -613,9 +623,14 @@ class ClaudeCodeRun:
     def _conclude(self, proc, result, final):
         with self._lock:
             reason = self._stop_reason
-        if reason == "user":
+        if reason in ("user", "plan_rejected"):
             result.status = "stopped"
             result.error = None
+            if reason == 'plan_rejected':
+                note = ('\n\n' if result.text else '') + 'Plan refusé. Vous pouvez reformuler votre demande ou demander un nouveau plan.'
+                result.text += note
+                if self.on_text:
+                    self.on_text(note)
             return
         if reason == "timeout":
             result.status = "error"

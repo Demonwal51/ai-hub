@@ -1,20 +1,22 @@
-Cette version permet de créer les dossiers et fichiers directement depuis AI Hub.
+Cette version corrige la reprise après l’annulation d’un plan d’orchestration
+et après le refus d’un plan proposé par Claude.
 
 ### Nouveautés
 
-- **Créer ce dossier sur le serveur** dans les formulaires de conversation
-  et de projet : le dossier de travail peut être préparé avant leur création.
-- **Créer un fichier ou un dossier…** dans le menu d’une conversation :
-  création d’un fichier vide ou d’un sous-dossier, avec parents manquants si choisi.
-- Respect des emplacements autorisés, vérification du mot de passe et refus
-  d’écraser un fichier existant ou de passer par un lien ou une jonction.
-- Création réservée au propriétaire et aux administrateurs sur le PC serveur ;
-  les permissions de l’IA ne sont pas élargies par cette action manuelle.
+- **Annuler le plan** libère immédiatement la saisie, même si l’actualisation
+  suivante échoue. Les autres appareils ouverts reçoivent le changement.
+- **Refuser** un plan termine la requête qui attendait sa validation et permet
+  de reformuler immédiatement une nouvelle demande dans la conversation.
+- Le plan n’est pas autorisé, et les permissions choisies restent inchangées.
+- Les demandes d’autorisation encore en mémoire de cette requête arrêtée
+  sont ignorées pour ne pas créer une nouvelle attente.
+- La confirmation d’annulation distingue **Annuler le plan** et
+  **Conserver le plan**.
 
 ### Installation
 
-- Windows : extrayez `ai-hub-1.0.2.zip`, puis lancez `installer.bat`.
-- Linux : extrayez `ai-hub-1.0.2-linux.tar.gz`, puis lancez `sh installer.sh`
+- Windows : extrayez `ai-hub-1.0.3.zip`, puis lancez `installer.bat`.
+- Linux : extrayez `ai-hub-1.0.3-linux.tar.gz`, puis lancez `sh installer.sh`
   et `./lancer.sh`.
 - Python3.12 ou plus est nécessaire. Les espaces isolés nécessitent Docker
   Sandboxes et une connexion à votre fournisseur IA dans chaque espace.

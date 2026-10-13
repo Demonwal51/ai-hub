@@ -17,7 +17,7 @@ SCENARIO = os.environ.get("FAKE_CLAUDE_SCENARIO", "text")
 
 # With FAKE_CLAUDE_SCENARIO=auto (manual trials of the interface), the
 # scenario is picked from a word of the prompt.
-AUTO_WORDS = (("écris", "permission"), ("question", "question"), ("attends", "hang"),
+AUTO_WORDS = (("plan_test", "exit_plan_wait"), ("écris", "permission"), ("question", "question"), ("attends", "hang"),
               ("connexion", "not_logged_in"), ("quota", "quota"), ("plante", "crash"),
               ("lent", "slow"), ("consulte", "consult"))
 
@@ -333,6 +333,22 @@ def main():
             time.sleep(1)
             delta("refusé")
             result(f"refusé : {message}")
+
+    elif SCENARIO == "exit_plan_wait":
+        answer = ask('ExitPlanMode', {'plan':'Plan de test à valider.'}, 'plan-request')
+        if answer and answer.get('behavior') == 'allow':
+            result('Plan validé')
+        else:
+            # A streaming CLI may wait for another user turn after a denial.
+            # AI Hub cannot send that turn while this request is still busy.
+            sys.stdin.read()
+            result('Plan refusé')
+
+    elif SCENARIO == 'exit_plan_buffered':
+        for name, request_id in (('ExitPlanMode','plan-request'), ('Write','buffered-write')):
+            emit({'type':'control_request','request_id':request_id,
+                  'request':{'subtype':'can_use_tool','tool_name':name,'input':{'plan':'Plan de test'}}})
+        sys.stdin.read()
 
     elif SCENARIO == "conductor":
         conductor_answer()

@@ -148,6 +148,28 @@ class PermissionTests(FakeRunTestCase):
         self.assertEqual(result.permission_denials,
                          [{"tool_name": "Write", "message": "pas maintenant"}])
 
+    def test_rejected_plan_ends_the_turn_without_waiting_for_another_prompt(self):
+        from unittest import mock
+        run = self.make_run('exit_plan_wait', timeout_s=2,
+                            ask_permission=lambda request: Decision(False, 'refaire le plan'))
+        with mock.patch.object(run, '_send', wraps=run._send) as sent:
+            result = run.run()
+        self.assertEqual(result.status, 'stopped')
+        self.assertIsNone(result.error)
+        responses = [call.args[1] for call in sent.call_args_list if call.args[1].get('type')=='control_response']
+        self.assertEqual(responses[-1]['response']['response'],
+                         {'behavior':'deny','message':'refaire le plan','interrupt':True})
+        self.assertEqual(result.permission_denials, [{'tool_name':'ExitPlanMode','message':'refaire le plan'}])
+
+    def test_rejected_plan_discards_other_buffered_permission_requests(self):
+        asked = []
+        def reject(request):
+            asked.append(request.tool_name)
+            return Decision(False, 'non')
+        result = self.make_run('exit_plan_buffered', timeout_s=2, ask_permission=reject).run()
+        self.assertEqual(result.status, 'stopped')
+        self.assertEqual(asked, ['ExitPlanMode'])
+
     def test_no_one_to_answer_means_deny(self):
         self.make_run("permission").run()
         self.assertFalse((self.workdir / "note.txt").exists())

@@ -56,6 +56,15 @@ def process_alive(pid):
             return code.value == 259  # STILL_ACTIVE
         finally:
             kernel32.CloseHandle(handle)
+    # Container PID 1 may retain a killed orphan as a zombie. It no longer
+    # executes or holds files, although kill(pid, 0) still finds its PID.
+    if sys.platform.startswith("linux"):
+        try:
+            state = Path(f"/proc/{pid}/stat").read_text().rsplit(")", 1)[1].split()[0]
+            if state == "Z":
+                return False
+        except FileNotFoundError:
+            return False
     try:
         os.kill(pid, 0)
     except ProcessLookupError:

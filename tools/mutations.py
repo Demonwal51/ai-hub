@@ -107,8 +107,8 @@ MUTATIONS = [
     ("cc: arret sans les enfants", "aihub/providers/claude_code.py",
      '["taskkill", "/T", "/F",', '["taskkill", "/F",'),
     ("cc: arret compte comme succes", "aihub/providers/claude_code.py",
-     'if reason == "user":\n            result.status = "stopped"',
-     'if reason == "user":\n            result.status = "ok"'),
+     'if reason in ("user", "plan_rejected"):\n            result.status = "stopped"',
+     'if reason in ("user", "plan_rejected"):\n            result.status = "ok"'),
     ("cc: delai jamais arme", "aihub/providers/claude_code.py",
      "            timer.start()\n", "            pass\n"),
     ("cc: erreur de la CLI ignoree", "aihub/providers/claude_code.py",
@@ -1349,6 +1349,15 @@ MUTATIONS.extend([
      '        if info.attributes & 0x400 or not info.attributes & 0x10:',
      '        if not info.attributes & 0x10:'),
 ])
+
+MUTATIONS.append(('v103: cancellation not broadcast', 'aihub/web/app.py',
+    '        jobs.hub.publish(stopped["conversation_id"], {"type": "plan_updated", "plan_id": pid})\n',
+    '        # cancellation not broadcast\n'))
+MUTATIONS.append(('v103: cancellation waits for refresh', 'aihub/web/static/app.js',
+    '      state.data.plans = state.data.plans.map(plan => plan.id === result.plan.id ? result.plan : plan);',
+    '      // cancelled plan remains proposed locally'))
+MUTATIONS.append(('v103: rejected plan remains busy', 'aihub/providers/claude_code.py',
+                 "            self.stop(reason='plan_rejected')\n", '            pass\n'))
 
 TEST_MODULES = []
 

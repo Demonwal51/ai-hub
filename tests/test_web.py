@@ -2,6 +2,7 @@ import json
 import threading
 import time
 import unittest
+from unittest import mock
 
 try:
     from fastapi.testclient import TestClient
@@ -10,7 +11,7 @@ except ImportError:  # web dependencies not installed: pip install -r requiremen
 
 from aihub import db, routing, store
 from aihub.web.app import create_app
-from tests.helpers import FAKE_CODEX, FAKE_COMMAND, TempDirMixin, fake_env, read_log, wait_for_log_key
+from tests.helpers import FAKE_CODEX, FAKE_COMMAND, TempDirMixin, fake_env, read_log, wait_for_log_key, wait_dead
 
 
 def wait_until(predicate, timeout=20, step=0.05):
@@ -533,6 +534,25 @@ class PermissionTests(WebTestCase):
         self.assertFalse((self.workdir / "note.txt").exists())
         self.assertEqual(reply["content"], "refusé : non merci")
 
+    def test_rejected_plan_releases_the_conversation_for_a_new_request(self):
+        self.use_scenario('exit_plan_wait')
+        cid = self.new_conversation(permission_mode='plan')
+        self.send(cid, 'propose un plan')
+        pending = self.wait_pending(cid)
+        self.assertEqual(pending['tool_name'], 'ExitPlanMode')
+        response = self.client.post(f"/api/permissions/{pending['id']}", json={'allow':False,'message':'autre approche'})
+        self.assertEqual(response.status_code, 200, response.text)
+        data = self.wait_idle(cid)
+        self.assertEqual(data['messages'][-1]['status'], 'stopped')
+        self.assertEqual(data['pending'], [])
+        self.assertIn('Plan refusé', data['messages'][-1]['content'])
+        self.assertEqual(data['conversation']['permission_mode'], 'plan')
+        self.use_scenario('text')
+        self.send(cid, 'propose autrement')
+        next_data = self.wait_idle(cid)
+        self.assertEqual(next_data['messages'][-1]['status'], 'ok')
+        self.assertEqual(next_data['conversation']['permission_mode'], 'plan')
+
     def test_unknown_permission(self):
         r = self.client.post("/api/permissions/inconnue", json={"allow": True})
         self.assertEqual(r.status_code, 404)
@@ -761,8 +781,10 @@ class OrchestrationWebTests(WebTestCase):
         r = self.client.post(f"/api/conversations/{cid}/messages", json={"prompt": "autre"})
         self.assertEqual(r.status_code, 409)
         self.assertIn("un plan est déjà ouvert", r.json()["detail"])
-        self.assertEqual(self.client.post(f"/api/plans/{plan['id']}/cancel").json()["plan"]["status"],
-                         "stopped")
+        with mock.patch.object(self.app.state.jobs.hub, "publish", wraps=self.app.state.jobs.hub.publish) as publish:
+            self.assertEqual(self.client.post(f"/api/plans/{plan['id']}/cancel").json()["plan"]["status"],
+                             "stopped")
+            publish.assert_called_once_with(cid, {"type": "plan_updated", "plan_id": plan["id"]})
         self.send(cid, "autre")
         self.wait_idle(cid)
 
@@ -859,8 +881,12 @@ class OrchestrationWebTests(WebTestCase):
         wait_until(lambda: self.plan_of(cid)["subtasks"][0]["status"] == "running")
         # Editing a running plan is refused.
         self.assertEqual(self.client.delete(f"/api/subtasks/{plan['subtasks'][0]['id']}").status_code, 409)
+        # Wait for the fake's child to exist before checking tree termination.
+        # The database marks the subtask running before the CLI is spawned.
+        child = wait_for_log_key(self.log, "child_pid")["child_pid"]
         self.client.post(f"/api/conversations/{cid}/stop")
         data = self.wait_idle(cid)
+        self.assertTrue(wait_dead(child))
         self.assertEqual((data["plans"][0]["status"], data["plans"][0]["subtasks"][0]["status"]),
                          ("stopped", "stopped"))
 

@@ -7,7 +7,7 @@ une interface en français. Discutez avec une IA, comparez leurs réponses ou
 faites travailler plusieurs agents ensemble. Retrouvez vos conversations et
 vos projets depuis votre ordinateur ou votre téléphone.
 
-**Version 1.0.2 · Windows et Linux · Licence GPL-3.0**
+**Version 1.0.3 · Windows et Linux · Licence GPL-3.0**
 
 [Télécharger la dernière version](https://github.com/Demonwal51/ai-hub/releases/latest)
 · [Voir les changements](CHANGELOG.md) · [Licence](LICENSE)
@@ -77,7 +77,7 @@ de l’IA restent celles choisies pour l’espace.
 
 ## Installation Windows
 
-1. Téléchargez `ai-hub-1.0.2.zip` dans les
+1. Téléchargez `ai-hub-1.0.3.zip` dans les
    [versions publiées](https://github.com/Demonwal51/ai-hub/releases/latest), puis extrayez-le.
 2. Installez Python **3.12 ou plus** si nécessaire.
 3. Lancez `installer.bat`. Il prépare l’environnement Python, installe les
@@ -94,7 +94,7 @@ L’installation et le démarrage de l’application ont été vérifiés sur
 
 1. Installez Python **3.12 ou plus**, ainsi que le support `venv` et `pip` de
    votre distribution.
-2. Téléchargez et extrayez `ai-hub-1.0.2-linux.tar.gz`.
+2. Téléchargez et extrayez `ai-hub-1.0.3-linux.tar.gz`.
 3. Depuis le dossier extrait, lancez :
 
 ```sh

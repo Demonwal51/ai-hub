@@ -2224,7 +2224,9 @@ def create_app(db_path, *, command=None, env=None, allowed_roots=(), permission_
             if plan["status"] != "proposed":
                 raise StoreError("seul un plan proposé peut être annulé ; un plan lancé s'arrête avec « Arrêter »")
             store.stop_plan(conn, pid)
-            return {"plan": store.get_plan(conn, pid)}
+            stopped = store.get_plan(conn, pid)
+        jobs.hub.publish(stopped["conversation_id"], {"type": "plan_updated", "plan_id": pid})
+        return {"plan": stopped}
 
     @app.patch("/api/conversations/{cid}")
     def change_conversation(cid: int, body: ConversationChange):

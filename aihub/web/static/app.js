@@ -1122,8 +1122,14 @@ const loadAgents = coalesced(async () => {
 });
 
 async function planAction(method, path, body) {
+  const conversationId = state.currentId;
   try {
-    await api(method, path, body);
+    const result = await api(method, path, body);
+    // Apply the committed plan even if the following refresh loses its connection.
+    if (result.plan && state.currentId === conversationId && state.data) {
+      state.data.plans = state.data.plans.map(plan => plan.id === result.plan.id ? result.plan : plan);
+      renderConversation();
+    }
     await refreshConversation();
     return true;
   } catch (err) {
@@ -1270,7 +1276,7 @@ function planTools(plan) {
       onclick: () => planAction("POST", `/api/plans/${plan.id}/adapt`) }),
     el("button", { class: "btn btn-danger-ghost btn-small", type: "button", text: "Annuler le plan",
       onclick: async () => {
-        const ok = await confirmDialog({ title: "Annuler le plan ?", text: "Le plan sera abandonné sans rien lancer. Vous pourrez ensuite envoyer une nouvelle demande.", okText: "Annuler le plan" });
+        const ok = await confirmDialog({ title: "Annuler le plan ?", text: "Le plan sera abandonné sans rien lancer. Vous pourrez ensuite envoyer une nouvelle demande.", okText: "Annuler le plan", cancelText: "Conserver le plan" });
         if (ok) planAction("POST", `/api/plans/${plan.id}/cancel`);
       } }),
     el("button", { class: "btn btn-primary", type: "button", text: "Valider et lancer",
@@ -1402,7 +1408,7 @@ function describeTool(tool, input) {
 // The answer comes from the buttons and the Escape key themselves, not from
 // the dialog's "close" event: some browsers do not fire it while the page is
 // not displayed (a phone in standby, a window behind another).
-function confirmDialog({ title, text, okText = "Confirmer", check = null }) {
+function confirmDialog({ title, text, okText = "Confirmer", cancelText = "Annuler", check = null }) {
   return new Promise((resolve) => {
     const dialog = $("confirm-dialog");
     const ok = $("confirm-ok");
@@ -1410,6 +1416,7 @@ function confirmDialog({ title, text, okText = "Confirmer", check = null }) {
     $("confirm-title").textContent = title;
     $("confirm-text").textContent = text;
     ok.textContent = okText;
+    $("confirm-cancel").textContent = cancelText;
     $("confirm-check-wrap").classList.toggle("hidden", !check);
     box.checked = false;
     $("confirm-check-text").textContent = check || "";

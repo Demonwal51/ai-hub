@@ -107,6 +107,31 @@ en possède un et refusent d’écraser un fichier existant. La création se fai
 sur le PC serveur, même depuis un téléphone ou un deuxième PC. Les permissions
 de l’IA restent celles choisies pour l’espace.
 
+## Projets : coffre, notes, quotas, export
+
+- **Coffre des notes de ce projet** (fenêtre du projet, propriétaire) : les notes
+  des conversations du projet vont dans ce coffre plutôt que dans celui des
+  réglages. Une note qui existe déjà n’est jamais reprise sans le demander.
+- **Quota atteint pendant un plan** : le plan propose de reprendre tout seul à
+  l’heure du retour du quota, ou de confier ses tâches restantes à une autre IA.
+  Rien ne se fait sans votre clic ; les tâches terminées ne sont pas rejouées.
+- **Exporter le projet (.zip)** puis **Importer → Un projet AI Hub (.zip)** :
+  conversations, consignes, accès, documents et notes, sur ce serveur ou un autre.
+  Les fichiers du dossier de travail ne sont pas dedans.
+
+## Coffres : chercher, ajouter au projet
+
+Dans le lecteur des coffres, **Chercher dans le texte** trouve les notes qui
+contiennent tous les mots. **Ajouter à un projet…** met la note ouverte dans la
+mémoire RAG d’un projet ; elle suit son fichier quand il change dans Obsidian.
+
+## Sauvegardes et essais
+
+Menu → **Serveur** liste les sauvegardes : **Restaurer…** remet l’une d’elles,
+avec votre mot de passe, après avoir gardé la base actuelle ; le serveur
+redémarre et vérifie qu’il répond. Menu → **Essais à faire** liste ce qui n’a
+pas encore été essayé en vrai, avec ses étapes et votre compte rendu.
+
 ## Choisir un dossier du PC serveur
 
 À côté de chaque chemin (dossier de travail, réglages, création d’un dossier ou

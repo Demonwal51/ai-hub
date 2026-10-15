@@ -1,11 +1,13 @@
 """Explicit project documents, chunked locally; lexical and optional local semantic RAG.
 
 Documents are snapshots supplied by a person. No directory or vault is scanned.
+A note the owner added from a vault (1.1, `link`) is the one exception: that
+single file is read again when it changes, its last copy kept if it goes.
 Callers must check project access before passing a project id here.
 """
 import json
 import re
-from pathlib import PurePath
+from pathlib import Path, PurePath
 
 from . import db, memory, semantic
 from .store import StoreError
@@ -53,9 +55,56 @@ def add(conn, project_id, name, content):
     return did
 
 
+def link(conn, project_id, name, content, source_path, mtime):
+    """A vault note added to the project: kept as a document that follows its file."""
+    did = add(conn, project_id, name, content)
+    conn.execute('UPDATE rag_documents SET source_path = ?, source_mtime = ?, source_missing = 0 WHERE id = ?',
+                 (str(source_path), mtime, did))
+    return did
+
+
+def refresh_linked(conn, project_id):
+    """The documents that follow a note, read again when their file changed. Returns how many changed.
+
+    A note gone, too long or unreadable keeps its last copy (and a gone one is said)."""
+    changed = 0
+    rows = conn.execute('SELECT id, source_path, source_mtime, source_missing FROM rag_documents '
+                        'WHERE project_id = ? AND source_path IS NOT NULL', (project_id,)).fetchall()
+    for row in rows:
+        path = Path(row['source_path'])
+        try:
+            stat = path.stat()
+            if not path.is_file():
+                raise FileNotFoundError(path)
+        except OSError:
+            if not row['source_missing']:
+                conn.execute('UPDATE rag_documents SET source_missing = 1 WHERE id = ?', (row['id'],))
+            continue
+        if row['source_mtime'] == stat.st_mtime and not row['source_missing']:
+            continue
+        try:
+            text = path.read_text(encoding='utf-8', errors='replace') if stat.st_size <= MAX_CHARS * 4 else None
+        except OSError:
+            continue
+        if text is None or not text.strip() or len(text) > MAX_CHARS or '\0' in text:
+            # Not taken (too long, empty): the last copy stays, and it is not read again until it changes.
+            conn.execute('UPDATE rag_documents SET source_mtime = ?, source_missing = 0 WHERE id = ?',
+                         (stat.st_mtime, row['id']))
+            continue
+        with db.transaction(conn):
+            conn.execute('UPDATE rag_documents SET content = ?, source_mtime = ?, source_missing = 0 WHERE id = ?',
+                         (text, stat.st_mtime, row['id']))
+            conn.execute('DELETE FROM rag_chunks WHERE document_id = ?', (row['id'],))
+            conn.executemany('INSERT INTO rag_chunks(document_id, position, content) VALUES (?, ?, ?)',
+                             [(row['id'], position, part) for position, part in enumerate(chunks(text), 1)])
+        changed += 1
+    return changed
+
+
 def documents(conn, project_id):
+    refresh_linked(conn, project_id)
     return [dict(row) for row in conn.execute(
-        'SELECT d.id, d.name, d.created_at, COUNT(c.id) AS passages FROM rag_documents d '
+        'SELECT d.id, d.name, d.created_at, d.source_path, d.source_missing, COUNT(c.id) AS passages FROM rag_documents d '
         'LEFT JOIN rag_chunks c ON c.document_id = d.id WHERE d.project_id = ? '
         'GROUP BY d.id ORDER BY d.created_at DESC, d.id DESC', (project_id,))]
 
@@ -85,6 +134,7 @@ def search(conn, project_id, query, *, budget=1000, limit=4):
         return []
     if not conn.execute('SELECT 1 FROM rag_documents WHERE project_id = ? LIMIT 1', (project_id,)).fetchone():
         return []  # no embedding request when this project has no sources
+    refresh_linked(conn, project_id)  # a note changed in Obsidian is searched as it is now
     match = memory.match_query(query)
     words = conn.execute(
         'SELECT c.id FROM rag_fts JOIN rag_chunks c ON c.id = rag_fts.rowid '

@@ -10,7 +10,7 @@ import sqlite3
 from contextlib import contextmanager
 from datetime import datetime, timezone
 
-SCHEMA_VERSION = 26
+SCHEMA_VERSION = 27
 
 # One statement per string: triggers contain semicolons, so the schema
 # cannot be split on ";" and executescript() would commit mid-migration.
@@ -843,6 +843,57 @@ _SCHEMA_V26 = [
     'ALTER TABLE subtasks ADD COLUMN attempts INTEGER NOT NULL DEFAULT 0',
 ]
 
+# 1.1: a vault per project; a plan resumed by itself after a quota; a project
+# document that follows its note; the owner's list of trials done for real.
+_SCHEMA_V27 = [
+    'ALTER TABLE projects ADD COLUMN obsidian_vault TEXT',
+    'ALTER TABLE plans ADD COLUMN auto_resume_at TEXT',
+    'ALTER TABLE plans ADD COLUMN auto_resume_user INTEGER REFERENCES users(id) ON DELETE SET NULL',
+    'ALTER TABLE plans ADD COLUMN auto_resume_error TEXT',
+    'ALTER TABLE rag_documents ADD COLUMN source_path TEXT',
+    'ALTER TABLE rag_documents ADD COLUMN source_mtime REAL',
+    'ALTER TABLE rag_documents ADD COLUMN source_missing INTEGER NOT NULL DEFAULT 0',
+    '''CREATE TABLE trials (
+        key        TEXT PRIMARY KEY,
+        status     TEXT NOT NULL CHECK (status IN ('ok', 'probleme', 'attente')),
+        note       TEXT NOT NULL DEFAULT '',
+        updated_at TEXT NOT NULL
+    )''',
+    # The frozen-plan rule keeps one opening: an interrupted plan (error or
+    # stopped) may give its unfinished tasks to another AI (the user's click,
+    # « Confier à cette IA »); their content and order stay as validated, and
+    # it only runs again when the user resumes it. Built on the v8 rule (the
+    # columns it covers, kind and assignment_reason included).
+    "DROP TRIGGER subtasks_frozen_update",
+    """
+    CREATE TRIGGER subtasks_frozen_update
+    BEFORE UPDATE OF description, agent_id, provider, model, position, title, files_json,
+                     kind, assignment_reason ON subtasks
+    WHEN (SELECT status FROM plans WHERE id = OLD.plan_id) <> 'proposed'
+         AND NOT (NEW.agent_id IS NULL
+                  AND NEW.description IS OLD.description
+                  AND NEW.provider IS OLD.provider
+                  AND NEW.model IS OLD.model
+                  AND NEW.position IS OLD.position
+                  AND NEW.title IS OLD.title
+                  AND NEW.files_json IS OLD.files_json
+                  AND NEW.kind IS OLD.kind
+                  AND NEW.assignment_reason IS OLD.assignment_reason)
+         AND NOT ((SELECT status FROM plans WHERE id = OLD.plan_id) IN ('error', 'stopped')
+                  AND OLD.status <> 'ok'
+                  AND NEW.agent_id IS NOT NULL
+                  AND NEW.agent_id IS NOT OLD.agent_id   -- given to another agent, never a model changed alone
+                  AND NEW.description IS OLD.description
+                  AND NEW.position IS OLD.position
+                  AND NEW.title IS OLD.title
+                  AND NEW.files_json IS OLD.files_json
+                  AND NEW.kind IS OLD.kind)
+    BEGIN
+        SELECT RAISE(ABORT, 'plan is frozen');
+    END
+    """,
+]
+
 
 class SchemaError(Exception):
     """The database file cannot be used by this version of the code."""
@@ -977,6 +1028,9 @@ def migrate(conn: sqlite3.Connection) -> None:
                 conn.execute(statement)
         if version < 26:
             for statement in _SCHEMA_V26:
+                conn.execute(statement)
+        if version < 27:
+            for statement in _SCHEMA_V27:
                 conn.execute(statement)
         # PRAGMA does not accept bound parameters; SCHEMA_VERSION is an int constant.
         conn.execute(f"PRAGMA user_version = {SCHEMA_VERSION}")

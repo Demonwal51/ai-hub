@@ -594,11 +594,12 @@ class JobManager:
         the note, in order, each with its own date. The previous note goes
         to data/obsidian-sauvegardes first. Returns (note path, backup path).
         """
-        if not self.obsidian_vault:
-            raise obsidian.ObsidianError("aucun coffre Obsidian n'est configuré")
         conn = db.connect(self.db_path)
         try:
             conv = store.get_conversation(conn, conversation_id)
+            vault = obsidian.vault_of(conn, conv, self.obsidian_vault)  # the project's, else the settings'
+            if not vault:
+                raise obsidian.ObsidianError("aucun coffre Obsidian n'est configuré")
             if not conv["obsidian_note"]:
                 raise StoreError("la note Obsidian n'est pas activée pour cette conversation")
             conductor = (store.get_agent(conn, conv["conductor_agent_id"])["model"]
@@ -624,7 +625,7 @@ class JobManager:
             sections = [obsidian.creation_section(conv, conductor, when=conv["created_at"])]
             sections += [section for _, section in sorted(entries, key=lambda e: e[0])]
             backups = Path(self.db_path).resolve().parent / "obsidian-sauvegardes"
-            return obsidian.rewrite(self.obsidian_vault, conv["obsidian_note"], conv["title"], sections, backups)
+            return obsidian.rewrite(vault, conv["obsidian_note"], conv["title"], sections, backups)
         finally:
             conn.close()
 
@@ -634,19 +635,18 @@ class JobManager:
         Returns an error message, or None. A note that cannot be written
         never fails the plan: the work is done, only its record is missing.
         """
-        if not self.obsidian_vault:
-            return None
         conn = db.connect(self.db_path)
         try:
             plan = store.get_plan(conn, plan_id)
             conversation = store.get_conversation(conn, plan["conversation_id"])
-            if not conversation["obsidian_note"]:
+            vault = obsidian.vault_of(conn, conversation, self.obsidian_vault)  # the project's, else the settings'
+            if not vault or not conversation["obsidian_note"]:
                 return None
             request = store.get_message(conn, plan["request_message_id"])["content"]
             synthesis = (store.get_message(conn, plan["synthesis_message_id"])["content"]
                          if plan["synthesis_message_id"] else None)
             names = {a["id"]: a["name"] for a in store.list_agents(conn)}
-            obsidian.append(self.obsidian_vault, conversation["obsidian_note"], conversation["title"],
+            obsidian.append(vault, conversation["obsidian_note"], conversation["title"],
                             obsidian.plan_section(plan, request, synthesis, names))
             if plan["synthesis_message_id"] and synthesis:
                 # The synthesis is in the note now: its "Noter" button shows it.

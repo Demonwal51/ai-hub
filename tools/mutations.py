@@ -44,11 +44,11 @@ MUTATIONS = [
      "         AND NOT (NEW.agent_id IS NULL\n                  AND NEW.description IS OLD.description\n"
      "                  AND NEW.provider IS OLD.provider\n                  AND NEW.model IS OLD.model\n"
      "                  AND NEW.position IS OLD.position\n                  AND NEW.title IS OLD.title\n"
-     "                  AND NEW.files_json IS OLD.files_json\n                  AND NEW.kind",
+     "                  AND NEW.files_json IS OLD.files_json\n                  AND NEW.kind IS OLD.kind\n                  AND NEW.assignment_reason IS OLD.assignment_reason)\n         AND NOT ((SELECT status FROM plans WHERE id = OLD.plan_id) IN (\'error\', \'stopped\')",
      "         AND NOT (0\n                  AND NEW.description IS OLD.description\n"
      "                  AND NEW.provider IS OLD.provider\n                  AND NEW.model IS OLD.model\n"
      "                  AND NEW.position IS OLD.position\n                  AND NEW.title IS OLD.title\n"
-     "                  AND NEW.files_json IS OLD.files_json\n                  AND NEW.kind"),
+     "                  AND NEW.files_json IS OLD.files_json\n                  AND NEW.kind IS OLD.kind\n                  AND NEW.assignment_reason IS OLD.assignment_reason)\n         AND NOT ((SELECT status FROM plans WHERE id = OLD.plan_id) IN (\'error\', \'stopped\')"),
     ("trigger gel insert", "aihub/db.py",
      "WHEN (SELECT status FROM plans WHERE id = NEW.plan_id) <> 'proposed'",
      "WHEN 0"),
@@ -269,8 +269,8 @@ MUTATIONS = [
     ("route: adaptation propose un agent retire", "aihub/orchestrator.py",
      ' if a["id"] not in plan["removed_agents"]]', "]"),
     ("route: raison gardee apres un choix manuel", "aihub/store.py",
-     '"UPDATE subtasks SET agent_id = ?, provider = ?, model = ?, assignment_reason = ? WHERE id = ?",',
-     '"UPDATE subtasks SET agent_id = ?, provider = ?, model = ?, assignment_reason = COALESCE(?, assignment_reason) WHERE id = ?",'),
+     '            "UPDATE subtasks SET agent_id = ?, provider = ?, model = ?, assignment_reason = ? WHERE id = ?",\n            (agent_id, provider, model, reason if',
+     '            "UPDATE subtasks SET agent_id = ?, provider = ?, model = ?, assignment_reason = COALESCE(?, assignment_reason) WHERE id = ?",\n            (agent_id, provider, model, reason if'),
     ("route: genre change ecrase un choix manuel", "aihub/routing.py",
      '    if subtask["agent_id"] is not None and subtask["assignment_reason"] is None:\n        return False\n',
      "    if False:\n        return False\n"),
@@ -280,8 +280,10 @@ MUTATIONS = [
     ("route: genre inconnu garde tel quel", "aihub/orchestrator.py",
      'kind = item.get("kind") if item.get("kind") in KINDS else "autre"', 'kind = item.get("kind")'),
     ("route: genre et raison modifiables apres validation", "aihub/db.py",
+     "    # columns it covers, kind and assignment_reason included).\n    \"DROP TRIGGER subtasks_frozen_update\",\n    \"\"\"\n    CREATE TRIGGER subtasks_frozen_update\n"
      "    BEFORE UPDATE OF description, agent_id, provider, model, position, title, files_json,\n"
      "                     kind, assignment_reason ON subtasks\n",
+     "    # columns it covers, kind and assignment_reason included).\n    \"DROP TRIGGER subtasks_frozen_update\",\n    \"\"\"\n    CREATE TRIGGER subtasks_frozen_update\n"
      "    BEFORE UPDATE OF description, agent_id, provider, model, position, title, files_json ON subtasks\n"),
     # --- quota read without a request ---
     ("quota: pourcents pris pour des fractions", "aihub/providers/claude_code.py",
@@ -320,8 +322,8 @@ MUTATIONS = [
      'backups = Path(self.db_path).resolve().parent / "obsidian-sauvegardes"',
      'backups = Path(self.obsidian_vault) / "obsidian-sauvegardes"'),
     ("obsidian: plan note meme note coupee", "aihub/web/jobs.py",
-     '            if not conversation["obsidian_note"]:\n                return None\n',
-     '            if not conversation["obsidian_note"]:\n                conversation = dict(conversation, obsidian_note="Projets AI Hub/x.md")\n'),
+     '            if not vault or not conversation["obsidian_note"]:\n                return None\n',
+     '            if not vault or not conversation["obsidian_note"]:\n                conversation = dict(conversation, obsidian_note="Projets AI Hub/x.md")\n'),
     ("obsidian: plan execute jamais note", "aihub/web/jobs.py",
      "        note_error = self.note_plan(plan_id)\n", "        note_error = None\n"),
     ("obsidian: echec de note fait planter", "aihub/web/jobs.py",
@@ -838,7 +840,8 @@ MUTATIONS = [
     ("plan: jours de la semaine ignores", "aihub/schedule.py",
      'if rule["every"] == "daily" or candidate.weekday() in days:', "if True:"),
     ("plan: occupee lancee quand meme", "aihub/schedule.py",
-     "                except store.Busy:\n", "                except ZeroDivisionError:\n"),
+     "                except store.Busy:\n                    conn.execute(\"UPDATE schedules SET next_run_at",
+     "                except ZeroDivisionError:\n                    conn.execute(\"UPDATE schedules SET next_run_at"),
     ("plan: retard non avance", "aihub/schedule.py",
      "                             (_iso(now + BUSY_RETRY), task[\"id\"]))", "                             (_iso(now), task[\"id\"]))"),
     ("plan: rattrapage de chaque heure manquee", "aihub/schedule.py",
@@ -1068,7 +1071,7 @@ MUTATIONS = [
      "        if reading is None or reading[1] != (user or {}).get(\"id\"):", "        if reading is None:"),
     ("roles: projet de membre avec un dossier", "aihub/web/app.py",
      "if body.workdir.strip() and access.trusted(user) else None", "if body.workdir.strip() else None"),
-    ("refresh-v10: roles: projet d'un autre modifie", 'aihub/web/app.py', '            require_project(conn, user, pid)\n', '            pass\n'),
+    ("refresh-v10: roles: projet d'un autre modifie", 'aihub/web/app.py', '            require_project(conn, user, pid)\n            if body.isolation is not None:\n', '            pass\n            if body.isolation is not None:\n'),
     ("roles: admin traite en invite", "aihub/access.py",
      "    return is_owner(user) or user.get(\"role\") == \"admin\"", "    return is_owner(user)"),
     ("roles: membre ne cree rien", "aihub/access.py",
@@ -1195,7 +1198,8 @@ MUTATIONS = [
     ("maj: copie git mise a jour", "aihub/updater.py",
      "    reason = why_not_here(root)\n    if reason:\n        raise UpdateError(reason)", "    reason = why_not_here(root)"),
     ("maj: pendant qu'une IA travaille", "aihub/web/app.py",
-     "        if jobs.busy():\n            raise Busy(\"une IA travaille", "        if False:\n            raise Busy(\"une IA travaille"),
+     "        if jobs.busy():\n            raise Busy(\"une IA travaille : attendez qu'elle ait fini avant de mettre",
+     "        if False:\n            raise Busy(\"une IA travaille : attendez qu'elle ait fini avant de mettre"),
     ("maj: lancee par un invite", "aihub/web/app.py",
      "        access.require_owner(me())\n        if jobs.busy():", "        if jobs.busy():"),
     ('refresh-v10: maj: echec sans retour en arriere', 'aihub/updater.py', '            shutil.move(str(backup / name), str(root / name))\n', '            pass\n'),
@@ -1400,7 +1404,7 @@ MUTATIONS.append(('v109: created vault not remembered', 'aihub/web/app.py',
 MUTATIONS.append(('v109: any folder opens as a vault', 'aihub/vaults.py',
                  '    if not (is_vault(path) or settings):\n', '    if not Path(path).is_dir():\n'))
 MUTATIONS.append(('v109: settings folder refused without .obsidian', 'aihub/vaults.py',
-                 '        exists = is_vault(path) or (active and Path(path).is_dir())\n', '        exists = is_vault(path)\n'))
+                 '        exists = is_vault(path) or ((active or entry["projects"]) and Path(path).is_dir())\n', '        exists = is_vault(path)\n'))
 MUTATIONS.append(('v109: hidden folder of a vault read', 'aihub/vaults.py',
                  '    if any(part.startswith(".") for part in Path(str(note)).parts):\n', '    if False:\n'))
 MUTATIONS.append(('v109: walk enters hidden folders', 'aihub/vaults.py',
@@ -1473,6 +1477,180 @@ MUTATIONS.append(('v110: a network base resolved before the check', 'aihub/web/a
                  '        browse.local_path(base.strip())  # before check_workdir resolves it\n', ''))
 MUTATIONS.append(('v110: a network vault looked at', 'aihub/vaults.py',
                  '    if os.name == "nt" and not re.match(r"^[A-Za-z]:[\\\\/]", path.strip()):\n', '    if False:\n'))
+
+MUTATIONS.append(('v111: project vault ignored by its notes', 'aihub/obsidian.py',
+                 '        if row is not None and row["obsidian_vault"]:\n            return row["obsidian_vault"]\n', ''))
+MUTATIONS.append(('v111: a member chooses a project vault', 'aihub/web/app.py',
+                 "            if body.obsidian_vault:\n                access.require_owner(user)  # a folder of the owner's PC\n", '            if body.obsidian_vault:\n'))
+MUTATIONS.append(('v111: a member changes a project vault', 'aihub/web/app.py',
+                 "            if body.obsidian_vault is not None:\n                access.require_owner(user)  # a folder of the owner's PC\n", '            if body.obsidian_vault is not None:\n'))
+MUTATIONS.append(('v111: a project vault never checked', 'aihub/obsidian.py',
+                 '    if not folder.is_dir():\n        raise ObsidianError(f"ce coffre n\'existe pas : {folder}")\n', ''))
+# v111: "a relative project vault" retired: on Windows the local-disk check of
+# check_project_vault refuses a relative path first; is_absolute() acts on Linux only.
+MUTATIONS.append(('v111: plan note in the settings vault', 'aihub/web/jobs.py',
+                 "            vault = obsidian.vault_of(conn, conversation, self.obsidian_vault)  # the project's, else the settings'\n", '            vault = self.obsidian_vault\n'))
+MUTATIONS.append(('v111: rewrite in the settings vault', 'aihub/web/jobs.py',
+                 "            vault = obsidian.vault_of(conn, conv, self.obsidian_vault)  # the project's, else the settings'\n", '            vault = self.obsidian_vault\n'))
+MUTATIONS.append(('v111: reply noted in the settings vault', 'aihub/web/app.py',
+                 '            path = obsidian.append(obsidian.vault_of(conn, conv, current().obsidian_vault), conv["obsidian_note"], conv["title"],', '            path = obsidian.append(current().obsidian_vault, conv["obsidian_note"], conv["title"],'))
+MUTATIONS.append(('v111: an existing note taken without asking', 'aihub/web/app.py',
+                 '                        elif body.obsidian_existing != "continue":\n', '                        elif False:\n'))
+MUTATIONS.append(('v111: a new note overwrites the old one', 'aihub/web/app.py',
+                 '                        if body.obsidian_existing == "new":\n                            note = obsidian.free_note_path(vault, note)\n', '                        if body.obsidian_existing == "new":\n                            pass\n'))
+MUTATIONS.append(('v111: the free name is taken', 'aihub/obsidian.py',
+                 '        if not resolve(vault, candidate).exists():\n', '        if True:\n'))
+MUTATIONS.append(('v111: who writes there not said', 'aihub/web/app.py',
+                 '                if obsidian.vault_of(conn, row, current().obsidian_vault) == vault]', '                if False]'))
+MUTATIONS.append(('v111: project vaults unnamed in the window', 'aihub/vaults.py',
+                 '        add(path, "projet")["projects"].append(name)\n', '        add(path, "projet")\n'))
+MUTATIONS.append(("v111: a project's notes folder refused without .obsidian", 'aihub/web/app.py',
+                 '        return vault if any(vaults._key(vault) == vaults._key(m) for m in mine) else None\n', '        return None\n'))
+
+MUTATIONS.append(('v111: any error taken for a quota', 'aihub/store.py',
+                 '    blocked = [st for st in plan["subtasks"] if st["status"] == "error" and QUOTA_ERROR.match(st["error"] or "")]\n', '    blocked = [st for st in plan["subtasks"] if st["status"] == "error"]\n'))
+MUTATIONS.append(('v111: a running plan said stopped by a quota', 'aihub/store.py',
+                 '    if plan["status"] not in ("error", "stopped"):\n        return None\n', ''))
+MUTATIONS.append(('v111: a past quota return kept', 'aihub/store.py',
+                 '        if moment is not None and moment > now:\n', '        if moment is not None:\n'))
+MUTATIONS.append(('v111: tasks never started left on the blocked AI', 'aihub/store.py',
+                 '    waiting = [st["position"] for st in plan["subtasks"] if st["status"] != "ok" and st["provider"] in providers]\n', '    waiting = [st["position"] for st in blocked]\n'))
+MUTATIONS.append(('v111: a resume planned on an unresumable plan', 'aihub/store.py',
+                 '    plan = _get_plan_row(conn, plan_id)\n    if not can_resume_plan(conn, plan):\n        raise StoreError("ce plan ne peut pas être repris : il doit avoir été validé et interrompu")\n    moment = _moment(at)\n', '    plan = _get_plan_row(conn, plan_id)\n    moment = _moment(at)\n'))
+MUTATIONS.append(('v111: a resume planned in the past', 'aihub/store.py',
+                 '    kept = max(moment, earliest).astimezone(timezone.utc).isoformat(timespec="seconds")\n', '    kept = moment.astimezone(timezone.utc).isoformat(timespec="seconds")\n'))
+MUTATIONS.append(('v111: a resume kept in local time', 'aihub/store.py',
+                 '    kept = max(moment, earliest).astimezone(timezone.utc).isoformat(timespec="seconds")\n', '    kept = max(moment, earliest).isoformat(timespec="seconds")\n'))
+MUTATIONS.append(('v111: a resume planned weeks ahead', 'aihub/store.py',
+                 '    if moment > earliest + timedelta(days=8):\n', '    if False:\n'))
+MUTATIONS.append(('v111: a due resume run again', 'aihub/store.py',
+                 '        conn.execute("UPDATE plans SET auto_resume_at = NULL WHERE id = ? AND auto_resume_at = ?",\n                     (row["id"], row["auto_resume_at"]))\n', '        pass\n'))
+MUTATIONS.append(('v111: a manual resume leaves the planned one', 'aihub/store.py',
+                 '        conn.execute("UPDATE plans SET status = \'validated\', finished_at = NULL, auto_resume_at = NULL WHERE id = ?",\n', '        conn.execute("UPDATE plans SET status = \'validated\', finished_at = NULL WHERE id = ?",\n'))
+MUTATIONS.append(('v111: given to the AI whose quota it was', 'aihub/store.py',
+                 '    if provider in plan["quota"]["providers"]:\n', '    if False:\n'))
+MUTATIONS.append(('v111: given without a quota', 'aihub/store.py',
+                 '    if not can_resume_plan(conn, plan) or plan["quota"] is None:\n', '    if not can_resume_plan(conn, plan):\n'))
+MUTATIONS.append(('v111: the margin after the quota forgotten', 'aihub/web/app.py',
+                 '                    at = (datetime.fromisoformat(back) + store.RESUME_MARGIN).isoformat()\n', '                    at = back\n'))
+MUTATIONS.append(('v111: an unknown return guessed', 'aihub/web/app.py',
+                 '                    if back is None:\n                        raise StoreError("l\'heure de retour du quota n\'est pas connue : choisissez une heure")\n', '                    if back is None:\n                        back = datetime.now(timezone.utc).isoformat()\n'))
+MUTATIONS.append(("v111: a resume with someone else's accounts", 'aihub/web/app.py',
+                 '        jobs.resume_execution(plan["conversation_id"], plan["id"], user=user)\n', '        jobs.resume_execution(plan["conversation_id"], plan["id"], user=None)\n'))
+MUTATIONS.append(('v111: a planned resume skips the folder check', 'aihub/web/app.py',
+                 '                raise StoreError("ce plan ne peut plus être repris")\n            check_workdir(conv["workdir"])\n', '                raise StoreError("ce plan ne peut plus être repris")\n'))
+MUTATIONS.append(('v111: a refused resume not said', 'aihub/schedule.py',
+                 '                        store.resume_failed(conn, plan["id"], str(exc))\n', '                        pass\n'))
+MUTATIONS.append(('v111: the frozen plan opened to any change', 'aihub/db.py',
+                 '                  AND NEW.agent_id IS NOT OLD.agent_id   -- given to another agent, never a model changed alone\n', ''))
+MUTATIONS.append(('v111: the frozen plan opened to finished tasks', 'aihub/db.py',
+                 "                  AND OLD.status <> 'ok'\n                  AND NEW.agent_id IS NOT NULL\n", '                  AND NEW.agent_id IS NOT NULL\n'))
+
+MUTATIONS.append(('v111: one word found is enough', 'aihub/vaults.py',
+                 '        if not all(w in low or w in name for w in words):\n', '        if not any(w in low or w in name for w in words):\n'))
+MUTATIONS.append(("v111: the note's name not searched", 'aihub/vaults.py',
+                 '        if not all(w in low or w in name for w in words):\n', '        if not all(w in low for w in words):\n'))
+MUTATIONS.append(('v111: search results not ranked', 'aihub/vaults.py',
+                 '    found.sort(key=lambda f: (-f["hits"], f["path"].lower()))\n', ''))
+MUTATIONS.append(('v111: search without end', 'aihub/vaults.py',
+                 '        if looked >= MAX_SEARCH_NOTES or time.monotonic() > deadline:\n', '        if False:\n'))
+MUTATIONS.append(('v111: an empty search', 'aihub/vaults.py',
+                 '    if not words or len(query) > 200:\n', '    if len(query) > 200:\n'))
+MUTATIONS.append(('v111: a search read whole notes', 'aihub/vaults.py',
+                 '                text = fh.read(MAX_NOTE_BYTES).decode("utf-8", errors="replace")\n', '                text = fh.read().decode("utf-8", errors="replace")\n'))
+MUTATIONS.append(('v111: the excerpt not around the word', 'aihub/vaults.py',
+                 '                      "excerpt": _excerpt(text, min(places)) if places else _excerpt(text, 0)})\n', '                      "excerpt": _excerpt(text, 0)})\n'))
+MUTATIONS.append(('v111: anyone searches a vault', 'aihub/web/app.py',
+                 '    def vault_search(vault: str, q: str):\n        access.require_owner(me())\n', '    def vault_search(vault: str, q: str):\n'))
+MUTATIONS.append(('v111: anyone reads a vault into a project', 'aihub/web/app.py',
+                 "        access.require_owner(user)  # the vaults are folders of the owner's PC\n", ''))
+# v111: "a note added to someone else's project" retired with its guard: the route is the owner's
+# (require_owner first), and the owner manages every project, so require_project never refused.
+MUTATIONS.append(('v111: a cut note added whole', 'aihub/web/app.py',
+                 '        if note["cut"]:\n            raise StoreError("note trop longue pour la mémoire du projet (200 000 caractères au maximum)")\n', ''))
+MUTATIONS.append(('v111: a linked note never read again', 'aihub/rag.py',
+                 "        if row['source_mtime'] == stat.st_mtime and not row['source_missing']:\n            continue\n", '        continue\n'))
+MUTATIONS.append(('v111: a gone note not said', 'aihub/rag.py',
+                 "            if not row['source_missing']:\n                conn.execute('UPDATE rag_documents SET source_missing = 1 WHERE id = ?', (row['id'],))\n", '            pass\n'))
+MUTATIONS.append(('v111: a changed note keeps its old passages', 'aihub/rag.py',
+                 "            conn.execute('DELETE FROM rag_chunks WHERE document_id = ?', (row['id'],))\n", ''))
+MUTATIONS.append(('v111: search before the note is read again', 'aihub/rag.py',
+                 '    refresh_linked(conn, project_id)  # a note changed in Obsidian is searched as it is now\n', ''))
+MUTATIONS.append(('v111: a link forgets where it comes from', 'aihub/rag.py',
+                 "    conn.execute('UPDATE rag_documents SET source_path = ?, source_mtime = ?, source_missing = 0 WHERE id = ?',\n                 (str(source_path), mtime, did))\n", ''))
+
+MUTATIONS.append(('v111: restored while the server still runs', 'aihub/restore.py',
+                 '    if pid and alive(pid):\n        report = {"status": "echec"', '    if False:\n        report = {"status": "echec"'))
+MUTATIONS.append(('v111: a server that does not come back keeps the backup', 'aihub/restore.py',
+                 '            updater.copy_database(keep, db_path)\n', ''))
+MUTATIONS.append(('v111: the restored server never checked', 'aihub/restore.py',
+                 '        if report["status"] == "ok" and details and not (health or updater.wait_health)(process, details[1], __version__, probe):\n', '        if False:\n'))
+MUTATIONS.append(('v111: two restores in one second', 'aihub/restore.py',
+                 '    keep = db_path.with_name(f"avant-restauration-{datetime.now():%Y-%m-%d_%H%M%S}-{uuid.uuid4().hex[:6]}.db")\n', '    keep = db_path.with_name(f"avant-restauration-{datetime.now():%Y-%m-%d_%H%M%S}.db")\n'))
+MUTATIONS.append(('v111: no report of the restore', 'aihub/restore.py',
+                 '    _write_report(db_path, **report)\n    return report\n\n\ndef main', '    return report\n\n\ndef main'))
+MUTATIONS.append(('v111: anyone restores', 'aihub/web/app.py',
+                 '        user = me(request)\n        access.require_owner(user)\n        if authority is not None:\n            with database() as conn:\n                verified = authority.verify(conn, body.password, client_of(request.scope), name=user["name"])\n                if verified["id"] != user["id"]:\n                    raise access.Forbidden("les droits du compte ont changé : restauration refusée")', '        user = me(request)\n        if authority is not None:\n            with database() as conn:\n                verified = authority.verify(conn, body.password, client_of(request.scope), name=user["name"])\n                if verified["id"] != user["id"]:\n                    raise access.Forbidden("les droits du compte ont changé : restauration refusée")'))
+MUTATIONS.append(('v111: a restore without the password', 'aihub/web/app.py',
+                 '                verified = authority.verify(conn, body.password, client_of(request.scope), name=user["name"])\n                if verified["id"] != user["id"]:\n                    raise access.Forbidden("les droits du compte ont changé : restauration refusée")', '                verified = user\n                if verified["id"] != user["id"]:\n                    raise access.Forbidden("les droits du compte ont changé : restauration refusée")'))
+MUTATIONS.append(('v111: anyone lists the backups', 'aihub/web/app.py',
+                 '    def server_backups():\n        access.require_owner(me())\n', '    def server_backups():\n'))
+MUTATIONS.append(('v111: restored while an AI works', 'aihub/web/app.py',
+                 '            raise Busy("une IA travaille : attendez qu\'elle ait fini avant de restaurer")\n', '            pass\n'))
+MUTATIONS.append(('v111: any file restored', 'aihub/web/app.py',
+                 '        chosen = next((p for p in files if p.name == body.name), None)  # a name of the list, never a path\n', '        chosen = Path(folder) / body.name\n'))
+MUTATIONS.append(('v111: an unreadable backup restored', 'aihub/web/app.py',
+                 '                if check.execute("PRAGMA quick_check").fetchone()[0] != "ok":\n', '                if False:\n'))
+MUTATIONS.append(('v111: a newer backup restored', 'aihub/web/app.py',
+                 '                if check.execute("PRAGMA user_version").fetchone()[0] > db.SCHEMA_VERSION:\n', '                if False:\n'))
+
+MUTATIONS.append(('v111: a zip bomb read', 'aihub/project_export.py',
+                 '        if sum(i.file_size for i in infos.values()) > MAX_TOTAL or any(i.file_size > MAX_FILE for i in infos.values()):\n', '        if False:\n'))
+MUTATIONS.append(('v111: a crowded zip read', 'aihub/project_export.py',
+                 '        if len(infos) > MAX_FILES:\n', '        if False:\n'))
+MUTATIONS.append(('v111: a huge zip read', 'aihub/project_export.py',
+                 '    if len(data) > MAX_ZIP:\n', '    if False:\n'))
+MUTATIONS.append(('v111: a conversation from anywhere in the zip', 'aihub/project_export.py',
+                 '            if not isinstance(entry, dict) or not _CONVERSATION.match(str(entry.get("file"))):\n', '            if not isinstance(entry, dict):\n'))
+MUTATIONS.append(('v111: a note from anywhere in the zip', 'aihub/project_export.py',
+                 '            if note is not None and not _NOTE.match(str(note)):\n', '            if False:\n'))
+MUTATIONS.append(('v111: a document from anywhere in the zip', 'aihub/project_export.py',
+                 '            if not _DOCUMENT.match(str(path)) or ".." in str(path):\n', '            if False:\n'))
+MUTATIONS.append(('v111: another format read', 'aihub/project_export.py',
+                 '        if not isinstance(head, dict) or head.get("aihub_project") != FORMAT:\n', '        if not isinstance(head, dict):\n'))
+# v111: "a project export shows hidden conversations" retired: who sees a project sees all its conversations (access rules of 1.1): the filter keeps the
+# conversations list's own rule, for a future change of those rules; it cannot remove anything today.
+MUTATIONS.append(('v111: a project export to who cannot see it', 'aihub/web/app.py',
+                 '            if access.project_role(conn, user, pid) is None:\n                raise NotFound("projet introuvable")\n            project = dict(store.get_project(conn, pid))\n            policy', '            project = dict(store.get_project(conn, pid))\n            policy'))
+MUTATIONS.append(('v111: an export reads the notes for anyone', 'aihub/web/app.py',
+                 '                if conv["obsidian_note"] and (user is None or user.get("is_owner")):  # the vault is the owner\'s\n', '                if conv["obsidian_note"]:\n'))
+MUTATIONS.append(('v111: an import over a project of the same name', 'aihub/web/app.py',
+                 '                while name.lower() in existing:  # the same name is already a project here\n', '                while False:\n'))
+# v111: "an import without its folder" retired: the early check was inert (new_conversation refuses, the transaction takes all back): removed.
+MUTATIONS.append(('v111: an import half done', 'aihub/web/app.py',
+                 '            with db.transaction(conn):\n                name, n = bundle["name"], 1\n', '            if True:\n                name, n = bundle["name"], 1\n'))
+MUTATIONS.append(('v111: an imported note over an existing one', 'aihub/web/app.py',
+                 '                    if obsidian.resolve(vault, note).exists():\n                        note = obsidian.free_note_path(vault, note)\n                    path = obsidian.resolve(vault, note)\n', '                    path = obsidian.resolve(vault, note)\n'))
+MUTATIONS.append(('v111: an import writes notes for a member', 'aihub/web/app.py',
+                 '                    if entry["note"] and copy_notes and (user is None or user.get("is_owner")):\n', '                    if entry["note"] and copy_notes:\n'))
+MUTATIONS.append(('v111: an import by a guest', 'aihub/web/app.py',
+                 '    async def import_project(request: HttpRequest, workdir: str = "", notes: bool = False):\n        """A project\'s .zip (made by « Exporter le projet »), as the request\'s body."""\n        user = me(request)\n        access.require_creator(user)\n', '    async def import_project(request: HttpRequest, workdir: str = "", notes: bool = False):\n        """A project\'s .zip (made by « Exporter le projet »), as the request\'s body."""\n        user = me(request)\n'))
+
+MUTATIONS.append(('v111: anyone sees the trials', 'aihub/web/app.py',
+                 '    def list_trials():\n        access.require_owner(me())\n', '    def list_trials():\n'))
+MUTATIONS.append(('v111: anyone says how a trial went', 'aihub/web/app.py',
+                 '    def say_trial(key: str, body: TrialSaid):\n        access.require_owner(me())\n', '    def say_trial(key: str, body: TrialSaid):\n'))
+MUTATIONS.append(('v111: an unknown trial noted', 'aihub/trials.py',
+                 '    if key not in KEYS:\n', '    if False:\n'))
+MUTATIONS.append(('v111: any state for a trial', 'aihub/trials.py',
+                 '    if status not in STATUSES:\n', '    if False:\n'))
+MUTATIONS.append(('v111: an endless remark', 'aihub/trials.py',
+                 '    if len(note) > MAX_NOTE:\n', '    if False:\n'))
+MUTATIONS.append(('v111: a trial said once only', 'aihub/trials.py',
+                 'ON CONFLICT(key) DO UPDATE SET status = excluded.status, note = excluded.note, ', 'ON CONFLICT(key) DO UPDATE SET status = status, note = note, '))
+
+MUTATIONS.append(('v111: a restore that cannot come back', 'aihub/web/app.py',
+                 '        if updater.restart_details(restart, updater.install_root()) is None:\n', '        if False:\n'))
 
 TEST_MODULES = []
 

@@ -1,5 +1,29 @@
 # Journal des versions
 
+## 1.1.0 — 16 octobre 2026 : sept fonctions
+
+- **Un coffre par projet** : « Coffre des notes de ce projet » dans la fenêtre d’un
+  projet (le propriétaire). Création, plans, réponses notées et réécriture vont
+  dans ce coffre ; vide, celui des réglages.
+- **Un plan qui ne s’arrête pas sur un quota** : « Reprendre automatiquement à … »
+  (l’heure de retour du quota, plus une marge) ou « Confier à cette IA et
+  reprendre ». Les tâches terminées ne sont pas rejouées ; la reprise programmée
+  s’annule, et un refus est dit sur le plan avec une alerte.
+- **Une note par conversation** : une note qui existe déjà n’est plus reprise sans
+  le demander : la continuer, ou en créer une nouvelle (« Titre (2) »).
+- **Des coffres plus utiles** : « Chercher dans le texte » de toutes les notes, et
+  « Ajouter à un projet… » : la note rejoint la mémoire RAG du projet et se met à
+  jour quand elle change dans Obsidian (sa dernière copie reste si elle disparaît).
+- **Restaurer une sauvegarde** depuis « Serveur » : mot de passe, contrôle de la
+  sauvegarde, base actuelle gardée, redémarrage vérifié, ancienne base remise si
+  le serveur ne revient pas.
+- **Emporter un projet entier** : « Exporter le projet (.zip) » (conversations,
+  consignes, accès, documents, notes) et « Importer → Un projet AI Hub (.zip) »,
+  tout ou rien, sans jamais écraser une note.
+- **« Essais à faire »** : ce qui n’a jamais été essayé en vrai, étape par étape,
+  avec « Ça marche » / « Problème » et une remarque.
+- Schéma 27 (migration automatique ; une sauvegarde est faite avant).
+
 ## 1.0.10 — 16 octobre 2026 : choisir les dossiers dans l’appli
 
 - **Parcourir…** à côté de chaque chemin du PC serveur : dossier de travail

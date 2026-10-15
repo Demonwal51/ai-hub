@@ -112,6 +112,7 @@
             <button class="menu-item hidden" id="consumption" type="button" title="Qui a utilisé combien d'IA">Consommation</button>
             <button class="menu-item hidden" id="server" type="button" title="État du serveur : disque, sauvegardes, journal">Serveur</button>
             <button class="menu-item hidden" id="vaults" type="button" title="Les coffres Obsidian de ce PC : les ouvrir, en choisir un">Coffres Obsidian</button>
+            <button class="menu-item hidden" id="trials" type="button" title="Ce qui n'a jamais été essayé en vrai, et comment ça s'est passé">Essais à faire</button>
             <button class="menu-item hidden" id="my-accounts" type="button" title="Vos comptes Claude et ChatGPT : vos demandes les utilisent">Mes comptes IA</button>
             <button class="menu-item hidden" id="my-password" type="button" title="Changer votre mot de passe">Mot de passe</button>
             <button class="menu-item hidden" id="devices" type="button" title="Les appareils où une session est ouverte">Appareils</button>
@@ -338,6 +339,9 @@
         <input name="workdir" id="project-workdir" placeholder="D:\projets\boutique">
         <button class="btn btn-ghost btn-small" id="project-create-folder" type="button">Créer ce dossier sur le serveur</button>
       </label>
+      <label id="project-vault-row">Coffre des notes de ce projet (vide : celui des réglages)
+        <input id="project-vault" placeholder="D:\notes\mon-projet">
+      </label>
       <label>Consignes pour l'IA (facultatives, pour toutes les conversations du projet)
         <textarea id="project-instructions" rows="3" maxlength="4000"
                   placeholder="ex. Réponds en français, sois bref, le code est en Python 3.12"></textarea>
@@ -353,6 +357,8 @@
                 title="Le projet et toutes ses conversations, définitivement">Supprimer avec ses conversations</button>
         <button class="btn btn-ghost hidden" type="button" id="project-share"
                 title="Partager tout le projet avec des personnes de ce serveur">Partager…</button>
+        <a class="btn btn-ghost hidden" id="project-export" download
+           title="Le projet, ses conversations, ses consignes, ses documents et ses notes, dans un seul .zip">Exporter le projet (.zip)</a>
         <button class="btn btn-ghost" type="button" id="project-cancel">Annuler</button>
         <button class="btn btn-primary" type="submit" id="project-save">Enregistrer</button>
       </div>
@@ -507,6 +513,9 @@
           <input type="file" id="import-file" accept=".zip,.json,application/zip,application/json" hidden>
         </label>
         <button class="btn btn-ghost" type="button" id="import-local">Sessions de ce PC (Claude Code, Codex)</button>
+        <label class="btn btn-ghost import-file">Un projet AI Hub (.zip)…
+          <input type="file" id="import-project-file" accept=".zip,application/zip" hidden>
+        </label>
       </div>
       <details class="quota-note">
         <summary>Comment obtenir l'export ?</summary>
@@ -595,11 +604,13 @@
       <div class="vault-panes">
         <div class="vault-notes-pane" id="vault-notes-pane">
           <input id="vault-filter" type="search" placeholder="Chercher une note…" aria-label="Chercher une note">
+          <button class="btn btn-ghost btn-small" type="button" id="vault-search-text" title="Chercher ces mots dans le texte de toutes les notes (Entrée)">Chercher dans le texte</button>
           <div class="vault-notes" id="vault-notes" role="list"></div>
         </div>
         <article class="vault-note-pane" id="vault-note-pane">
           <button class="btn btn-ghost vault-note-back" type="button" id="vault-note-back">← Notes</button>
           <h3 id="vault-note-title"></h3>
+          <button class="btn btn-ghost btn-small hidden" type="button" id="vault-note-link">Ajouter à un projet…</button>
           <p class="quota-note" id="vault-note-meta"></p>
           <div class="msg-body vault-note-body" id="vault-note-body"></div>
         </article>
@@ -617,6 +628,9 @@
       <div class="server-cards" id="server-cards"></div>
       <h3>Fin du journal</h3>
       <pre class="server-log" id="server-log"></pre>
+      <h3>Sauvegardes</h3>
+      <p class="quota-note" id="server-restore-last"></p>
+      <div class="server-backups" id="server-backups"></div>
       <p class="form-error" id="server-error" role="alert"></p>
       <div class="dialog-actions">
         <button class="btn btn-ghost" type="button" id="server-refresh">Actualiser</button>

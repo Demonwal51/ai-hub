@@ -159,11 +159,17 @@ def finished(conn, schedule_id, status, error=None):
 
 class Scheduler:
     """Launches the tasks that are due. `launch(task) -> None` starts one
-    (raises store.Busy when the conversation is busy); `tick()` looks once."""
+    (raises store.Busy when the conversation is busy); `tick()` looks once.
 
-    def __init__(self, db_path, launch, *, period_s=30, clock=None):
+    `resume(plan) -> None`, if given, resumes a plan whose resume time has come
+    (a plan a quota stopped, 1.1): Busy puts it off a few minutes, another
+    refusal is written on the plan and `on_resume_error(plan, message)` told."""
+
+    def __init__(self, db_path, launch, *, period_s=30, clock=None, resume=None, on_resume_error=None):
         self.db_path = db_path
         self.launch = launch
+        self.resume = resume
+        self.on_resume_error = on_resume_error
         self.period_s = period_s
         self.clock = clock or (lambda: datetime.now(timezone.utc))
         self._stop = threading.Event()
@@ -212,6 +218,20 @@ class Scheduler:
                 conn.execute("UPDATE schedules SET last_run_at = ?, last_status = 'running', last_error = NULL, "
                              "next_run_at = ? WHERE id = ?", (_iso(now), _iso(next_run(task, now)), task["id"]))
                 launched.append(task["id"])
+            if self.resume is not None:
+                for plan in store.due_resumes(conn, now):
+                    try:
+                        self.resume(plan)
+                    except store.Busy:
+                        store.resume_failed(conn, plan["id"], "conversation occupée : nouvel essai dans quelques minutes",
+                                            retry_at=_iso(now + BUSY_RETRY))
+                        continue
+                    except Exception as exc:  # refused (rights, folder, account): said on the plan
+                        store.resume_failed(conn, plan["id"], str(exc))
+                        if self.on_resume_error is not None:
+                            self.on_resume_error(plan, str(exc))
+                        continue
+                    launched.append(f"plan-{plan['id']}")
         finally:
             conn.close()
         return launched

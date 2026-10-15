@@ -645,3 +645,32 @@ body.offline .composer, body.offline #fresh-banner { opacity: .55; pointer-event
 .picker-file { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
 .picker-icon { flex: none; }
 .picker-dialog > input { width: 100%; box-sizing: border-box; margin-bottom: 6px; }
+
+/* A plan a quota stopped (1.1). */
+.plan-quota { border: 1px solid var(--warn-border); background: var(--warn-bg); border-radius: 10px; padding: 10px 12px; margin: 8px 0; }
+.plan-quota p { margin: 0 0 6px; }
+.plan-quota-actions { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
+.plan-quota-actions label { display: flex; gap: 6px; align-items: center; margin: 0; }
+.plan-quota-or { color: var(--muted); }
+
+/* Searching a vault's text (1.1). */
+.vault-search-head { display: flex; justify-content: space-between; align-items: center; gap: 8px; padding: 6px 10px; border-bottom: 1px solid var(--border); flex-wrap: wrap; }
+.vault-hit { display: flex; flex-direction: column; gap: 2px; }
+.vault-hit-excerpt { color: var(--muted); font-size: 12px; }
+
+/* The backups in « Serveur » (1.1). */
+.server-backups { display: flex; flex-direction: column; gap: 4px; max-height: 220px; overflow: auto; }
+.server-backup { display: flex; justify-content: space-between; align-items: center; gap: 8px; padding: 6px 8px; border: 1px solid var(--border); border-radius: 8px; flex-wrap: wrap; }
+
+/* « Essais à faire » (1.1). */
+.trials-dialog { width: min(820px, calc(100vw - 32px)); }
+.trials { display: flex; flex-direction: column; gap: 10px; max-height: 60dvh; overflow: auto; }
+.trial { border: 1px solid var(--border); border-radius: 10px; padding: 10px 12px; }
+.trial-ok { border-color: var(--ok); }
+.trial-probleme { border-color: var(--warn-border); background: var(--warn-bg); }
+.trial-head { display: flex; justify-content: space-between; align-items: center; gap: 8px; flex-wrap: wrap; }
+.trial-head h3 { margin: 0; font-size: 15px; }
+.trial ol { margin: 6px 0; padding-left: 22px; }
+.trial textarea { width: 100%; box-sizing: border-box; }
+.trial-actions { display: flex; gap: 6px; flex-wrap: wrap; margin-top: 6px; }
+.trial-badge-ok { color: var(--ok); }

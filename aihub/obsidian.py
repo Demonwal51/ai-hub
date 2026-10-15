@@ -32,6 +32,29 @@ def create_vault(path, *, roots=(), parents=True):
     return result
 
 
+def vault_of(conn, conversation, default):
+    """The vault of a conversation's notes: its project's when the project has one, else the settings' (`default`)."""
+    if conversation["project_id"] is not None:
+        row = conn.execute("SELECT obsidian_vault FROM projects WHERE id = ?", (conversation["project_id"],)).fetchone()
+        if row is not None and row["obsidian_vault"]:
+            return row["obsidian_vault"]
+    return default
+
+
+def check_project_vault(path):
+    """A project's vault as it is saved: None for "" (the settings' one), else an existing local folder."""
+    if path is None or not str(path).strip():
+        return None
+    raw = str(path).strip()
+    if len(raw) > 1000 or "\x00" in raw or not Path(raw).is_absolute() \
+            or (os.name == "nt" and not re.match(r"^[A-Za-z]:[\\/]", raw)):
+        raise ObsidianError("indiquez le chemin complet d'un dossier d'un disque local du serveur")
+    folder = Path(raw).resolve()
+    if not folder.is_dir():
+        raise ObsidianError(f"ce coffre n'existe pas : {folder}")
+    return str(folder)
+
+
 def default_note_path(title):
     """'Projets AI Hub/<title>.md', with characters Windows refuses in a name replaced."""
     name = _UNSAFE.sub("-", title).strip(" .") or "Projet"
@@ -55,6 +78,16 @@ def resolve(vault, note_path):
     if path.suffix.lower() != ".md":
         raise ObsidianError("la note doit être un fichier .md")
     return path
+
+
+def free_note_path(vault, note_path):
+    """The same note's name with « (2) », « (3) »… : the first that is not a file of the vault yet."""
+    stem = note_path[:-3] if note_path.lower().endswith(".md") else note_path
+    for n in range(2, 101):
+        candidate = f"{stem} ({n}).md"
+        if not resolve(vault, candidate).exists():
+            return candidate
+    raise ObsidianError("trop de notes de ce nom : choisissez un autre chemin")
 
 
 def _stamp(when=None):

@@ -31,6 +31,8 @@ from .. import VERSION_LABEL, __version__
 from .. import (auth, autonomous, backup, browse, config, db, eveil, memory, notify, obsidian, providers, routing, runner,
                 schedule, semantic, store, tools)
 from .. import access, accounts, attachments, compare, filesystem, importer, isolation, library, rag, resumption, sandbox_results, updater, usage, vaults
+from .. import restore as restoring
+from .. import project_export, trials
 from ..providers import claude_code, codex, ollama
 from ..providers.claude_code import ProviderError
 from ..store import BypassConfirmationRequired, Busy, NotFound, StoreError
@@ -122,6 +124,7 @@ class ConversationChange(BaseModel):
     assignment_mode: str | None = None
     obsidian: bool | None = None      # turn the project note on or off
     obsidian_note: str | None = None  # its path in the vault (default: from the title)
+    obsidian_existing: str | None = None  # the note's file is there already: "continue" it, or a "new" one
     project_id: int | None = None     # move into this project
     leave_project: bool = False       # take it out of its project
     shared: bool | None = None        # open or close it to the project's other conversations
@@ -171,6 +174,7 @@ class NewProject(BaseModel):
     workdir: str = ""
     instructions: str = ""            # what the AI always gets in its conversations
     isolation: dict | None = None
+    obsidian_vault: str | None = None  # the vault of its notes (the owner's choice; empty: the settings')
 
 
 class ProjectChange(BaseModel):
@@ -179,6 +183,31 @@ class ProjectChange(BaseModel):
     workdir: str | None = None        # "" clears it
     instructions: str | None = None   # what the AI always gets in its conversations ("" clears them)
     isolation: dict | None = None
+    obsidian_vault: str | None = None  # "" : back to the settings' vault
+
+
+class RestoreBackup(BaseModel):
+    name: str                # a file of the backup folder, by its name only
+    password: str = ""       # the owner's, when the server has accounts
+
+
+class TrialSaid(BaseModel):
+    status: str              # ok, probleme or attente
+    note: str = ""
+
+
+class LinkedNote(BaseModel):
+    vault: str               # a vault of the PC (the owner's)
+    path: str                # the note, relative to the vault
+
+
+class AutoResume(BaseModel):
+    at: str | None = None    # ISO time; none: when the quota comes back (and a small margin)
+    cancel: bool = False
+
+
+class GiveTo(BaseModel):
+    model: str               # the AI that takes the tasks a quota stopped
 
 
 class NewMessage(BaseModel):
@@ -645,7 +674,26 @@ def create_app(db_path, *, command=None, env=None, allowed_roots=(), permission_
         else:
             jobs.start(conv["id"], conv["agent_id"], task["prompt"], schedule_id=task["id"])
 
-    app.state.scheduler = schedule.Scheduler(db_path, launch_task, clock=schedule_clock)
+    def resume_planned(plan):
+        """A plan's resume time has come: resumed with the accounts and accesses of who planned it."""
+        with database() as conn:
+            user = auth.get_user(conn, plan["auto_resume_user"]) if plan["auto_resume_user"] else None
+            if authority is not None and (user is None or user["disabled"]):
+                raise StoreError("le compte qui a programmé la reprise n'existe plus ou est suspendu")
+            current_plan = store.get_plan(conn, plan["id"])
+            conv = access.require(conn, user, current_plan["conversation_id"], "write")
+            if not store.can_resume_plan(conn, current_plan):
+                raise StoreError("ce plan ne peut plus être repris")
+            check_workdir(conv["workdir"])
+            isolation.for_run(conn, conv, account_id=(user or {}).get("id"), settings=current())
+        jobs.resume_execution(plan["conversation_id"], plan["id"], user=user)
+
+    def resume_refused(plan, message):
+        jobs._alert("error", plan["conversation_id"], f"reprise automatique impossible : {message}")
+        jobs.hub.publish(plan["conversation_id"], {"type": "plan_updated", "plan_id": plan["id"]})
+
+    app.state.scheduler = schedule.Scheduler(db_path, launch_task, clock=schedule_clock,
+                                             resume=resume_planned, on_resume_error=resume_refused)
     app.state.indexer = semantic.Indexer(db_path)  # the vectors of the search by meaning, in the background
     app.mount("/static", FreshStatic(directory=STATIC), name="static")
 
@@ -1043,6 +1091,66 @@ def create_app(db_path, *, command=None, env=None, allowed_roots=(), permission_
                         "local": bool((state.get("local") or {}).get("running"))},
                 "log": log, "log_file": str(journal_path) if journal_path else None}
 
+    # --- restoring a backup (aihub/restore.py), the owner's ------------------------
+
+    app.state.restore_hooks = {}  # tests replace the helper's start and the server's stop
+
+    def backup_files():
+        folder = backup_folder() or str(Path(db_path).resolve().parent / "sauvegardes")
+        return folder, backup.backups(folder)
+
+    @app.get("/api/server/backups")
+    def server_backups():
+        access.require_owner(me())
+        folder, files = backup_files()
+        return {"folder": folder, "last_restore": restoring.last_report(db_path),
+                "backups": [{"name": p.name, "size": p.stat().st_size,
+                             "modified": datetime.fromtimestamp(p.stat().st_mtime, timezone.utc).isoformat(timespec="seconds"),
+                             "attachments": backup.assets_path(p).is_file()} for p in reversed(files)]}
+
+    @app.post("/api/server/restore", status_code=202)
+    def restore_backup(body: RestoreBackup, request: HttpRequest):
+        """Check the backup, start the helper that puts it in place, then stop: it restarts the server."""
+        user = me(request)
+        access.require_owner(user)
+        if authority is not None:
+            with database() as conn:
+                verified = authority.verify(conn, body.password, client_of(request.scope), name=user["name"])
+                if verified["id"] != user["id"]:
+                    raise access.Forbidden("les droits du compte ont changé : restauration refusée")
+                access.require_owner(verified)
+        if jobs.busy():
+            raise Busy("une IA travaille : attendez qu'elle ait fini avant de restaurer")
+        folder, files = backup_files()
+        chosen = next((p for p in files if p.name == body.name), None)  # a name of the list, never a path
+        if chosen is None:
+            raise NotFound("sauvegarde introuvable")
+        try:
+            check = sqlite3.connect(f"{chosen.resolve().as_uri()}?mode=ro", uri=True)
+            try:
+                if check.execute("PRAGMA quick_check").fetchone()[0] != "ok":
+                    raise sqlite3.DatabaseError("contrôle d'intégrité en échec")
+                if check.execute("PRAGMA user_version").fetchone()[0] > db.SCHEMA_VERSION:
+                    raise sqlite3.DatabaseError("faite par une version plus récente d'AI Hub")
+                conversations = check.execute("SELECT COUNT(*) FROM conversations").fetchone()[0]
+            finally:
+                check.close()
+        except sqlite3.Error as exc:
+            raise StoreError(f"cette sauvegarde est illisible : {exc}") from None
+        hooks = app.state.restore_hooks
+        restart = [sys.executable, "-m", "aihub"] + sys.argv[1:] if "restart" not in hooks else hooks["restart"]
+        if updater.restart_details(restart, updater.install_root()) is None:
+            # Not started by « python -m aihub serve » (a trial server, a test): it could not come back by itself.
+            raise StoreError("ce serveur ne sait pas se relancer seul : arrêtez-le, puis « python -m aihub restaurer »")
+        command = [sys.executable, "-m", "aihub.restore", "--backup", str(chosen), "--db", str(Path(db_path).resolve()),
+                   "--root", str(updater.install_root()), "--pid", str(os.getpid()), "--restart", json.dumps(restart)]
+        spawn = hooks.get("spawn") or (lambda cmd: subprocess.Popen(
+            cmd, cwd=str(updater.install_root()), **updater.detached_options(), stdin=subprocess.DEVNULL,
+            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, close_fds=True))
+        spawn(command)
+        (hooks.get("stop") or stop_server)()
+        return {"restoring": chosen.name, "conversations": conversations}
+
     # --- one-click update (aihub/updater.py), the owner's -------------------------
 
     app.state.update_hooks = update_hooks or {}  # tests replace them there
@@ -1304,19 +1412,39 @@ def create_app(db_path, *, command=None, env=None, allowed_roots=(), permission_
     def list_vaults(refresh: bool = False):
         access.require_owner(me())
         hooks = app.state.vault_hooks
+        with database() as conn:
+            own = [(row["name"], row["obsidian_vault"]) for row in conn.execute(
+                "SELECT name, obsidian_vault FROM projects WHERE obsidian_vault IS NOT NULL ORDER BY name")]
         return vaults.discover(configured=current().obsidian_vault, record=vaults.record_file(db_path),
-                               lists=hooks.get("lists"), roots=hooks.get("roots"),
+                               lists=hooks.get("lists"), roots=hooks.get("roots"), projects=own,
                                extra_roots=[(r, 2) for r in current().allowed_roots], refresh=refresh)
+
+    def notes_vaults(vault):
+        """The folder asked for, when AI Hub writes notes there (the settings' or a project's vault)."""
+        try:
+            browse.local_path(str(vault or "").strip())  # a network path is not resolved, even to compare
+        except StoreError:
+            return None
+        if current().obsidian_vault and vaults._key(vault) == vaults._key(current().obsidian_vault):
+            return vault
+        with database() as conn:
+            mine = [row[0] for row in conn.execute("SELECT obsidian_vault FROM projects WHERE obsidian_vault IS NOT NULL")]
+        return vault if any(vaults._key(vault) == vaults._key(m) for m in mine) else None
 
     @app.get("/api/obsidian/vault/notes")
     def vault_notes(vault: str):
         access.require_owner(me())
-        return vaults.list_notes(vault, configured=current().obsidian_vault)
+        return vaults.list_notes(vault, configured=notes_vaults(vault))
+
+    @app.get("/api/obsidian/vault/search")
+    def vault_search(vault: str, q: str):
+        access.require_owner(me())
+        return vaults.search(vault, q, configured=notes_vaults(vault))
 
     @app.get("/api/obsidian/vault/note")
     def vault_note(vault: str, path: str):
         access.require_owner(me())
-        return vaults.read_note(vault, path, configured=current().obsidian_vault)
+        return vaults.read_note(vault, path, configured=notes_vaults(vault))
 
     def agent_for(conn, model, *, isolated=False):
         offered = (isolated_models(current()) if isolated and config.provider_of(model) in ('claude_code', 'codex') else
@@ -1605,8 +1733,13 @@ def create_app(db_path, *, command=None, env=None, allowed_roots=(), permission_
         with database() as conn:
             if body.isolation is not None:
                 isolation.check(body.isolation)
+            vault = None
+            if body.obsidian_vault:
+                access.require_owner(user)  # a folder of the owner's PC
+                vault = obsidian.check_project_vault(body.obsidian_vault)
             pid = store.create_project(conn, body.name, description=body.description, workdir=workdir)
-            conn.execute("UPDATE projects SET instructions = ? WHERE id = ?", (store.check_instructions(body.instructions), pid))
+            conn.execute("UPDATE projects SET instructions = ?, obsidian_vault = ? WHERE id = ?",
+                         (store.check_instructions(body.instructions), vault, pid))
             set_owner(conn, "projects", pid, user)
             if body.isolation is not None:
                 isolation.save(conn, body.isolation, project_id=pid)
@@ -1630,6 +1763,20 @@ def create_app(db_path, *, command=None, env=None, allowed_roots=(), permission_
             store.get_project(conn, pid)
             require_project(conn, me(), pid)
             did = rag.add(conn, pid, body.name, body.content)
+            return {'document': next(d for d in rag.documents(conn, pid) if d['id'] == did)}
+
+    @app.post('/api/projects/{pid}/memory/notes', status_code=201)
+    def link_memory_note(pid: int, body: LinkedNote):
+        """A vault note becomes a document of the project's memory, and follows its file when it changes."""
+        user = me()
+        access.require_owner(user)  # the vaults are folders of the owner's PC
+        note = vaults.read_note(body.vault, body.path, configured=notes_vaults(body.vault))
+        if note["cut"]:
+            raise StoreError("note trop longue pour la mémoire du projet (200 000 caractères au maximum)")
+        source = Path(note["vault"]) / note["path"]
+        with database() as conn:
+            store.get_project(conn, pid)  # the owner (checked above) manages every project
+            did = rag.link(conn, pid, Path(note["path"]).name, note["content"], source, source.stat().st_mtime)
             return {'document': next(d for d in rag.documents(conn, pid) if d['id'] == did)}
 
     @app.delete('/api/projects/{pid}/memory/documents/{did}')
@@ -1696,6 +1843,10 @@ def create_app(db_path, *, command=None, env=None, allowed_roots=(), permission_
                 if any(jobs.running(row['id']) for row in store.project_conversations(conn, pid)):
                     raise Busy('arrêtez les conversations du projet avant de changer leurs accès')
                 isolation.save(conn, body.isolation, project_id=pid)
+            if body.obsidian_vault is not None:
+                access.require_owner(user)  # a folder of the owner's PC
+                conn.execute("UPDATE projects SET obsidian_vault = ? WHERE id = ?",
+                             (obsidian.check_project_vault(body.obsidian_vault), pid))
             store.update_project(conn, pid, name=body.name, description=body.description, workdir=workdir)
             if body.instructions is not None:
                 conn.execute("UPDATE projects SET instructions = ? WHERE id = ?",
@@ -2156,6 +2307,134 @@ def create_app(db_path, *, command=None, env=None, allowed_roots=(), permission_
         return Response(body, media_type=f"{mime}; charset=utf-8", headers={
             "Content-Disposition": f"attachment; filename*=UTF-8''{quote(filename)}"})
 
+    # --- « Essais à faire » (aihub/trials.py), the owner's ----------------------------
+
+    @app.get("/api/trials")
+    def list_trials():
+        access.require_owner(me())
+        with database() as conn:
+            return {"trials": trials.list_trials(conn)}
+
+    @app.put("/api/trials/{key}")
+    def say_trial(key: str, body: TrialSaid):
+        access.require_owner(me())
+        with database() as conn:
+            trials.set_trial(conn, key, body.status, body.note)
+            return {"trials": trials.list_trials(conn)}
+
+    # --- a whole project in one .zip (aihub/project_export.py) -------------------------
+
+    @app.get("/api/projects/{pid}/export")
+    def export_project(pid: int):
+        """The project, the conversations the person sees, its documents, and the notes when they may read them."""
+        user = me()
+        with database() as conn:
+            if access.project_role(conn, user, pid) is None:
+                raise NotFound("projet introuvable")
+            project = dict(store.get_project(conn, pid))
+            policy = isolation.get(conn, project_id=pid)
+            visible = access.visible_conversation_ids(conn, user)
+            names = {u["id"]: u["name"] for u in auth.list_users(conn)}
+            author = lambda m: (names.get(m["user_id"]) or "Vous") if m["role"] == "user" else (m["model"] or "IA")
+            conversations = []
+            for conv in reversed(store.project_conversations(conn, pid)):  # oldest first
+                if visible is not None and conv["id"] not in visible:
+                    continue
+                messages = [dict(m) for m in store.list_messages(conn, conv["id"])]
+                note = None
+                if conv["obsidian_note"] and (user is None or user.get("is_owner")):  # the vault is the owner's
+                    try:
+                        vault = obsidian.vault_of(conn, conv, current().obsidian_vault)
+                        note = obsidian.resolve(vault, conv["obsidian_note"]).read_text(encoding="utf-8")
+                    except (obsidian.ObsidianError, OSError):
+                        note = None
+                conversations.append((importer.export_json(dict(conv), messages, author), conv["instructions"], note))
+            documents = [(r["name"], r["content"]) for r in conn.execute(
+                "SELECT name, content FROM rag_documents WHERE project_id = ? ORDER BY id", (pid,))]
+        data = project_export.build(project, policy, conversations, documents)
+        safe = "".join(c if c.isalnum() or c in " -_" else "-" for c in project["name"]).strip()[:80] or "projet"
+        from urllib.parse import quote
+        return Response(data, media_type="application/zip",
+                        headers={"Content-Disposition": f"attachment; filename*=UTF-8''{quote('projet ' + safe + '.zip')}"})
+
+    def import_project_from(bundle, user, workdir, copy_notes):
+        """All or nothing in the base (one transaction); the notes are written in the vault after it."""
+        made = {"conversations": 0, "documents": 0, "notes": 0, "skipped": []}
+        # Without a folder, the owner's conversations are refused (« indiquez le dossier de travail ») and the
+        # transaction below takes everything back.
+        folder = check_workdir(workdir) if workdir.strip() and access.trusted(user) else None
+        notes = []
+        with database() as conn:
+            with db.transaction(conn):
+                name, n = bundle["name"], 1
+                existing = {r["name"].lower() for r in store.list_projects(conn)}
+                while name.lower() in existing:  # the same name is already a project here
+                    name = f"{bundle['name']} (importé)" if n == 1 else f"{bundle['name']} (importé {n})"
+                    n += 1
+                pid = store.create_project(conn, name, description=bundle["description"], workdir=folder)
+                conn.execute("UPDATE projects SET instructions = ? WHERE id = ?",
+                             (store.check_instructions(bundle["instructions"][:4000]), pid))
+                set_owner(conn, "projects", pid, user)
+                if bundle["isolation"] is not None:
+                    try:
+                        isolation.check(bundle["isolation"])
+                        isolation.save(conn, bundle["isolation"], project_id=pid)
+                    except (StoreError, ValueError, TypeError, KeyError) as exc:
+                        made["skipped"].append(f"accès du projet non repris : {exc}")
+                for index, entry in enumerate(bundle["conversations"], 1):
+                    item = importer._aihub(entry["export"], index)
+                    if not item.messages:
+                        made["skipped"].append(f"« {item.title} » : aucun message")
+                        continue
+                    cid = new_conversation(conn, NewConversation(title=item.title, workdir="", project_id=pid,
+                                                                 model="default", permission_mode="manual"), user)
+                    importer.write_messages(conn, cid, [item], merged=False)
+                    conn.execute("UPDATE conversations SET instructions = ? WHERE id = ?",
+                                 (store.check_instructions(entry["instructions"][:4000]), cid))
+                    made["conversations"] += 1
+                    if entry["note"] and copy_notes and (user is None or user.get("is_owner")):
+                        notes.append((cid, item.title, entry["note"]))
+                for doc_name, content in bundle["documents"]:
+                    try:
+                        rag.add(conn, pid, doc_name, content)
+                        made["documents"] += 1
+                    except StoreError as exc:
+                        made["skipped"].append(f"document « {doc_name} » : {exc}")
+            # The base is saved: now the notes, each one never over a note that is there.
+            for cid, title, body in notes:
+                try:
+                    vault = obsidian.vault_of(conn, store.get_conversation(conn, cid), current().obsidian_vault)
+                    if not vault:
+                        made["skipped"].append(f"note de « {title} » : aucun coffre configuré")
+                        continue
+                    note = obsidian.default_note_path(title)
+                    if obsidian.resolve(vault, note).exists():
+                        note = obsidian.free_note_path(vault, note)
+                    path = obsidian.resolve(vault, note)
+                    path.parent.mkdir(parents=True, exist_ok=True)
+                    with open(path, "x", encoding="utf-8", newline="\n") as fh:
+                        fh.write(body)
+                    store.set_obsidian_note(conn, cid, note)
+                    made["notes"] += 1
+                except (obsidian.ObsidianError, OSError) as exc:
+                    made["skipped"].append(f"note de « {title} » : {exc}")
+            made["project"] = dict(store.get_project(conn, pid))
+        return made
+
+    @app.post("/api/projects/import", status_code=201)
+    async def import_project(request: HttpRequest, workdir: str = "", notes: bool = False):
+        """A project's .zip (made by « Exporter le projet »), as the request's body."""
+        user = me(request)
+        access.require_creator(user)
+        if int(request.headers.get("content-length") or 0) > project_export.MAX_ZIP:
+            raise StoreError(f"fichier trop gros ({project_export.MAX_ZIP // 1024 // 1024} Mo au plus)")
+        data = await request.body()
+        try:
+            bundle = await asyncio.to_thread(project_export.read, data)
+        except project_export.ProjectFileError as exc:
+            raise StoreError(str(exc)) from None
+        return await asyncio.to_thread(import_project_from, bundle, user, workdir, notes)
+
     @app.get("/api/conversations/{cid}")
     def conversation(cid: int, request: HttpRequest, last: int | None = None):
         """`last`: only the last messages (`older` says how many come before them)."""
@@ -2166,6 +2445,7 @@ def create_app(db_path, *, command=None, env=None, allowed_roots=(), permission_
             conv = dict(access.require(conn, user, cid))
             conv['isolation'] = isolation.effective(conn, conv)
             conv["my_role"] = access.conversation_role(conn, user, conv)
+            conv["notes_vault"] = obsidian.vault_of(conn, conv, current().obsidian_vault)
             conv.update(library.preferences(conn, (user or {}).get("id")).get(cid, {"pinned": False, "archived": False}))
             names = {u["id"]: u["name"] for u in auth.list_users(conn)}
             agent = store.get_agent(conn, conv["agent_id"]) if conv["agent_id"] else None
@@ -2345,6 +2625,40 @@ def create_app(db_path, *, command=None, env=None, allowed_roots=(), permission_
             isolation.for_run(conn, conv, account_id=(user or {}).get('id'), settings=current())
         return {'plan_id': jobs.resume_execution(plan['conversation_id'], pid, user=user)}
 
+    @app.post('/api/plans/{pid}/auto-resume')
+    def auto_resume(pid: int, body: AutoResume):
+        """A plan a quota stopped: resumed by itself later (when the quota comes back), or not any more."""
+        user = me()
+        with database() as conn:
+            plan = editable_plan(conn, pid)
+            if body.cancel:
+                store.cancel_resume(conn, pid)
+            else:
+                at = body.at
+                if at is None:
+                    back = (plan["quota"] or {}).get("resets_at")
+                    if back is None:
+                        raise StoreError("l'heure de retour du quota n'est pas connue : choisissez une heure")
+                    at = (datetime.fromisoformat(back) + store.RESUME_MARGIN).isoformat()
+                store.schedule_resume(conn, pid, at, (user or {}).get("id"))
+            plan = store.get_plan(conn, pid)
+        jobs.hub.publish(plan["conversation_id"], {"type": "plan_updated", "plan_id": pid})
+        return {"plan": plan}
+
+    @app.post('/api/plans/{pid}/give', status_code=202)
+    def give_plan(pid: int, body: GiveTo):
+        """The tasks a quota stopped go to another AI, and the plan resumes at once."""
+        user = me()
+        with database() as conn:
+            plan = editable_plan(conn, pid)
+            conv = access.require(conn, user, plan["conversation_id"], "write")
+            agent = agent_for(conn, body.model, isolated=isolation.effective(conn, conv)["isolated"])
+            moved = store.give_to(conn, pid, agent)
+            check_workdir(conv["workdir"])
+            isolation.for_run(conn, conv, account_id=(user or {}).get("id"), settings=current())
+        jobs.resume_execution(plan["conversation_id"], pid, user=user)
+        return {"plan_id": pid, "moved": moved}
+
     @app.post("/api/plans/{pid}/cancel")
     def cancel(pid: int):
         with database() as conn:
@@ -2405,9 +2719,16 @@ def create_app(db_path, *, command=None, env=None, allowed_roots=(), permission_
                 conv = store.get_conversation(conn, cid)
                 note = body.obsidian_note or conv["obsidian_note"] or obsidian.default_note_path(conv["title"])
                 if note != conv["obsidian_note"]:
+                    vault = obsidian.vault_of(conn, conv, current().obsidian_vault)
+                    if obsidian.resolve(vault, note).exists():
+                        # Another conversation's note, or an old one: the person says which.
+                        if body.obsidian_existing == "new":
+                            note = obsidian.free_note_path(vault, note)
+                        elif body.obsidian_existing != "continue":
+                            raise StoreError("une note de ce nom existe déjà : continuez-la ou créez-en une nouvelle")
                     conductor = (store.get_agent(conn, conv["conductor_agent_id"])["model"]
                                  if conv["conductor_agent_id"] else None)
-                    obsidian.append(current().obsidian_vault, note, conv["title"],
+                    obsidian.append(vault, note, conv["title"],
                                     obsidian.creation_section(conv, conductor))
                     store.set_obsidian_note(conn, cid, note)
             return {"conversation": _row(store.get_conversation(conn, cid))}
@@ -2433,11 +2754,27 @@ def create_app(db_path, *, command=None, env=None, allowed_roots=(), permission_
             before = conn.execute(
                 "SELECT content FROM messages WHERE conversation_id = ? AND id < ? AND role = 'user' "
                 "ORDER BY id DESC LIMIT 1", (conv["id"], mid)).fetchone()
-            path = obsidian.append(current().obsidian_vault, conv["obsidian_note"], conv["title"],
+            path = obsidian.append(obsidian.vault_of(conn, conv, current().obsidian_vault), conv["obsidian_note"], conv["title"],
                                    obsidian.reply_section(before["content"] if before else None,
                                                           message["content"]))
             store.mark_noted(conn, mid)
         return {"note": conv["obsidian_note"], "path": str(path)}
+
+    @app.get("/api/conversations/{cid}/obsidian/check")
+    def check_note(cid: int, note: str | None = None):
+        """Whether the note's file exists, which other conversations write to it, and a free name."""
+        with database() as conn:
+            conv = access.require(conn, me(), cid, "owner")
+            if not access.trusted(me()):
+                raise access.Forbidden("le coffre Obsidian est celui du propriétaire")
+            vault = obsidian.vault_of(conn, conv, current().obsidian_vault)
+            path = note or conv["obsidian_note"] or obsidian.default_note_path(conv["title"])
+            exists = obsidian.resolve(vault, path).exists()
+            users = [row["title"] for row in conn.execute(
+                "SELECT id, title, project_id FROM conversations WHERE obsidian_note = ? AND id <> ?", (path, cid))
+                if obsidian.vault_of(conn, row, current().obsidian_vault) == vault]
+        return {"note": path, "vault": vault, "exists": exists, "used_by": users,
+                "free": obsidian.free_note_path(vault, path) if exists else path}
 
     @app.post("/api/conversations/{cid}/obsidian/rewrite")
     def rewrite_note(cid: int):

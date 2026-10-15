@@ -611,7 +611,7 @@ function renderConversation() {
   $("conv-shared").textContent = conv.shared ? "Partagée ✓" : "Privée";
   const others = state.conversations.filter((c) => inProject && c.project_id === conv.project_id && c.id !== conv.id);
   $("cite").classList.toggle("hidden", !inProject || !conv.shared || !others.length);
-  const vault = (state.options.obsidian || {}).enabled;
+  const vault = Boolean(conv.notes_vault);  // its project's vault, or the settings'
   $("obsidian").classList.toggle("hidden", !vault && !isOwner());
   $("obsidian").classList.toggle("on", Boolean(conv.obsidian_note));
   $("obsidian").textContent = conv.obsidian_note ? "Obsidian ✓" : "Obsidian";
@@ -1191,6 +1191,8 @@ function planCard(plan) {
   card.append(rows);
 
   if (editable) card.append(planTools(plan));
+  const quota = quotaBox(plan);
+  if (quota) card.append(quota);
   if (plan.resumable && state.data.conversation.my_role !== 'read') card.append(el('button', { type: 'button', class: 'btn btn-primary', text: 'Reprendre le plan',
     disabled: Boolean(state.data.running || state.data.conversation.isolation?.paused), onclick: async () => {
       const remaining = plan.subtasks.filter(task => task.status !== 'ok').length;
@@ -1199,6 +1201,57 @@ function planCard(plan) {
       await planAction('POST', `/api/plans/${plan.id}/resume`);
     } }));
   return card;
+}
+
+// A plan a quota stopped (1.1): resumed by itself when the quota comes back, or given to another AI.
+const modelProvider = (model) => model === "codex" || String(model).startsWith("gpt-") ? "codex"
+  : String(model).startsWith("local:") ? "ollama" : "claude_code";
+const localTime = (iso) => new Date(iso).toLocaleString("fr-FR", { weekday: "long", day: "numeric", month: "long", hour: "2-digit", minute: "2-digit" });
+
+function quotaBox(plan) {
+  const q = plan.quota;
+  if (!q && !plan.auto_resume_at && !plan.auto_resume_error) return null;
+  const canAct = state.data.conversation.my_role !== "read" && !state.data.running;
+  const box = el("div", { class: "plan-quota", role: "status" });
+  if (q) {
+    const who = q.providers.map((p) => PROVIDER_NAMES[p] || p).join(", ");
+    box.append(el("p", {}, el("strong", { text: `Quota de ${who} atteint` }),
+      ` : ${q.subtasks.length} tâche(s) arrêtée(s)` + (q.resets_at ? `, retour prévu ${localTime(q.resets_at)}.` : ", heure de retour inconnue.")));
+  }
+  if (plan.auto_resume_at) {
+    box.append(el("p", { text: `Reprise automatique prévue ${localTime(plan.auto_resume_at)}. Les tâches terminées ne seront pas rejouées.` }));
+    if (canAct) box.append(el("button", { type: "button", class: "btn btn-ghost", text: "Annuler la reprise automatique",
+      onclick: () => planAction("POST", `/api/plans/${plan.id}/auto-resume`, { cancel: true }) }));
+  } else if (q && canAct && plan.resumable) {
+    const actions = el("div", { class: "plan-quota-actions" });
+    if (q.resets_at) {
+      const at = new Date(new Date(q.resets_at).getTime() + 2 * 60000);
+      actions.append(el("button", { type: "button", class: "btn btn-primary",
+        text: `Reprendre automatiquement à ${at.toLocaleTimeString("fr-FR", { hour: "2-digit", minute: "2-digit" })}`,
+        onclick: () => planAction("POST", `/api/plans/${plan.id}/auto-resume`, {}) }));
+    } else {
+      const when = el("input", { type: "datetime-local", "aria-label": "Heure de la reprise" });
+      actions.append(el("label", {}, "Reprendre à", when), el("button", { type: "button", class: "btn btn-primary", text: "Programmer la reprise",
+        onclick: () => when.value ? planAction("POST", `/api/plans/${plan.id}/auto-resume`, { at: new Date(when.value).toISOString() })
+          : toast("Choisissez l’heure de la reprise.") }));
+    }
+    const isolated = state.data.conversation.isolation?.isolated;
+    const models = ((isolated ? state.options.isolated_models : state.options.models) || [])
+      .filter((m) => !q.providers.includes(modelProvider(m)));
+    if (models.length) {
+      const other = el("select", { "aria-label": "IA qui reprend les tâches" }, ...models.map((m) => el("option", { value: m, text: MODEL_LABELS[m] || m })));
+      actions.append(el("span", { class: "plan-quota-or", text: "ou" }), other, el("button", { type: "button", class: "btn btn-ghost",
+        text: "Confier à cette IA et reprendre", onclick: async () => {
+          if (!await confirmDialog({ title: "Confier les tâches à une autre IA ?",
+            text: `Les ${q.waiting.length} tâche(s) restantes prévues sur ${q.providers.map((p) => PROVIDER_NAMES[p] || p).join(", ")} passent à ${MODEL_LABELS[other.value] || other.value}, puis le plan reprend tout de suite. Les tâches terminées ne sont pas rejouées.`,
+            okText: "Confier et reprendre" })) return;
+          await planAction("POST", `/api/plans/${plan.id}/give`, { model: other.value });
+        } }));
+    }
+    box.append(actions);
+  }
+  if (plan.auto_resume_error) box.append(el("p", { class: "form-error", text: `Dernière reprise automatique : ${plan.auto_resume_error}` }));
+  return box;
 }
 
 function subtaskRow(plan, st, positions, editable) {
@@ -1639,6 +1692,23 @@ async function openCreatePath({ field = null, conversation = null, vault = false
   document.body.append(dialog); dialog.showModal(); path.focus();
 }
 
+// A question with several answers: resolves to the chosen value, or null when closed.
+function choiceDialog({ title, text, choices }) {
+  return new Promise((resolve) => {
+    const dialog = el("dialog", { class: "dialog dialog-content" });
+    let answer = null;
+    const finish = (value) => { answer = value; dialog.close(); dialog.remove(); resolve(value); };
+    dialog.append(el("h2", { text: title }), el("p", { text }),
+      el("div", { class: "dialog-actions" },
+        el("button", { type: "button", class: "btn btn-ghost", text: "Annuler", onclick: () => finish(null) }),
+        ...choices.map((c) => el("button", { type: "button", class: c.primary ? "btn btn-primary" : "btn btn-ghost",
+          text: c.label, onclick: () => finish(c.value) }))));
+    dialog.addEventListener("close", () => { if (answer === null) { dialog.remove(); resolve(null); } }, { once: true });
+    document.body.append(dialog);
+    dialog.showModal();
+  });
+}
+
 function featureDialog(title, ...content) {
   const dialog = el("dialog", { class: "dialog dialog-content" }, el("h2", { text: title }), ...content);
   dialog.append(el("div", { class: "dialog-actions" }, el("button", { type: "button", class: "btn btn-ghost", text: "Fermer", onclick: () => dialog.close() })));
@@ -1673,7 +1743,8 @@ async function openMemoryRag() {
     manage.classList.toggle('hidden', !data.can_manage);
     documents.replaceChildren(...[el('h3', { text: 'Documents du projet' }),
       ...data.documents.map(doc => el('div', { class: 'field-row' },
-        el('span', { text: `${doc.name} · ${doc.passages} passage(s)` }),
+        el('span', { text: `${doc.name} · ${doc.passages} passage(s)` + (doc.source_path
+          ? (doc.source_missing ? ' · note introuvable : dernière copie gardée' : ' · suit la note du coffre') : '') }),
         data.can_manage ? el('button', { type: 'button', class: 'btn btn-danger-ghost btn-small', text: 'Retirer', onclick: async () => {
           if (!await confirmDialog({ title: 'Retirer ce document de la mémoire ?', text: `${doc.name} sera retiré des recherches futures du projet. Le fichier original et les réponses déjà produites restent inchangés.`, okText: 'Retirer' })) return;
           try { await api('DELETE', `/api/projects/${data.project_id}/memory/documents/${doc.id}`); await refresh(); }
@@ -1948,10 +2019,14 @@ function setupProjectDialog() {
     $("project-workdir").value = project ? project.workdir || "" : "";
     $("project-create-folder").classList.toggle("hidden", !isAdmin());
     $("project-instructions").value = project ? project.instructions || "" : "";
+    $("project-vault").value = project ? project.obsidian_vault || "" : "";
+    $("project-vault-row").classList.toggle("hidden", !isOwner());  // a folder of the owner's PC
     accessEditor.set(project?.isolation || { isolated: false });
     $("project-delete").classList.toggle("hidden", !project);
     $("project-delete-all").classList.toggle("hidden", !project || !project.conversations);
     $("project-share").classList.toggle("hidden", !project || !state.me);
+    $("project-export").classList.toggle("hidden", !project);
+    if (project) $("project-export").href = `/api/projects/${project.id}/export`;
     $("project-error").textContent = "";
     dialog.showModal();
   };
@@ -1966,7 +2041,7 @@ function setupProjectDialog() {
     event.preventDefault();
     const body = { name: $("project-name").value.trim(), description: $("project-description").value,
       workdir: $("project-workdir").value.trim(), instructions: $("project-instructions").value,
-      isolation: accessEditor.value() };
+      isolation: accessEditor.value(), ...(isOwner() ? { obsidian_vault: $("project-vault").value.trim() } : {}) };
     try {
       if (editing) await api("PATCH", `/api/projects/${editing.id}`, body);
       else await api("POST", "/api/projects", body);
@@ -2216,8 +2291,10 @@ function setupObsidianDialog() {
   const dialog = $("obsidian-dialog");
   const refresh = () => {
     const conv = state.data.conversation;
-    const configured = Boolean((state.options.obsidian || {}).enabled);
-    $("obsidian-vault").textContent = (state.options.obsidian || {}).vault || "aucun coffre configuré";
+    const configured = Boolean(conv.notes_vault);
+    $("obsidian-vault").textContent = conv.notes_vault
+      ? conv.notes_vault + (conv.project_id && conv.notes_vault !== (state.options.obsidian || {}).vault ? " (le coffre du projet)" : "")
+      : "aucun coffre configuré";
     $("obsidian-state").textContent = conv.obsidian_note
       ? `Note activée : ${conv.obsidian_note}`
       : configured ? "La note n'est pas activée pour cette conversation." : "Créez un coffre ou choisissez son dossier dans les réglages.";
@@ -2245,7 +2322,23 @@ function setupObsidianDialog() {
   $("obsidian-create-vault").addEventListener("click", () => {
     dialog.close(); openSettingsDialog({ createVault: true });
   });
-  $("obsidian-on").addEventListener("click", () => change({ obsidian: true, obsidian_note: $("obsidian-path").value.trim() }));
+  $("obsidian-on").addEventListener("click", async () => {
+    const note = $("obsidian-path").value.trim();
+    let existing = null;
+    try {
+      const found = await api("GET", `/api/conversations/${state.currentId}/obsidian/check?note=${encodeURIComponent(note)}`);
+      if (found.exists) {
+        existing = await choiceDialog({
+          title: "Cette note existe déjà",
+          text: `« ${found.note} » est déjà dans le coffre` + (found.used_by.length
+            ? `, et la conversation « ${found.used_by.join(" », « ")} » y écrit aussi.` : ", peut-être d'une ancienne conversation.")
+            + ` Continuer cette note, ou en créer une nouvelle (« ${found.free} ») ?`,
+          choices: [{ value: "continue", label: "Continuer cette note" }, { value: "new", label: "Créer une nouvelle note", primary: true }] });
+        if (!existing) return;
+      }
+    } catch (err) { $("obsidian-error").textContent = err.message; return; }
+    change({ obsidian: true, obsidian_note: note, ...(existing ? { obsidian_existing: existing } : {}) });
+  });
   $("obsidian-off").addEventListener("click", () => change({ obsidian: false }));
   $("obsidian-rewrite").addEventListener("click", async () => {
     dialog.close();
@@ -3047,6 +3140,7 @@ async function ensureLoggedIn() {
   $("server").classList.toggle("hidden", !isOwner());
   for (const button of document.querySelectorAll(".picker-trusted")) button.classList.toggle("hidden", !isAdmin());
   $("vaults").classList.toggle("hidden", !isOwner());
+  $("trials").classList.toggle("hidden", !isOwner());
 }
 
 const ROLE_NAMES = { owner: "propriétaire", admin: "admin", membre: "membre", invite: "invité" };
@@ -3192,6 +3286,54 @@ function setupServerDialog() {
     $("server-log").textContent = s.log.length ? s.log.join("\n")
       : (s.log_file ? "Journal vide pour l'instant." : "Pas de journal : le serveur a été lancé dans une fenêtre (ses messages y sont).");
     $("server-log").scrollTop = $("server-log").scrollHeight;
+    await renderBackups();
+  };
+  // The backups, newest first, each one restorable (the owner, with the password; the server restarts).
+  const RESTORE_SAID = { ok: "réussie", echec: "échouée", retabli: "annulée : la base d'avant a été remise" };
+  const renderBackups = async () => {
+    let data;
+    try { data = await api("GET", "/api/server/backups"); } catch (err) { $("server-error").textContent = err.message; return; }
+    const last = data.last_restore;
+    $("server-restore-last").textContent = last
+      ? `Dernière restauration (${formatDate(last.at)}) : ${last.backup}, ${RESTORE_SAID[last.status] || last.status}` +
+        (last.error ? ` — ${last.error}` : "") + (last.keep ? `. Base d'avant gardée : ${last.keep}` : "")
+      : "";
+    $("server-backups").replaceChildren(...(data.backups.length ? data.backups.map((b) => el("div", { class: "server-backup" },
+      el("span", {}, el("strong", { text: formatDate(b.modified) }), ` · ${b.name} · ${bytes(b.size)}` + (b.attachments ? " · avec les pièces jointes" : "")),
+      el("button", { type: "button", class: "btn btn-ghost btn-small", text: "Restaurer…", onclick: () => restoreBackup(b) })))
+      : [el("p", { class: "quota-note", text: `Aucune sauvegarde dans ${data.folder}.` })]));
+  };
+  const restoreBackup = async (b) => {
+    const password = el("input", { type: "password", autocomplete: "current-password", "aria-label": "Votre mot de passe AI Hub" });
+    const sure = el("input", { type: "checkbox" });
+    const error = el("p", { class: "form-error", role: "alert" });
+    const go = el("button", { type: "button", class: "btn btn-danger", text: "Restaurer et redémarrer", disabled: true });
+    sure.addEventListener("change", () => { go.disabled = !sure.checked; });
+    const dialog = el("dialog", { class: "dialog dialog-content" });
+    const done = () => { dialog.close(); dialog.remove(); };
+    dialog.append(el("h2", { text: "Restaurer cette sauvegarde ?" }),
+      el("p", { text: `La base sera remise telle qu'elle était ${localTime(b.modified)} (${b.name}). Tout ce qui a été fait depuis (conversations, réglages des personnes…) sera perdu. La base actuelle est d'abord gardée à côté, et le serveur redémarre : l'appli revient toute seule (il faudra peut-être vous reconnecter, les sessions ouvertes étant celles de la sauvegarde).` }),
+      state.me ? el("label", {}, "Votre mot de passe AI Hub (laissez vide si votre compte n’en a pas)", password) : null,
+      el("label", { class: "check" }, sure, "J'ai compris : ce qui a été fait depuis cette sauvegarde sera perdu"), error,
+      el("div", { class: "dialog-actions" }, el("button", { type: "button", class: "btn btn-ghost", text: "Annuler", onclick: done }), go));
+    go.addEventListener("click", async () => {
+      go.disabled = true; error.textContent = "";
+      try {
+        await api("POST", "/api/server/restore", { name: b.name, password: password.value });
+      } catch (err) { error.textContent = err.message; go.disabled = false; password.value = ""; return; }
+      done();
+      dialog.remove();
+      $("server-dialog").close();
+      toast("Restauration en cours : le serveur redémarre…");
+      // The app comes back when the server answers again.
+      for (let i = 0; i < 60; i++) {
+        await new Promise((r) => setTimeout(r, 2000));
+        try { const r = await fetch("/api/health", { cache: "no-store" }); if (r.ok && i > 1) { location.reload(); return; } } catch {}
+      }
+      toast("Le serveur ne répond pas encore : rechargez la page dans un moment.");
+    });
+    document.body.append(dialog);
+    dialog.showModal();
   };
   $("server").addEventListener("click", async () => { dialog.showModal(); await render(); });
   $("server-refresh").addEventListener("click", render);
@@ -3336,15 +3478,71 @@ function setupPathPickers() {
   }
   browseButton($("set-allowed_roots"), { title: "Ajouter un dossier autorisé", scope: "settings", action: "Ajouter ce dossier" }, { append: true });
   browseButton($("set-obsidian_vault"), { title: "Dossier des notes de projet", scope: "settings" });
+  browseButton($("project-vault"), { title: "Coffre des notes de ce projet", scope: "settings" });
   browseButton($("set-backup_dir"), { title: "Dossier des sauvegardes", scope: "settings" });
   browseButton($("set-sandbox_data"), { title: "Stockage du moteur isolé", scope: "settings" });
+}
+
+// --- « Essais à faire » (the owner's): what was never tried for real, and how it went --------------
+
+const TRIAL_SAID = { ok: "Ça marche", probleme: "Problème", attente: "Pas encore" };
+
+function setupTrialsDialog() {
+  const open = async () => {
+    let list;
+    try { list = (await api("GET", "/api/trials")).trials; } catch (err) { toast(err.message); return; }
+    const dialog = el("dialog", { class: "dialog dialog-wide trials-dialog" });
+    const progress = el("p", { class: "quota-note" });
+    const items = el("div", { class: "trials" });
+    const done = () => { dialog.close(); dialog.remove(); };
+    const report = () => [`Essais AI Hub — ${new Date().toLocaleDateString("fr-FR")}`, "",
+      ...list.map((t) => `- ${t.title} : ${TRIAL_SAID[t.status]}${t.note ? ` — ${t.note}` : ""}`)].join("\n");
+    const render = () => {
+      const tried = list.filter((t) => t.status !== "attente").length;
+      progress.textContent = `${tried} sur ${list.length} essayés · ${list.filter((t) => t.status === "ok").length} qui marchent · `
+        + `${list.filter((t) => t.status === "probleme").length} avec un problème.`;
+      items.replaceChildren(...list.map((t) => {
+        const note = el("textarea", { rows: 2, maxlength: 2000, placeholder: "Une remarque (ce qui a marché, ce qui a coincé…)", "aria-label": `Remarque : ${t.title}` });
+        note.value = t.note || "";
+        const say = async (status) => {
+          try {
+            list = (await api("PUT", `/api/trials/${t.key}`, { status, note: note.value })).trials;
+            render();
+          } catch (err) { toast(err.message); }
+        };
+        note.addEventListener("change", () => say(t.status));
+        return el("section", { class: `trial trial-${t.status}` },
+          el("div", { class: "trial-head" }, el("h3", { text: t.title }), el("span", { class: `badge trial-badge-${t.status}`, text: TRIAL_SAID[t.status] })),
+          el("ol", {}, ...t.steps.map((s) => el("li", { text: s }))),
+          note,
+          el("div", { class: "trial-actions" }, ...["ok", "probleme", "attente"].map((s) => el("button", { type: "button",
+            class: "btn btn-small " + (t.status === s ? "btn-primary" : "btn-ghost"), text: TRIAL_SAID[s], onclick: () => say(s) }))),
+          t.updated_at ? el("p", { class: "quota-note", text: `Noté ${formatDate(t.updated_at)}` }) : null);
+      }));
+    };
+    dialog.append(el("h2", { text: "Essais à faire" }),
+      el("p", { class: "quota-note", text: "Ce qui n'a jamais été essayé en vrai : sur un téléphone, un autre PC, un vrai compte. Faites-les quand vous voulez et notez comment ça s'est passé." }),
+      progress, items,
+      el("div", { class: "dialog-actions" },
+        el("button", { type: "button", class: "btn btn-ghost", text: "Copier le compte rendu", onclick: async () => {
+          const text = report();
+          try { await navigator.clipboard.writeText(text); } catch { fallbackCopy(text); }
+          toast("Compte rendu copié.");
+        } }),
+        el("button", { type: "button", class: "btn btn-ghost", text: "Fermer", onclick: done })));
+    dialog.addEventListener("close", () => dialog.remove(), { once: true });
+    document.body.append(dialog);
+    render();
+    dialog.showModal();
+  };
+  $("trials").addEventListener("click", open);
 }
 
 // --- Obsidian vaults on this PC (the owner's): list, open to read, choose one --------------
 
 let openVaultsDialog = () => {};
 
-const VAULT_SOURCES = { reglages: "Notes d’AI Hub", aihub: "Créé par AI Hub", obsidian: "Connu d’Obsidian", disque: "Trouvé sur le disque" };
+const VAULT_SOURCES = { reglages: "Notes d’AI Hub", projet: "Notes de projet", aihub: "Créé par AI Hub", obsidian: "Connu d’Obsidian", disque: "Trouvé sur le disque" };
 
 // [[Note]], [[Note|alias]], [[Note#titre]] become links the reader opens; ![[embeds]] stay as text.
 function wikiLinks(text) {
@@ -3386,7 +3584,8 @@ function setupVaultsDialog() {
     }
     actions.push(el("button", { type: "button", class: "btn btn-ghost", text: "Copier le chemin",
       onclick: async () => { try { await navigator.clipboard.writeText(v.path); } catch { fallbackCopy(v.path); } toast("Chemin copié."); } }));
-    const badges = v.sources.map((s) => el("span", { class: "vault-badge" + (s === "reglages" ? " on" : ""), text: VAULT_SOURCES[s] || s }));
+    const badges = v.sources.map((s) => el("span", { class: "vault-badge" + (s === "reglages" || s === "projet" ? " on" : ""),
+      text: s === "projet" ? `Notes du projet ${(v.projects || []).map((p) => `« ${p} »`).join(", ")}` : VAULT_SOURCES[s] || s }));
     if (!v.exists) badges.push(el("span", { class: "vault-badge warn", text: "Introuvable" }));
     const count = !v.exists ? "dossier absent ou sans .obsidian" : v.notes === null ? "beaucoup de fichiers" : `${v.notes} note${v.notes > 1 ? "s" : ""}`;
     return el("div", { class: "vault-card" + (v.active ? " active" : "") + (v.exists ? "" : " missing"), role: "listitem" },
@@ -3428,6 +3627,8 @@ function setupVaultsDialog() {
       $("vault-path").textContent = data.vault + (data.complete ? "" : ` — les ${notes.length} premières notes seulement`);
       $("vault-filter").value = "";
       $("vault-note-title").textContent = "";
+      opened = null;
+      $("vault-note-link").classList.add("hidden");
       $("vault-note-meta").textContent = "Choisissez une note.";
       $("vault-note-body").replaceChildren();
       $("vault-reader").classList.remove("showing-note");
@@ -3437,10 +3638,51 @@ function setupVaultsDialog() {
       $("vault-filter").focus();
     } catch (err) { $("vaults-error").textContent = err.message; }
   };
+  let opened = null;  // the note shown
+  // The whole text of the vault's notes: every word, in the text or the name.
+  const searchText = async () => {
+    const words = $("vault-filter").value.trim();
+    if (!words) { toast("Tapez un ou plusieurs mots à chercher dans le texte des notes."); return; }
+    $("vault-error").textContent = "";
+    try {
+      const data = await api("GET", `/api/obsidian/vault/search?vault=${encodeURIComponent(vault)}&q=${encodeURIComponent(words)}`);
+      const head = el("div", { class: "vault-search-head" },
+        el("span", { class: "quota-note", text: `${data.total} note(s) contiennent « ${data.query} »` + (data.complete ? "" : " (recherche arrêtée avant la fin : trop de notes)") }),
+        el("button", { type: "button", class: "btn btn-ghost btn-small", text: "← Toutes les notes", onclick: () => { $("vault-filter").value = ""; renderNotes(); } }));
+      $("vault-notes").replaceChildren(head, ...(data.results.length ? data.results.map((r) => el("button", {
+        type: "button", class: "vault-note-item vault-hit", role: "listitem", title: r.path, onclick: () => openNote(r.path) },
+        el("span", { text: r.path.replace(/\.md$/i, "") }), el("span", { class: "vault-hit-excerpt", text: r.excerpt })))
+        : [el("p", { class: "list-empty", text: "Aucune note ne contient tous ces mots." })]));
+    } catch (err) { $("vault-error").textContent = err.message; }
+  };
+  // The note shown becomes a document of a project's memory, and follows its file.
+  const linkNote = async () => {
+    if (!opened) return;
+    const projects = state.projects || [];
+    if (!projects.length) { toast("Créez d’abord un projet."); return; }
+    const choice = el("select", { "aria-label": "Projet" }, ...projects.map((p) => el("option", { value: p.id, text: p.name })));
+    const error = el("p", { class: "form-error", role: "alert" });
+    const dialog = el("dialog", { class: "dialog dialog-content" });
+    const done = () => { dialog.close(); dialog.remove(); };
+    dialog.append(el("h2", { text: "Ajouter la note à un projet" }),
+      el("p", { class: "quota-note", text: `« ${opened} » rejoint la mémoire RAG du projet : les IA de ses conversations y retrouvent des passages. Quand la note change dans Obsidian, le document se met à jour tout seul.` }),
+      el("label", {}, "Projet", choice), error,
+      el("div", { class: "dialog-actions" }, el("button", { type: "button", class: "btn btn-ghost", text: "Annuler", onclick: done }),
+        el("button", { type: "button", class: "btn btn-primary", text: "Ajouter", onclick: async () => {
+          try {
+            await api("POST", `/api/projects/${choice.value}/memory/notes`, { vault, path: opened });
+            done(); toast(`Note ajoutée au projet « ${choice.selectedOptions[0].text} ».`);
+          } catch (err) { error.textContent = err.message; }
+        } })));
+    document.body.append(dialog);
+    dialog.showModal();
+  };
   const openNote = async (path) => {
     $("vault-error").textContent = "";
     try {
       const n = await api("GET", `/api/obsidian/vault/note?vault=${encodeURIComponent(vault)}&path=${encodeURIComponent(path)}`);
+      opened = n.path;
+      $("vault-note-link").classList.remove("hidden");
       const cut = n.path.lastIndexOf("/");
       $("vault-note-title").textContent = n.path.slice(cut + 1).replace(/\.md$/i, "");
       $("vault-note-meta").textContent = [cut >= 0 ? n.path.slice(0, cut) : null, bytes(n.size), `modifiée ${formatDate(n.modified)}`,
@@ -3483,6 +3725,9 @@ function setupVaultsDialog() {
   $("vault-back").addEventListener("click", () => { showList(); render(); });
   $("vault-note-back").addEventListener("click", () => $("vault-reader").classList.remove("showing-note"));
   $("vault-filter").addEventListener("input", renderNotes);
+  $("vault-filter").addEventListener("keydown", (event) => { if (event.key === "Enter") { event.preventDefault(); searchText(); } });
+  $("vault-search-text").addEventListener("click", searchText);
+  $("vault-note-link").addEventListener("click", linkNote);
   $("vaults-create").addEventListener("click", () => openCreatePath({ vault: true, onCreated: () => render(true) }));
 }
 
@@ -3978,6 +4223,42 @@ function setupImportDialog() {
     } catch (err) { $("import-state").textContent = ""; error(err.message); }
     $("import-file").value = "";
   });
+  // A whole project (made by « Exporter le projet »): its folder chosen here, its notes copied or not.
+  $("import-project-file").addEventListener("change", () => {
+    const file = $("import-project-file").files[0];
+    $("import-project-file").value = "";
+    if (!file) return;
+    $("import-dialog").close();
+    const workdir = el("input", { placeholder: "D:\\projets\\mon-projet", "aria-label": "Dossier de travail du projet" });
+    const browse = el("button", { type: "button", class: "btn btn-ghost btn-small", text: "Parcourir…",
+      onclick: () => openPathPicker({ title: "Dossier de travail du projet importé", start: workdir.value.trim(), onPick: (p) => { workdir.value = p; } }) });
+    const notes = el("input", { type: "checkbox", checked: true });
+    const error = el("p", { class: "form-error", role: "alert" });
+    const go = el("button", { type: "button", class: "btn btn-primary", text: "Importer le projet" });
+    const dialog = el("dialog", { class: "dialog dialog-content" });
+    const done = () => { dialog.close(); dialog.remove(); };
+    dialog.append(el("h2", { text: "Importer un projet" }),
+      el("p", { class: "quota-note", text: `« ${file.name} » (${Math.max(1, Math.ceil(file.size / 1024))} Ko) : le projet, ses conversations (elles repartent de leur mémoire), ses consignes et ses documents. Un projet du même nom reçoit « (importé) ».` }),
+      isAdmin() ? el("label", {}, "Dossier de travail du projet, sur le PC serveur", workdir, browse) : null,
+      isOwner() ? el("label", { class: "check" }, notes, "Recopier ses notes de projet dans le coffre (sans jamais en écraser une)") : null,
+      error, el("div", { class: "dialog-actions" }, el("button", { type: "button", class: "btn btn-ghost", text: "Annuler", onclick: done }), go));
+    go.addEventListener("click", async () => {
+      go.disabled = true; error.textContent = "";
+      try {
+        const query = new URLSearchParams({ workdir: workdir.value.trim(), notes: isOwner() && notes.checked ? "true" : "false" });
+        const res = await fetch(`/api/projects/import?${query}`, { method: "POST", body: file,
+          headers: { "X-AIHub": "1", "Content-Type": "application/zip" } });
+        const data = await res.json().catch(() => ({}));
+        if (!res.ok) throw new Error(typeof data.detail === "string" ? data.detail : `erreur ${res.status}`);
+        done();
+        await loadConversations();
+        toast(`Projet « ${data.project.name} » importé : ${data.conversations} conversation(s), ${data.documents} document(s)`
+          + (data.notes ? `, ${data.notes} note(s)` : "") + (data.skipped.length ? `. Non repris : ${data.skipped.join(" ; ")}` : "."));
+      } catch (err) { error.textContent = err.message; go.disabled = false; }
+    });
+    document.body.append(dialog);
+    dialog.showModal();
+  });
   $("import-local").addEventListener("click", async () => {
     wait("Lecture des sessions de Claude Code et de Codex sur ce PC…");
     try { received(await api("GET", "/api/import/local")); } catch (err) { $("import-state").textContent = ""; error(err.message); }
@@ -4375,6 +4656,7 @@ async function main() {
   setupShortcuts();
   setupServerDialog();
   setupVaultsDialog();
+  setupTrialsDialog();
   setupPathPickers();
   setupShareDialog();
   setupAccountsDialog();

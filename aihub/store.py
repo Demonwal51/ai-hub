@@ -6,7 +6,9 @@ as is; the database constraints stay the last line of defence.
 """
 
 import json
+import re
 import sqlite3
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 from .db import transaction, utc_now
@@ -836,7 +838,102 @@ def get_plan(conn, plan_id):
         subtask["files"] = json.loads(subtask.pop("files_json")) if row["files_json"] else []
         plan["subtasks"].append(subtask)
     plan['resumable'] = can_resume_plan(conn, plan)
+    plan['quota'] = quota_blocked(conn, plan)
     return plan
+
+
+# --- a plan stopped by a quota (1.1): resumed by itself later, or given to another AI ---------
+
+QUOTA_ERROR = re.compile(r"^Quota de .+ atteint")
+RESUME_MARGIN = timedelta(minutes=2)   # after the quota's return: the provider's clock may be a little late
+
+
+def _moment(iso):
+    try:
+        moment = datetime.fromisoformat(iso)
+    except (TypeError, ValueError):
+        return None
+    return moment if moment.tzinfo else moment.replace(tzinfo=timezone.utc)
+
+
+def quota_blocked(conn, plan):
+    """What a quota stopped in a plan: positions, AIs, and when the quota comes back (None: not known)."""
+    if plan["status"] not in ("error", "stopped"):
+        return None
+    blocked = [st for st in plan["subtasks"] if st["status"] == "error" and QUOTA_ERROR.match(st["error"] or "")]
+    if not blocked:
+        return None
+    providers = sorted({st["provider"] for st in blocked if st["provider"]})
+    now = datetime.now(timezone.utc)
+    back = []
+    for provider in providers:
+        row = conn.execute("SELECT resets_at FROM quota_observations WHERE provider = ? AND resets_at IS NOT NULL "
+                           "ORDER BY id DESC LIMIT 1", (provider,)).fetchone()
+        moment = _moment(row["resets_at"]) if row else None
+        if moment is not None and moment > now:
+            back.append(moment)
+    # Every task still to do on these AIs would meet the same quota: they are the ones to give away.
+    waiting = [st["position"] for st in plan["subtasks"] if st["status"] != "ok" and st["provider"] in providers]
+    return {"subtasks": [st["position"] for st in blocked], "waiting": waiting, "providers": providers,
+            "resets_at": max(back).isoformat(timespec="seconds") if back else None}
+
+
+def schedule_resume(conn, plan_id, at, user_id):
+    """Resume the plan by itself at `at` (an ISO time, at least a minute from now). Returns the time kept."""
+    plan = _get_plan_row(conn, plan_id)
+    if not can_resume_plan(conn, plan):
+        raise StoreError("ce plan ne peut pas être repris : il doit avoir été validé et interrompu")
+    moment = _moment(at)
+    if moment is None:
+        raise StoreError("heure de reprise invalide")
+    earliest = datetime.now(timezone.utc) + timedelta(minutes=1)
+    if moment > earliest + timedelta(days=8):
+        raise StoreError("une reprise se programme dans les huit jours")
+    # In UTC: due_resumes compares these times as text.
+    kept = max(moment, earliest).astimezone(timezone.utc).isoformat(timespec="seconds")
+    conn.execute("UPDATE plans SET auto_resume_at = ?, auto_resume_user = ?, auto_resume_error = NULL WHERE id = ?",
+                 (kept, user_id, plan_id))
+    return kept
+
+
+def cancel_resume(conn, plan_id):
+    _get_plan_row(conn, plan_id)
+    conn.execute("UPDATE plans SET auto_resume_at = NULL, auto_resume_user = NULL WHERE id = ?", (plan_id,))
+
+
+def due_resumes(conn, now):
+    """The plans whose resume time has come: taken off the list (claimed) before being returned."""
+    rows = [dict(r) for r in conn.execute(
+        "SELECT id, conversation_id, auto_resume_user, auto_resume_at FROM plans "
+        "WHERE auto_resume_at IS NOT NULL AND auto_resume_at <= ? ORDER BY auto_resume_at",
+        (now.isoformat(timespec="seconds"),))]
+    for row in rows:
+        conn.execute("UPDATE plans SET auto_resume_at = NULL WHERE id = ? AND auto_resume_at = ?",
+                     (row["id"], row["auto_resume_at"]))
+    return rows
+
+
+def resume_failed(conn, plan_id, error, retry_at=None):
+    """Say why a resume did not start; `retry_at`: try again then (the conversation was busy)."""
+    conn.execute("UPDATE plans SET auto_resume_error = ?, auto_resume_at = COALESCE(?, auto_resume_at) WHERE id = ?",
+                 (error, retry_at, plan_id))
+
+
+def give_to(conn, plan_id, agent_id):
+    """The plan's tasks still to do on the AIs a quota stopped go to another agent. Returns their positions."""
+    plan = get_plan(conn, plan_id)
+    if not can_resume_plan(conn, plan) or plan["quota"] is None:
+        raise StoreError("aucune tâche de ce plan n'est arrêtée par un quota")
+    provider, model = _agent_snapshot(conn, agent_id, None)
+    if provider in plan["quota"]["providers"]:
+        raise StoreError("choisissez une autre IA que celle dont le quota est atteint")
+    moved = [st for st in plan["subtasks"] if st["position"] in plan["quota"]["waiting"]]
+    with transaction(conn):
+        for st in moved:
+            conn.execute("UPDATE subtasks SET agent_id = ?, provider = ?, model = ?, assignment_reason = ? WHERE id = ?",
+                         (agent_id, provider, model, "confiée après un quota atteint", st["id"]))
+        conn.execute("UPDATE plans SET auto_resume_at = NULL, auto_resume_user = NULL WHERE id = ?", (plan_id,))
+    return [st["position"] for st in moved]
 
 
 def open_plan(conn, conversation_id):
@@ -1111,7 +1208,9 @@ def resume_plan(conn, plan_id):
         raise StoreError('un agent de ce plan est absent ou désactivé')
     with transaction(conn):
         conn.execute("UPDATE subtasks SET status = 'pending', finished_at = NULL WHERE plan_id = ? AND status <> 'ok'", (plan_id,))
-        conn.execute("UPDATE plans SET status = 'validated', finished_at = NULL WHERE id = ?", (plan_id,))
+        # Resumed now: a resume planned for later would run it twice.
+        conn.execute("UPDATE plans SET status = 'validated', finished_at = NULL, auto_resume_at = NULL WHERE id = ?",
+                     (plan_id,))
 
 
 def stop_plan(conn, plan_id):

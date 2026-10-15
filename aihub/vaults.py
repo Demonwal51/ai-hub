@@ -25,7 +25,7 @@ from pathlib import Path
 
 from . import obsidian
 
-SOURCES = ("reglages", "aihub", "obsidian", "disque")
+SOURCES = ("reglages", "projet", "aihub", "obsidian", "disque")
 SKIP = {"node_modules", "__pycache__", "site-packages", "venv", "AppData", "Application Data", "Windows",
         "Program Files", "Program Files (x86)", "ProgramData", "System Volume Information", "Library",
         "Temp", "tmp", "proc", "sys", "dev", "usr", "bin", "lib", "snap", "var"}
@@ -187,13 +187,14 @@ def count_notes(vault):
     return total
 
 
-def discover(*, configured=None, record=None, lists=None, roots=None, extra_roots=(), refresh=False):
+def discover(*, configured=None, record=None, lists=None, roots=None, extra_roots=(), projects=(), refresh=False):
     """Every vault found, the active one first, then by name.
 
     `lists`: Obsidian's lists (None: this system's); `roots`: the folders
-    walked (None: `default_roots()`), plus `extra_roots`. Kept a minute."""
+    walked (None: `default_roots()`), plus `extra_roots`. `projects`: [(name, vault)] of
+    the projects that have their own. Kept a minute."""
     lists = obsidian_lists() if lists is None else lists
-    key = (configured, str(record), tuple(map(str, lists)), repr(roots), repr(extra_roots))
+    key = (configured, str(record), tuple(map(str, lists)), repr(roots), repr(extra_roots), tuple(projects))
     with _lock:
         hit = _cache.get(key)
         if hit and not refresh and time.monotonic() - hit[0] < CACHE_S:
@@ -202,11 +203,14 @@ def discover(*, configured=None, record=None, lists=None, roots=None, extra_root
 
     def add(path, source):
         k = _key(path)
-        entry = entries.setdefault(k, {"path": str(Path(path)), "sources": set()})
+        entry = entries.setdefault(k, {"path": str(Path(path)), "sources": set(), "projects": []})
         entry["sources"].add(source)
+        return entry
 
     if configured:
         add(configured, "reglages")
+    for name, path in projects:
+        add(path, "projet")["projects"].append(name)
     for item in created(record) if record else []:
         add(item["path"], "aihub")
     for path in registered(lists):
@@ -223,13 +227,14 @@ def discover(*, configured=None, record=None, lists=None, roots=None, extra_root
     for k, entry in entries.items():
         path = entry["path"]
         active = bool(configured) and k == _key(configured)
-        # AI Hub writes its notes into any folder: the one of the settings counts even without .obsidian.
-        exists = is_vault(path) or (active and Path(path).is_dir())
+        # AI Hub writes its notes into any folder: the settings' or a project's counts even without .obsidian.
+        exists = is_vault(path) or ((active or entry["projects"]) and Path(path).is_dir())
         vaults.append({"path": str(Path(path).resolve()) if exists else path,
                        "name": Path(path).name or path,
                        "sources": [s for s in SOURCES if s in entry["sources"]],
                        "exists": exists,
                        "active": active,
+                       "projects": sorted(entry["projects"], key=str.lower),
                        "notes": count_notes(path) if exists else None})
     vaults.sort(key=lambda v: (not v["active"], not v["exists"], v["name"].lower(), v["path"].lower()))
     result = {"vaults": vaults, "complete": complete}
@@ -278,6 +283,49 @@ def list_notes(vault, configured=None):
             break
     notes.sort(key=lambda n: n["path"].lower())
     return {"vault": str(root), "name": root.name, "notes": notes, "complete": complete}
+
+
+MAX_SEARCH_NOTES = 3000  # notes read by one search, at most
+MAX_WORDS = 8
+
+
+def _excerpt(text, at, width=90):
+    start, end = max(0, at - width), min(len(text), at + width)
+    part = " ".join(text[start:end].split())
+    return ("…" if start else "") + part + ("…" if end < len(text) else "")
+
+
+def search(vault, query, configured=None, limit=50):
+    """The notes holding every word of `query` (in their text or their name), best first, with an excerpt.
+
+    Bounded: MAX_SEARCH_NOTES notes, the first MAX_NOTE_BYTES of each, MAX_SECONDS in all."""
+    root = _vault(vault, configured)
+    query = str(query or "").strip()
+    words = [w.lower() for w in query.split()][:MAX_WORDS]
+    if not words or len(query) > 200:
+        raise obsidian.ObsidianError("indiquez un ou plusieurs mots à chercher (200 caractères au plus)")
+    found, looked, complete = [], 0, True
+    deadline = time.monotonic() + MAX_SECONDS
+    listed = list_notes(str(root), configured)
+    for note in listed["notes"]:
+        if looked >= MAX_SEARCH_NOTES or time.monotonic() > deadline:
+            complete = False
+            break
+        looked += 1
+        try:
+            with open(root / note["path"], "rb") as fh:
+                text = fh.read(MAX_NOTE_BYTES).decode("utf-8", errors="replace")
+        except OSError:
+            continue
+        low, name = text.lower(), note["path"].lower()
+        if not all(w in low or w in name for w in words):
+            continue
+        places = [low.find(w) for w in words if w in low]
+        found.append({"path": note["path"], "hits": sum(low.count(w) for w in words),
+                      "excerpt": _excerpt(text, min(places)) if places else _excerpt(text, 0)})
+    found.sort(key=lambda f: (-f["hits"], f["path"].lower()))
+    return {"vault": str(root), "query": query, "results": found[:limit], "total": len(found),
+            "looked": looked, "complete": complete and listed["complete"]}
 
 
 def read_note(vault, note, configured=None):

@@ -119,7 +119,8 @@ if WebTestCase is not None:
             self.assertIn("- Choix des IA : automatique, selon les benchmarks", text)
             self.assertIn("- Chef d'orchestre : opus", text)
             self.assertIn("- Mode de permission : manuel", text)
-            self.client.patch(f"/api/conversations/{cid}", json={"obsidian": True})
+            again = self.client.patch(f"/api/conversations/{cid}", json={"obsidian": True})
+            self.assertEqual(again.status_code, 200, again.text)  # its own note: nothing to ask, nothing done
             self.assertEqual(self.note(cid).count("## Création"), 1)  # not twice
 
         def test_note_outside_the_vault_is_refused(self):

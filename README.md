@@ -107,6 +107,19 @@ en possède un et refusent d’écraser un fichier existant. La création se fai
 sur le PC serveur, même depuis un téléphone ou un deuxième PC. Les permissions
 de l’IA restent celles choisies pour l’espace.
 
+## Coffres Obsidian
+
+Le menu **Coffres Obsidian** (propriétaire) liste les coffres du PC serveur :
+ceux créés par AI Hub, ceux qu’Obsidian connaît et ceux trouvés sur les disques
+(un dossier qui contient `.obsidian`), même créés autrement. **Ouvrir** affiche
+les notes du coffre, avec une recherche et les liens `[[…]]`, aussi depuis un
+téléphone. **Utiliser pour les notes** en fait le coffre des notes de projet,
+après enregistrement des réglages.
+
+La recherche sur les disques est bornée (dossier personnel, premiers niveaux de
+chaque disque, voisins des coffres connus) et saute les dossiers cachés et
+système. Tout se fait en lecture seule ; rien d’un coffre n’est envoyé à une IA.
+
 ## Installation Windows
 
 1. Téléchargez `ai-hub-1.0.8.zip` dans les

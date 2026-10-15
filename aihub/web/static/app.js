@@ -736,7 +736,11 @@ function renderMessages(messages) {
             e.target.textContent = "Copié ✓";
             setTimeout(() => { e.target.textContent = "Copier"; }, 1500);
           } }) : null));
-      if (state.data.conversation.obsidian_note && m.status === "ok") {
+      const synthesis = (state.data.plans || []).some((plan) => plan.synthesis_message_id === m.id);
+      if (state.data.conversation.obsidian_note && m.status === "ok" && synthesis) {
+        // A plan's synthesis goes to the note with its plan, never a second time.
+        node.append(el("button", { class: "msg-note", type: "button", disabled: true, text: "Dans la note avec son plan" }));
+      } else if (state.data.conversation.obsidian_note && m.status === "ok") {
         // Conversations stay out of the note: a reply goes there only on this click.
         node.append(el("button", { class: "msg-note", type: "button", disabled: Boolean(m.noted_at),
           text: m.noted_at ? "Notée dans Obsidian" : "Noter dans Obsidian",
@@ -1588,7 +1592,7 @@ document.addEventListener("DOMContentLoaded", () => {
   });
 });
 
-async function openCreatePath({ field = null, conversation = null, vault = false } = {}) {
+async function openCreatePath({ field = null, conversation = null, vault = false, onCreated = null } = {}) {
   const path = el("input", { required: true, maxlength: 1000, placeholder: conversation ? "src/resultat.txt" : "Chemin complet du dossier à créer", "aria-label": conversation ? "Nom ou chemin relatif" : "Chemin complet" });
   path.value = vault ? "" : field?.value.trim() || "";
   const kind = el("select", { "aria-label": "Type à créer" }, el("option", { value: "directory", text: "Dossier" }), el("option", { value: "file", text: "Fichier vide" }));
@@ -1611,6 +1615,7 @@ async function openCreatePath({ field = null, conversation = null, vault = false
         conversation_id: conversation?.id || null, password: password.value });
       password.value = "";
       if (field) { field.value = result.path; field.dispatchEvent(new Event("input", { bubbles: true })); }
+      if (onCreated) onCreated(result);
       dialog.close(); toast(vault ? "Coffre créé. Enregistrez les réglages pour l’utiliser." : result.created ? (result.kind === "file" ? "Fichier vide créé." : "Dossier créé.") : "Ce dossier existe déjà ; vous pouvez l’utiliser.");
     } catch (err) { error.textContent = err.message; password.value = ""; }
     finally { submit.disabled = false; }
@@ -2204,6 +2209,7 @@ function setupObsidianDialog() {
     $("obsidian-off").classList.toggle("hidden", !conv.obsidian_note);
     $("obsidian-rewrite").classList.toggle("hidden", !conv.obsidian_note);
     $("obsidian-error").textContent = "";
+    $("obsidian-vaults").classList.toggle("hidden", !isOwner());  // the PC's vaults: the owner's
   };
   const change = async (body) => {
     try {
@@ -2216,6 +2222,7 @@ function setupObsidianDialog() {
   };
   $("obsidian").addEventListener("click", () => { refresh(); dialog.showModal(); });
   $("obsidian-close").addEventListener("click", () => dialog.close());
+  $("obsidian-vaults").addEventListener("click", () => openVaultsDialog());
   $("obsidian-create-vault").addEventListener("click", () => {
     dialog.close(); openSettingsDialog({ createVault: true });
   });
@@ -2838,14 +2845,22 @@ function setupSettingsDialog() {
     ...Object.fromEntries(SETTING_NUMBERS.map((n) => [n, Number($(`set-${n}`).value)])),
     ...Object.fromEntries(SETTING_BOOLS.map((n) => [n, $(`set-${n}`).checked])),
   });
-  openSettingsDialog = async ({ createVault = false } = {}) => {
+  openSettingsDialog = async ({ createVault = false, vault = null } = {}) => {
     try {
       fill(await api("GET", "/api/config")); dialog.showModal();
       if (createVault) openCreatePath({ field: $("set-obsidian_vault"), vault: true });
+      if (vault) {
+        // Chosen in « Coffres Obsidian »: saved like any setting, with the password.
+        $("set-obsidian_vault").value = vault;
+        const password = $("settings-password");  // hidden on a server without passwords
+        (password.offsetParent ? password : $("set-obsidian_vault")).focus();
+        toast("Coffre choisi : enregistrez les réglages pour l’utiliser.");
+      }
     } catch (err) { toast(err.message); }
   };
   $("settings").addEventListener("click", () => openSettingsDialog());
   $("settings-create-vault").addEventListener("click", () => openCreatePath({ field: $("set-obsidian_vault"), vault: true }));
+  $("settings-pick-vault").addEventListener("click", () => openVaultsDialog({ pick: (path) => { $("set-obsidian_vault").value = path; } }));
   $("settings-cancel").addEventListener("click", () => dialog.close());
   $("settings-form").addEventListener("submit", async (event) => {
     event.preventDefault();
@@ -3011,6 +3026,7 @@ async function ensureLoggedIn() {
   $("import-local").classList.toggle("hidden", !isOwner());  // the sessions of the owner's PC
   $("consumption").classList.toggle("hidden", !isAdmin());  // also on a server without accounts
   $("server").classList.toggle("hidden", !isOwner());
+  $("vaults").classList.toggle("hidden", !isOwner());
 }
 
 const ROLE_NAMES = { owner: "propriétaire", admin: "admin", membre: "membre", invite: "invité" };
@@ -3160,6 +3176,150 @@ function setupServerDialog() {
   $("server").addEventListener("click", async () => { dialog.showModal(); await render(); });
   $("server-refresh").addEventListener("click", render);
   $("server-close").addEventListener("click", () => dialog.close());
+}
+
+// --- Obsidian vaults on this PC (the owner's): list, open to read, choose one --------------
+
+let openVaultsDialog = () => {};
+
+const VAULT_SOURCES = { reglages: "Notes d’AI Hub", aihub: "Créé par AI Hub", obsidian: "Connu d’Obsidian", disque: "Trouvé sur le disque" };
+
+// [[Note]], [[Note|alias]], [[Note#titre]] become links the reader opens; ![[embeds]] stay as text.
+function wikiLinks(text) {
+  return text.replace(/(!?)\[\[([^\]|#\n]+)(#[^\]|\n]*)?(\|[^\]\n]+)?\]\]/g, (all, embed, target, heading, alias) => {
+    if (embed) return all;
+    const label = (alias ? alias.slice(1) : target + (heading || "")).replace(/[[\]]/g, "");
+    return `[${label}](#note:${encodeURIComponent(target.trim())})`;
+  });
+}
+
+// A note's front matter (--- … --- at the top) is shown apart, not as Markdown.
+function splitFrontMatter(text) {
+  const match = /^---\r?\n([\s\S]*?)\r?\n---\r?\n?/.exec(text);
+  return match ? [match[1], text.slice(match[0].length)] : [null, text];
+}
+
+function setupVaultsDialog() {
+  const dialog = $("vaults-dialog");
+  const local = ["localhost", "127.0.0.1", "[::1]"].includes(location.hostname);
+  let pick = null;      // set when another window asked to choose a vault
+  let vault = null;     // the vault open in the reader
+  let notes = [];
+
+  const showList = () => { $("vault-reader").classList.add("hidden"); $("vaults-list-view").classList.remove("hidden"); };
+  const card = (v) => {
+    const actions = [];
+    if (v.exists) actions.push(el("button", { type: "button", class: "btn btn-primary", text: "Ouvrir", onclick: () => openVault(v) }));
+    if (v.exists && pick) {
+      actions.push(el("button", { type: "button", class: "btn btn-ghost", text: "Choisir ce coffre",
+        onclick: () => { const chosen = pick; pick = null; dialog.close(); chosen(v.path); } }));
+    } else if (v.exists && !v.active) {
+      actions.push(el("button", { type: "button", class: "btn btn-ghost", text: "Utiliser pour les notes",
+        title: "Les notes de projet d’AI Hub iront dans ce coffre (réglages, avec votre mot de passe)",
+        onclick: () => { dialog.close(); if (openSettingsDialog) openSettingsDialog({ vault: v.path }); } }));
+    }
+    if (v.exists && local) {
+      actions.push(el("a", { class: "btn btn-ghost", href: `obsidian://open?path=${encodeURIComponent(v.path)}`, text: "Ouvrir dans Obsidian",
+        title: "Sur ce PC, si Obsidian connaît déjà ce coffre ; sinon : Obsidian → « Ouvrir un dossier comme coffre »" }));
+    }
+    actions.push(el("button", { type: "button", class: "btn btn-ghost", text: "Copier le chemin",
+      onclick: async () => { try { await navigator.clipboard.writeText(v.path); } catch { fallbackCopy(v.path); } toast("Chemin copié."); } }));
+    const badges = v.sources.map((s) => el("span", { class: "vault-badge" + (s === "reglages" ? " on" : ""), text: VAULT_SOURCES[s] || s }));
+    if (!v.exists) badges.push(el("span", { class: "vault-badge warn", text: "Introuvable" }));
+    const count = !v.exists ? "dossier absent ou sans .obsidian" : v.notes === null ? "beaucoup de fichiers" : `${v.notes} note${v.notes > 1 ? "s" : ""}`;
+    return el("div", { class: "vault-card" + (v.active ? " active" : "") + (v.exists ? "" : " missing"), role: "listitem" },
+      el("div", { class: "vault-card-head" }, el("strong", { text: v.name }), el("span", { class: "quota-note", text: count })),
+      el("div", { class: "vault-card-path", text: v.path }),
+      el("div", { class: "vault-badges" }, ...badges),
+      el("div", { class: "vault-card-actions" }, ...actions));
+  };
+  const render = async (refresh = false) => {
+    $("vaults-error").textContent = "";
+    $("vaults-status").textContent = refresh ? "Recherche sur les disques…" : "Chargement…";
+    try {
+      const data = await api("GET", `/api/obsidian/vaults${refresh ? "?refresh=true" : ""}`);
+      const n = data.vaults.length;
+      $("vaults-status").textContent = (n ? `${n} coffre${n > 1 ? "s" : ""} trouvé${n > 1 ? "s" : ""}.` : "Aucun coffre trouvé sur ce PC.")
+        + (data.complete ? "" : " La recherche sur les disques s’est arrêtée avant la fin (trop de dossiers) : ceux qu’Obsidian et AI Hub connaissent sont tous là.")
+        + (pick ? " Choisissez celui des notes de projet." : "");
+      $("vaults-list").replaceChildren(...data.vaults.map(card));
+    } catch (err) { $("vaults-status").textContent = ""; $("vaults-error").textContent = err.message; }
+  };
+
+  const renderNotes = () => {
+    const words = $("vault-filter").value.trim().toLowerCase();
+    const shown = notes.filter((n) => !words || n.path.toLowerCase().includes(words));
+    $("vault-notes").replaceChildren(...(shown.length ? shown.slice(0, 500).map((n) => {
+      const cut = n.path.lastIndexOf("/");
+      return el("button", { type: "button", class: "vault-note-item", role: "listitem", title: n.path, onclick: () => openNote(n.path) },
+        cut >= 0 ? el("span", { class: "vault-note-folder", text: n.path.slice(0, cut + 1) }) : null,
+        el("span", { text: n.path.slice(cut + 1).replace(/\.md$/i, "") }));
+    }) : [el("p", { class: "list-empty", text: notes.length ? "Aucune note ne correspond." : "Ce coffre n’a pas encore de note." })]));
+  };
+  const openVault = async (v) => {
+    $("vault-error").textContent = "";
+    try {
+      const data = await api("GET", `/api/obsidian/vault/notes?vault=${encodeURIComponent(v.path)}`);
+      vault = data.vault;
+      notes = data.notes;
+      $("vault-title").textContent = data.name;
+      $("vault-path").textContent = data.vault + (data.complete ? "" : ` — les ${notes.length} premières notes seulement`);
+      $("vault-filter").value = "";
+      $("vault-note-title").textContent = "";
+      $("vault-note-meta").textContent = "Choisissez une note.";
+      $("vault-note-body").replaceChildren();
+      $("vault-reader").classList.remove("showing-note");
+      renderNotes();
+      $("vaults-list-view").classList.add("hidden");
+      $("vault-reader").classList.remove("hidden");
+      $("vault-filter").focus();
+    } catch (err) { $("vaults-error").textContent = err.message; }
+  };
+  const openNote = async (path) => {
+    $("vault-error").textContent = "";
+    try {
+      const n = await api("GET", `/api/obsidian/vault/note?vault=${encodeURIComponent(vault)}&path=${encodeURIComponent(path)}`);
+      const cut = n.path.lastIndexOf("/");
+      $("vault-note-title").textContent = n.path.slice(cut + 1).replace(/\.md$/i, "");
+      $("vault-note-meta").textContent = [cut >= 0 ? n.path.slice(0, cut) : null, bytes(n.size), `modifiée ${formatDate(n.modified)}`,
+        n.cut ? "trop longue : seul le début est affiché" : null].filter(Boolean).join(" · ");
+      const [front, body] = splitFrontMatter(n.content);
+      const parts = [];
+      if (front) parts.push(el("details", { class: "vault-front" }, el("summary", { text: "Propriétés" }), el("pre", { text: front })));
+      const rendered = el("div");
+      rendered.innerHTML = renderMarkdown(wikiLinks(body));
+      parts.push(rendered);
+      $("vault-note-body").replaceChildren(...parts);
+      $("vault-reader").classList.add("showing-note");
+      $("vault-note-pane").scrollTop = 0;
+    } catch (err) { $("vault-error").textContent = err.message; }
+  };
+  // A [[link]]: the note of that name (or path) in the same vault.
+  $("vault-note-body").addEventListener("click", (event) => {
+    const link = event.target.closest('a[href^="#note:"]');
+    if (!link) return;
+    event.preventDefault();
+    const target = decodeURIComponent(link.getAttribute("href").slice(6)).toLowerCase();
+    const found = notes.find((n) => n.path.toLowerCase() === `${target}.md` || n.path.toLowerCase() === target)
+      || notes.find((n) => n.path.toLowerCase().split("/").pop().replace(/\.md$/, "") === target.split("/").pop());
+    if (found) openNote(found.path); else toast(`Pas de note « ${link.textContent} » dans ce coffre.`);
+  });
+
+  openVaultsDialog = async ({ pick: chooser = null } = {}) => {
+    pick = chooser;
+    showList();
+    if (!dialog.open) dialog.showModal();
+    await render();
+  };
+  dialog.addEventListener("close", () => { pick = null; });
+  $("vaults").addEventListener("click", () => openVaultsDialog());
+  $("vaults-refresh").addEventListener("click", () => render(true));
+  $("vaults-close").addEventListener("click", () => dialog.close());
+  $("vault-close").addEventListener("click", () => dialog.close());
+  $("vault-back").addEventListener("click", () => { showList(); render(); });
+  $("vault-note-back").addEventListener("click", () => $("vault-reader").classList.remove("showing-note"));
+  $("vault-filter").addEventListener("input", renderNotes);
+  $("vaults-create").addEventListener("click", () => openCreatePath({ vault: true, onCreated: () => render(true) }));
 }
 
 // --- keyboard shortcuts -----------------------------------------------------------------
@@ -4050,6 +4210,7 @@ async function main() {
   setupInstructions();
   setupShortcuts();
   setupServerDialog();
+  setupVaultsDialog();
   setupShareDialog();
   setupAccountsDialog();
   setupPasswordDialog();

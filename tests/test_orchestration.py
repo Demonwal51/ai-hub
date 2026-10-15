@@ -236,6 +236,37 @@ class ExecutionTests(OrchestrationTestCase):
         self.assertEqual(assemblage["args"][assemblage["args"].index("--model") + 1], "sonnet")
         self.assertEqual(os.path.normcase(assemblage["cwd"]), os.path.normcase(str(self.workdir)))
 
+    def test_a_validated_plan_asked_without_prompt_is_not_taken_for_a_mere_plan(self):
+        # The automatic request says "Prépare un plan" : once the user validated
+        # the plan, neither the agents nor the synthesis may read it as "plan only".
+        plan_id, result = self.propose("")
+        self.assertIsNotNone(plan_id, result.error)
+        request = store.get_message(self.conn, store.get_plan(self.conn, plan_id)["request_message_id"])
+        self.assertEqual(request["content"], orchestrator.AUTO_PLAN_REQUEST)
+        for st in store.get_plan(self.conn, plan_id)["subtasks"]:
+            store.assign_subtask(self.conn, st["id"], self.a)
+        store.validate_plan(self.conn, plan_id)
+        self.assertEqual(self.execute(plan_id)[0], "done")
+        logs = [json.loads(p.read_text(encoding="utf-8")) for p in self.logs.glob("run-*.json")]
+        prompts = {d.get("scenario"): d["user_message"]["message"]["content"] for d in logs
+                   if d.get("scenario") in ("synthesis", "subtask")}
+        self.assertEqual(set(prompts), {"synthesis", "subtask"})
+        for kind, prompt in prompts.items():
+            self.assertNotIn(orchestrator.AUTO_PLAN_REQUEST, prompt, kind)
+            self.assertIn("puis il l'a validé", prompt, kind)
+            self.assertIn(orchestrator.VALIDATED, prompt, kind)
+        self.assertIn("Ne présente pas son exécution comme un écart", prompts["synthesis"])
+        summary = store.get_plan(self.conn, plan_id)["summary"]
+        self.assertTrue(summary)
+        self.assertIn(f"Plan d'ensemble : {summary}", prompts["synthesis"])
+
+    def test_a_written_request_reaches_the_agents_as_written(self):
+        self.execute(self.ready_plan())
+        logs = [json.loads(p.read_text(encoding="utf-8")) for p in self.logs.glob("run-*.json")]
+        synthesis = next(d for d in logs if d.get("scenario") == "synthesis")["user_message"]["message"]["content"]
+        self.assertIn("<demande>\nfais le projet\n</demande>", synthesis)
+        self.assertIn(orchestrator.VALIDATED, synthesis)
+
     def test_dependencies_get_earlier_results(self):
         self.execute(self.ready_plan())
         prompt = self.runs()["Assemblage"]["user_message"]["message"]["content"]

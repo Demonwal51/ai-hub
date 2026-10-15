@@ -330,7 +330,7 @@ MUTATIONS = [
     ("obsidian: reecriture garde les plans annules", "aihub/web/jobs.py",
      'if plan["status"] in ("done", "error", "stopped") and ran:', 'if True:'),
     ("obsidian: reecriture oublie les reponses notees", "aihub/web/jobs.py",
-     '                if message["noted_at"]:\n', "                if False:\n"),
+     '                if message["noted_at"] and message["id"] not in in_plans:\n', "                if False:\n"),
     ("obsidian: reponse notee non retenue", "aihub/web/app.py",
      "            store.mark_noted(conn, mid)\n", ""),
     ("obsidian: message utilisateur notable", "aihub/web/app.py",
@@ -1374,6 +1374,57 @@ MUTATIONS.append(('v103: cancellation waits for refresh', 'aihub/web/static/app.
     '      // cancelled plan remains proposed locally'))
 MUTATIONS.append(('v103: rejected plan remains busy', 'aihub/providers/claude_code.py',
                  "            self.stop(reason='plan_rejected')\n", '            pass\n'))
+
+MUTATIONS.append(('v109: reply noted twice', 'aihub/web/app.py',
+                 '            if message["noted_at"]:\n                raise StoreError("cette réponse est déjà dans la note")\n', ''))
+MUTATIONS.append(('v109: synthesis noted by hand', 'aihub/web/app.py',
+                 '            if conn.execute("SELECT 1 FROM plans WHERE synthesis_message_id = ?", (mid,)).fetchone():\n', '            if False:\n'))
+MUTATIONS.append(('v109: rewrite copies the synthesis twice', 'aihub/web/jobs.py',
+                 'if message["noted_at"] and message["id"] not in in_plans:', 'if message["noted_at"]:'))
+MUTATIONS.append(('v109: noted plan leaves its synthesis unmarked', 'aihub/web/jobs.py',
+                 '                store.mark_noted(conn, plan["synthesis_message_id"])\n', '                pass\n'))
+MUTATIONS.append(('v109: automatic request passed as is', 'aihub/orchestrator.py',
+                 "    if str(request or '').strip() == AUTO_PLAN_REQUEST:\n", '    if False:\n'))
+MUTATIONS.append(('v109: synthesis not told of the validation', 'aihub/orchestrator.py',
+                 '{VALIDATED} Ne présente pas son exécution comme un écart à la demande.', ''))
+MUTATIONS.append(('v109: subtask not told of the validation', 'aihub/orchestrator.py',
+                 "Plan d'ensemble : {plan.get('summary') or 'non précisé'}\n{VALIDATED}\n\nTa sous-tâche", "Plan d'ensemble : {plan.get('summary') or 'non précisé'}\n\nTa sous-tâche"))
+MUTATIONS.append(('v109: anyone lists the vaults', 'aihub/web/app.py',
+                 '    def list_vaults(refresh: bool = False):\n        access.require_owner(me())\n', '    def list_vaults(refresh: bool = False):\n'))
+MUTATIONS.append(("v109: anyone lists a vault's notes", 'aihub/web/app.py',
+                 '    def vault_notes(vault: str):\n        access.require_owner(me())\n', '    def vault_notes(vault: str):\n'))
+MUTATIONS.append(('v109: anyone reads a note', 'aihub/web/app.py',
+                 '    def vault_note(vault: str, path: str):\n        access.require_owner(me())\n', '    def vault_note(vault: str, path: str):\n'))
+MUTATIONS.append(('v109: created vault not remembered', 'aihub/web/app.py',
+                 '        vaults.record_created(vaults.record_file(db_path), result["path"])\n', ''))
+MUTATIONS.append(('v109: any folder opens as a vault', 'aihub/vaults.py',
+                 '    if not (is_vault(path) or settings):\n', '    if not Path(path).is_dir():\n'))
+MUTATIONS.append(('v109: settings folder refused without .obsidian', 'aihub/vaults.py',
+                 '        exists = is_vault(path) or (active and Path(path).is_dir())\n', '        exists = is_vault(path)\n'))
+MUTATIONS.append(('v109: hidden folder of a vault read', 'aihub/vaults.py',
+                 '    if any(part.startswith(".") for part in Path(str(note)).parts):\n', '    if False:\n'))
+MUTATIONS.append(('v109: walk enters hidden folders', 'aihub/vaults.py',
+                 'e.is_dir(follow_symlinks=False) and not e.name.startswith((".", "$", "~"))', 'e.is_dir(follow_symlinks=False)'))
+MUTATIONS.append(('v109: walk goes past its depth', 'aihub/vaults.py',
+                 '        if depth <= 0:\n            continue\n', ''))
+MUTATIONS.append(('v109: walk never stops', 'aihub/vaults.py',
+                 '        if looked >= max_dirs or time.monotonic() > deadline:\n', '        if False:\n'))
+MUTATIONS.append(('v109: hidden notes counted', 'aihub/vaults.py',
+                 '    for folder, dirs, files in os.walk(vault):\n        dirs[:] = [d for d in dirs if not d.startswith(".")]\n', '    for folder, dirs, files in os.walk(vault):\n'))
+MUTATIONS.append(('v109: hidden notes listed', 'aihub/vaults.py',
+                 '        dirs[:] = sorted(d for d in dirs if not d.startswith("."))\n', '        dirs[:] = sorted(dirs)\n'))
+MUTATIONS.append(('v109: notes listed without end', 'aihub/vaults.py',
+                 '            if len(notes) >= MAX_NOTES:\n', '            if False:\n'))
+MUTATIONS.append(('v109: long note read whole', 'aihub/vaults.py',
+                 '        raw = fh.read(MAX_NOTE_BYTES)\n', '        raw = fh.read()\n'))
+MUTATIONS.append(('v109: known vault said found on the disk', 'aihub/vaults.py',
+                 '        if _key(path) not in entries:  # "found on the disk": known by nothing else\n', '        if True:\n'))
+MUTATIONS.append(('v109: active vault not first', 'aihub/vaults.py',
+                 'vaults.sort(key=lambda v: (not v["active"], not v["exists"], v["name"].lower(), v["path"].lower()))', 'vaults.sort(key=lambda v: (v["name"].lower(), v["path"].lower()))'))
+MUTATIONS.append(('v109: a broken Obsidian list breaks the search', 'aihub/vaults.py',
+                 '        except (OSError, ValueError):\n            continue\n        for entry in (data.get("vaults") or {}).values():\n', '        except OSError:\n            continue\n        for entry in (data.get("vaults") or {}).values():\n'))
+MUTATIONS.append(('v109: created vault listed twice', 'aihub/vaults.py',
+                 '        known = [v for v in created(path_of_record) if _key(v["path"]) != _key(vault_path)]\n', '        known = list(created(path_of_record))\n'))
 
 TEST_MODULES = []
 

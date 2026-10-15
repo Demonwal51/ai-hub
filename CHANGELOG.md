@@ -1,5 +1,23 @@
 # Journal des versions
 
+## 1.0.9 — 15 octobre 2026 : coffres Obsidian et deux corrections
+
+- Fenêtre « Coffres Obsidian » (menu, propriétaire) : les coffres créés par AI Hub,
+  ceux qu’Obsidian connaît et ceux trouvés sur les disques du PC (un dossier qui
+  contient `.obsidian`). Chaque coffre s’ouvre pour lire ses notes, avec la
+  recherche et les liens `[[…]]` ; sur téléphone, la liste puis la note.
+- « Utiliser pour les notes » et « Choisir parmi les coffres du PC… » dans les
+  réglages : le coffre des notes de projet se choisit dans la liste, puis
+  s’enregistre avec le mot de passe comme les autres réglages.
+- Lecture seule : rien d’un coffre n’est modifié ni envoyé à une IA ; les
+  dossiers cachés (`.obsidian`, `.trash`) ne s’ouvrent pas.
+- Correction : une réponse ne va plus deux fois dans la note de projet ; la
+  synthèse d’un plan y va avec son plan, et « Réécrire la note » ne la copie
+  plus en double.
+- Correction : un plan demandé sans prompt puis validé n’est plus présenté par
+  le chef comme « un plan seulement » ; agents et synthèse savent que le plan
+  a été validé avant son exécution.
+
 ## 1.0.8 — 13 octobre 2026 : reprise des travaux interrompus
 
 - « Reprendre » sous la dernière réponse interrompue et « Reprendre le plan »

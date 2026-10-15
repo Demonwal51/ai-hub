@@ -605,9 +605,11 @@ class JobManager:
                          if conv["conductor_agent_id"] else None)
             names = {a["id"]: a["name"] for a in store.list_agents(conn)}
             entries = []
+            in_plans = set()  # syntheses written with their plan, never a second time as a reply
             for plan in store.list_plans(conn, conversation_id):
                 ran = any(s["started_at"] for s in plan["subtasks"])
                 if plan["status"] in ("done", "error", "stopped") and ran:
+                    in_plans.add(plan["synthesis_message_id"])
                     request = store.get_message(conn, plan["request_message_id"])["content"]
                     synthesis = (store.get_message(conn, plan["synthesis_message_id"])["content"]
                                  if plan["synthesis_message_id"] else None)
@@ -615,7 +617,7 @@ class JobManager:
                     entries.append((when, obsidian.plan_section(plan, request, synthesis, names, when=when)))
             messages = store.list_messages(conn, conversation_id)
             for i, message in enumerate(messages):
-                if message["noted_at"]:
+                if message["noted_at"] and message["id"] not in in_plans:
                     request = next((m["content"] for m in reversed(messages[:i]) if m["role"] == "user"), None)
                     entries.append((message["created_at"],
                                     obsidian.reply_section(request, message["content"], when=message["created_at"])))
@@ -646,6 +648,9 @@ class JobManager:
             names = {a["id"]: a["name"] for a in store.list_agents(conn)}
             obsidian.append(self.obsidian_vault, conversation["obsidian_note"], conversation["title"],
                             obsidian.plan_section(plan, request, synthesis, names))
+            if plan["synthesis_message_id"] and synthesis:
+                # The synthesis is in the note now: its "Noter" button shows it.
+                store.mark_noted(conn, plan["synthesis_message_id"])
             return None
         except obsidian.ObsidianError as exc:
             return str(exc)

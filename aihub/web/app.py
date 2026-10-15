@@ -30,7 +30,7 @@ from pydantic import BaseModel, Field
 from .. import VERSION_LABEL, __version__
 from .. import (auth, autonomous, backup, config, db, eveil, memory, notify, obsidian, providers, routing, runner,
                 schedule, semantic, store, tools)
-from .. import access, accounts, attachments, compare, filesystem, importer, isolation, library, rag, resumption, sandbox_results, updater, usage
+from .. import access, accounts, attachments, compare, filesystem, importer, isolation, library, rag, resumption, sandbox_results, updater, usage, vaults
 from ..providers import claude_code, codex, ollama
 from ..providers.claude_code import ProviderError
 from ..store import BypassConfirmationRequired, Busy, NotFound, StoreError
@@ -1262,7 +1262,31 @@ def create_app(db_path, *, command=None, env=None, allowed_roots=(), permission_
                 if verified['id'] != user['id']:
                     raise access.Forbidden('les droits du compte ont changé : création refusée')
                 access.require_owner(verified)
-        return obsidian.create_vault(body.path, roots=current().allowed_roots, parents=body.parents)
+        result = obsidian.create_vault(body.path, roots=current().allowed_roots, parents=body.parents)
+        vaults.record_created(vaults.record_file(db_path), result["path"])
+        return result
+
+    # --- the vaults on this PC (aihub/vaults.py), the owner's, reading only ------------
+
+    app.state.vault_hooks = {}  # tests give their own Obsidian list and folders to walk
+
+    @app.get("/api/obsidian/vaults")
+    def list_vaults(refresh: bool = False):
+        access.require_owner(me())
+        hooks = app.state.vault_hooks
+        return vaults.discover(configured=current().obsidian_vault, record=vaults.record_file(db_path),
+                               lists=hooks.get("lists"), roots=hooks.get("roots"),
+                               extra_roots=[(r, 2) for r in current().allowed_roots], refresh=refresh)
+
+    @app.get("/api/obsidian/vault/notes")
+    def vault_notes(vault: str):
+        access.require_owner(me())
+        return vaults.list_notes(vault, configured=current().obsidian_vault)
+
+    @app.get("/api/obsidian/vault/note")
+    def vault_note(vault: str, path: str):
+        access.require_owner(me())
+        return vaults.read_note(vault, path, configured=current().obsidian_vault)
 
     def agent_for(conn, model, *, isolated=False):
         offered = (isolated_models(current()) if isolated and config.provider_of(model) in ('claude_code', 'codex') else
@@ -2370,6 +2394,12 @@ def create_app(db_path, *, command=None, env=None, allowed_roots=(), permission_
                 raise StoreError("la note Obsidian n'est pas activée pour cette conversation")
             if message["role"] != "assistant" or message["status"] != "ok":
                 raise StoreError("seule une réponse terminée peut être notée")
+            if message["noted_at"]:
+                raise StoreError("cette réponse est déjà dans la note")
+            if conn.execute("SELECT 1 FROM plans WHERE synthesis_message_id = ?", (mid,)).fetchone():
+                # The plan's own section already holds it, written when the plan ended.
+                raise StoreError("la synthèse d'un plan va dans la note avec son plan ; "
+                                 "« Réécrire la note » l'y remet si elle manque")
             before = conn.execute(
                 "SELECT content FROM messages WHERE conversation_id = ? AND id < ? AND role = 'user' "
                 "ORDER BY id DESC LIMIT 1", (conv["id"], mid)).fetchone()

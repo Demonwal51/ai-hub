@@ -31,6 +31,20 @@ MAX_PARALLEL = 8          # technical ceiling on the conductor's choice
 MAX_SUBTASKS = 12
 RESULT_EXCERPT = 4000     # characters of a dependency's result passed on
 KINDS = routing.KINDS     # the kinds the assignment table knows
+# The request recorded when "Demander un plan" is sent with nothing written.
+AUTO_PLAN_REQUEST = 'Prépare un plan à partir de notre discussion et du contexte du projet.'
+# Every executed plan went through the user's validation (store.validate_plan,
+# called by the "Lancer le plan" button only): the agents and the synthesis
+# must not take its execution for a departure from the request.
+VALIDATED = ("L'utilisateur a validé ce plan avant son exécution : le réaliser est ce qu'il a demandé.")
+
+
+def _execution_request(request):
+    """The request as the agents and the synthesis should read it, once the plan is validated."""
+    if str(request or '').strip() == AUTO_PLAN_REQUEST:
+        return ("L'utilisateur a demandé un plan à partir de la discussion et du contexte du projet, "
+                "puis il l'a validé : il faut maintenant le réaliser.")
+    return request
 
 
 def plan_schema(agent_names=None):
@@ -196,10 +210,11 @@ def subtask_prompt(request, plan, subtask, done_dependencies):
 
 Demande d'origine de l'utilisateur (pour le contexte, ne la traite pas en entier) :
 <demande>
-{request}
+{_execution_request(request)}
 </demande>
 
 Plan d'ensemble : {plan.get('summary') or 'non précisé'}
+{VALIDATED}
 
 Ta sous-tâche ({subtask['position']}/{len(plan['subtasks'])}) : {subtask['title'] or ''}
 {subtask['description']}"""]
@@ -223,8 +238,11 @@ def synthesis_prompt(request, plan):
 
 Demande de l'utilisateur :
 <demande>
-{request}
+{_execution_request(request)}
 </demande>
+
+Plan d'ensemble : {plan.get('summary') or 'non précisé'}
+{VALIDATED} Ne présente pas son exécution comme un écart à la demande.
 
 Résultats des sous-tâches :
 {chr(10).join(lines)}"""
@@ -286,7 +304,7 @@ def propose_plan(conn, conversation_id, prompt, *, on_request=None, **request_kw
     context = ''
     retrieval = prompt
     if not str(prompt or '').strip():
-        prompt = 'Prépare un plan à partir de notre discussion et du contexte du projet.'
+        prompt = AUTO_PLAN_REQUEST
         exchanges = memory.last_exchanges(conn, conversation_id, 6)
         recent, used = [], 0
         for entry in reversed(exchanges):

@@ -594,3 +594,38 @@ body.offline .composer, body.offline #fresh-banner { opacity: .55; pointer-event
 .diagnostic-check { padding: .75rem 0; border-bottom: 1px solid var(--border); }
 .results-summary { font-weight: 600; }
 @media (max-width: 480px) { .access-facts { grid-template-columns: minmax(0, 1fr); gap: .3rem; } .access-facts dd { margin-bottom: .65rem; } }
+
+/* Obsidian vaults of the PC: the list, then a reader (notes beside the note; one at a time on a phone). */
+.vaults-dialog { width: min(980px, calc(100vw - 32px)); }
+.vaults-list { display: flex; flex-direction: column; gap: 8px; max-height: 58dvh; overflow: auto; }
+.vault-card { border: 1px solid var(--border); border-radius: 10px; padding: 10px 12px; display: flex; flex-direction: column; gap: 6px; }
+.vault-card.active { border-color: var(--accent); }
+.vault-card.missing { opacity: .65; }
+.vault-card-head { display: flex; justify-content: space-between; gap: 8px; align-items: baseline; flex-wrap: wrap; }
+.vault-card-path, .vault-path { font-family: ui-monospace, Consolas, monospace; font-size: 12px; color: var(--muted); overflow-wrap: anywhere; }
+.vault-badges { display: flex; flex-wrap: wrap; gap: 4px; }
+.vault-badge { font-size: 11px; padding: 1px 8px; border-radius: 999px; background: var(--panel-2); color: var(--muted); }
+.vault-badge.on { background: var(--accent); color: var(--accent-text); }
+.vault-badge.warn { background: var(--warn-bg); border: 1px solid var(--warn-border); }
+.vault-card-actions { display: flex; flex-wrap: wrap; gap: 6px; }
+.vault-card-actions .btn { text-decoration: none; }
+.vault-reader-head { display: flex; align-items: center; gap: 10px; }
+.vault-reader-head h2 { margin: 0; overflow-wrap: anywhere; }
+.vault-panes { display: grid; grid-template-columns: minmax(200px, 300px) minmax(0, 1fr); gap: 12px; height: min(62dvh, 640px); }
+.vault-notes-pane { display: flex; flex-direction: column; gap: 6px; min-height: 0; }
+.vault-notes { overflow: auto; display: flex; flex-direction: column; border: 1px solid var(--border); border-radius: 8px; min-height: 0; flex: 1; }
+.vault-note-item { text-align: left; background: none; border: 0; border-bottom: 1px solid var(--border); padding: 7px 10px; cursor: pointer; color: inherit; font: inherit; overflow-wrap: anywhere; }
+.vault-note-item:hover, .vault-note-item:focus-visible { background: var(--panel-2); }
+.vault-note-folder { color: var(--muted); font-size: 12px; }
+.vault-note-pane { overflow: auto; min-height: 0; border: 1px solid var(--border); border-radius: 8px; padding: 10px 14px; }
+.vault-note-pane h3 { margin: 0 0 2px; overflow-wrap: anywhere; }
+.vault-note-body { overflow-wrap: anywhere; }
+.vault-front pre { white-space: pre-wrap; background: var(--code-bg); padding: 8px; border-radius: 6px; font-size: 12px; }
+.vault-note-back { display: none; }
+@media (max-width: 760px) {
+  .vault-panes { grid-template-columns: minmax(0, 1fr); height: 64dvh; }
+  .vault-reader .vault-note-pane { display: none; }
+  .vault-reader.showing-note .vault-note-pane { display: block; }
+  .vault-reader.showing-note .vault-notes-pane { display: none; }
+  .vault-note-back { display: inline-flex; margin-bottom: 6px; }
+}

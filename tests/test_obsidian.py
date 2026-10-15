@@ -175,6 +175,44 @@ if WebTestCase is not None:
             self.assertEqual(self.client.post(f"/api/conversations/{cid}/obsidian/rewrite").status_code, 200)
             self.assertIn("**Demande :** dis bonjour\n\nBonjour", self.note(cid))
 
+        def test_a_reply_goes_to_the_note_once(self):
+            cid = self.new_conversation(title="Simple")
+            self.client.patch(f"/api/conversations/{cid}", json={"obsidian": True})
+            self.send(cid, "dis bonjour")
+            reply = self.wait_idle(cid)["messages"][-1]
+            self.assertEqual(self.client.post(f"/api/messages/{reply['id']}/obsidian").status_code, 200)
+            r = self.client.post(f"/api/messages/{reply['id']}/obsidian")
+            self.assertEqual(r.status_code, 400)
+            self.assertIn("déjà dans la note", r.json()["detail"])
+            self.assertEqual(self.note(cid).count("**Demande :** dis bonjour"), 1)
+
+        def test_a_plans_synthesis_is_in_the_note_once(self):
+            # 13/10/2026 : the synthesis, already written with its plan, was noted
+            # again by hand, and a rewrite would have copied it twice as well.
+            cid = self.orchestration()
+            self.client.patch(f"/api/conversations/{cid}", json={"obsidian": True})
+            plan = self.run_plan(cid)["plans"][-1]
+            synthesis = next(m for m in self.conversation(cid)["messages"] if m["id"] == plan["synthesis_message_id"])
+            self.assertIsNotNone(synthesis["noted_at"])  # its button says it is in the note
+            r = self.client.post(f"/api/messages/{synthesis['id']}/obsidian")
+            self.assertEqual(r.status_code, 400)
+            self.assertEqual(self.note(cid).count("Synthèse : 3 réussie(s)"), 1)
+            self.assertEqual(self.client.post(f"/api/conversations/{cid}/obsidian/rewrite").status_code, 200)
+            self.assertEqual(self.note(cid).count("Synthèse : 3 réussie(s)"), 1)
+
+        def test_a_synthesis_from_before_the_note_is_refused_by_hand(self):
+            cid = self.orchestration()
+            plan = self.run_plan(cid)["plans"][-1]  # the note was off: no plan section
+            self.client.patch(f"/api/conversations/{cid}", json={"obsidian": True})
+            r = self.client.post(f"/api/messages/{plan['synthesis_message_id']}/obsidian")
+            self.assertEqual(r.status_code, 400)
+            self.assertIn("avec son plan", r.json()["detail"])
+            # A rewrite is the way to bring it in: once, with its plan.
+            self.assertEqual(self.client.post(f"/api/conversations/{cid}/obsidian/rewrite").status_code, 200)
+            text = self.note(cid)
+            self.assertEqual(text.count("Synthèse : 3 réussie(s)"), 1)
+            self.assertIn("— plan terminé", text)
+
         def test_no_rewrite_while_a_request_runs(self):
             cid = self.new_conversation(title="Long")
             self.client.patch(f"/api/conversations/{cid}", json={"obsidian": True})

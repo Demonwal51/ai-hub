@@ -111,6 +111,7 @@
             <button class="menu-item hidden" id="people" type="button" title="Inviter des personnes, gérer leurs accès">Personnes</button>
             <button class="menu-item hidden" id="consumption" type="button" title="Qui a utilisé combien d'IA">Consommation</button>
             <button class="menu-item hidden" id="server" type="button" title="État du serveur : disque, sauvegardes, journal">Serveur</button>
+            <button class="menu-item hidden" id="vaults" type="button" title="Les coffres Obsidian de ce PC : les ouvrir, en choisir un">Coffres Obsidian</button>
             <button class="menu-item hidden" id="my-accounts" type="button" title="Vos comptes Claude et ChatGPT : vos demandes les utilisent">Mes comptes IA</button>
             <button class="menu-item hidden" id="my-password" type="button" title="Changer votre mot de passe">Mot de passe</button>
             <button class="menu-item hidden" id="devices" type="button" title="Les appareils où une session est ouverte">Appareils</button>
@@ -305,6 +306,7 @@
       <h2>Note de projet dans Obsidian</h2>
       <p id="obsidian-state"></p>
       <button class="btn btn-ghost" type="button" id="obsidian-create-vault">Créer un nouveau coffre…</button>
+      <button class="btn btn-ghost" type="button" id="obsidian-vaults">Voir les coffres du PC…</button>
       <p class="quota-note">Coffre : <span id="obsidian-vault"></span>. La note reçoit la création du projet puis
         une mise à jour après chaque plan exécuté. Les conversations n'y vont pas : une réponse n'y va que si
         vous cliquez « Noter dans Obsidian » sous elle.</p>
@@ -370,6 +372,7 @@
           <input id="set-obsidian_vault" placeholder="D:\notes\coffre">
         </label>
         <button class="btn btn-ghost" type="button" id="settings-create-vault">Créer un nouveau coffre…</button>
+        <button class="btn btn-ghost" type="button" id="settings-pick-vault">Choisir parmi les coffres du PC…</button>
         <p class="quota-note">Le coffre est créé sur le PC serveur. Enregistrez les réglages pour l’utiliser.
           Changer de coffre ne déplace pas les anciennes notes.</p>
       </fieldset>
@@ -565,6 +568,46 @@
         <button class="btn btn-ghost" type="button" id="consumption-close">Fermer</button>
       </div>
     </form>
+  </dialog>
+
+  <dialog id="vaults-dialog" class="dialog dialog-wide vaults-dialog">
+    <div class="vaults-list-view" id="vaults-list-view">
+      <h2>Coffres Obsidian</h2>
+      <p class="quota-note">Les coffres créés par AI Hub, ceux qu'Obsidian connaît, et ceux trouvés sur les disques de ce PC
+        (un dossier qui contient <code>.obsidian</code>). Ouvrir un coffre le lit ici, sans rien modifier ;
+        rien n'en est envoyé à une IA.</p>
+      <p class="quota-note" id="vaults-status" role="status"></p>
+      <div class="vaults-list" id="vaults-list"></div>
+      <p class="form-error" id="vaults-error" role="alert"></p>
+      <div class="dialog-actions">
+        <button class="btn btn-ghost" type="button" id="vaults-create">Créer un nouveau coffre…</button>
+        <button class="btn btn-ghost" type="button" id="vaults-refresh">Chercher à nouveau</button>
+        <button class="btn btn-ghost" type="button" id="vaults-close">Fermer</button>
+      </div>
+    </div>
+    <div class="vault-reader hidden" id="vault-reader">
+      <div class="vault-reader-head">
+        <button class="btn btn-ghost" type="button" id="vault-back">← Coffres</button>
+        <h2 id="vault-title"></h2>
+      </div>
+      <p class="quota-note vault-path" id="vault-path"></p>
+      <div class="vault-panes">
+        <div class="vault-notes-pane" id="vault-notes-pane">
+          <input id="vault-filter" type="search" placeholder="Chercher une note…" aria-label="Chercher une note">
+          <div class="vault-notes" id="vault-notes" role="list"></div>
+        </div>
+        <article class="vault-note-pane" id="vault-note-pane">
+          <button class="btn btn-ghost vault-note-back" type="button" id="vault-note-back">← Notes</button>
+          <h3 id="vault-note-title"></h3>
+          <p class="quota-note" id="vault-note-meta"></p>
+          <div class="msg-body vault-note-body" id="vault-note-body"></div>
+        </article>
+      </div>
+      <p class="form-error" id="vault-error" role="alert"></p>
+      <div class="dialog-actions">
+        <button class="btn btn-ghost" type="button" id="vault-close">Fermer</button>
+      </div>
+    </div>
   </dialog>
 
   <dialog id="server-dialog" class="dialog dialog-wide">

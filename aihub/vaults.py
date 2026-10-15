@@ -15,6 +15,7 @@ nothing of it goes to an AI.
 
 import json
 import os
+import re
 import string
 import sys
 import threading
@@ -243,6 +244,9 @@ def _vault(path, configured=None):
     """The vault's folder: one holding .obsidian, or the one of the settings (AI Hub's notes)."""
     if not isinstance(path, str) or not path.strip() or not Path(path).is_absolute():
         raise obsidian.ObsidianError("indiquez le chemin complet du coffre")
+    if os.name == "nt" and not re.match(r"^[A-Za-z]:[\\/]", path.strip()):
+        # Never looked at: a network path would make Windows connect to that machine.
+        raise obsidian.ObsidianError("choisissez un coffre d'un disque local du serveur")
     settings = bool(configured) and _key(path) == _key(configured) and Path(path).is_dir()
     if not (is_vault(path) or settings):
         raise obsidian.ObsidianError(f"ce dossier n'est pas un coffre Obsidian : {path}")

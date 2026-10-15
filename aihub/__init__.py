@@ -1,4 +1,4 @@
 """AI Hub: one place to talk to Claude Code, Codex and local models."""
 
-__version__ = "1.0.9"
-VERSION_LABEL = "1.0.9"
+__version__ = "1.0.10"
+VERSION_LABEL = "1.0.10"

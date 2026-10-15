@@ -629,3 +629,19 @@ body.offline .composer, body.offline #fresh-banner { opacity: .55; pointer-event
   .vault-reader.showing-note .vault-notes-pane { display: none; }
   .vault-note-back { display: inline-flex; margin-bottom: 6px; }
 }
+
+/* The app's own folder picker (server PC's folders, from any device). */
+.picker-dialog { width: min(760px, calc(100vw - 32px)); }
+.picker-starts { display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 8px; }
+.picker-start { border: 1px solid var(--border); background: var(--panel-2); color: inherit; border-radius: 999px; padding: 4px 12px; font: inherit; font-size: 13px; cursor: pointer; }
+.picker-start:hover, .picker-start:focus-visible { border-color: var(--accent); }
+.picker-where { font-family: ui-monospace, Consolas, monospace; font-size: 13px; overflow-wrap: anywhere; margin: 4px 0 6px; }
+.picker-list { display: flex; flex-direction: column; max-height: 48dvh; overflow: auto; border: 1px solid var(--border); border-radius: 8px; margin-bottom: 8px; }
+.picker-list:empty { display: none; }
+.picker-item { display: flex; align-items: center; gap: 8px; text-align: left; background: none; border: 0; border-bottom: 1px solid var(--border); padding: 8px 10px; color: inherit; font: inherit; cursor: pointer; overflow-wrap: anywhere; }
+.picker-item:hover, .picker-item:focus-visible { background: var(--panel-2); }
+.picker-check { cursor: default; }
+.picker-open { display: flex; align-items: center; gap: 8px; background: none; border: 0; color: var(--accent); font: inherit; cursor: pointer; padding: 0; text-align: left; overflow-wrap: anywhere; }
+.picker-file { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.picker-icon { flex: none; }
+.picker-dialog > input { width: 100%; box-sizing: border-box; margin-bottom: 6px; }

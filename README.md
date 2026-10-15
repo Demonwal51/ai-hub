@@ -107,6 +107,20 @@ en possède un et refusent d’écraser un fichier existant. La création se fai
 sur le PC serveur, même depuis un téléphone ou un deuxième PC. Les permissions
 de l’IA restent celles choisies pour l’espace.
 
+## Choisir un dossier du PC serveur
+
+À côté de chaque chemin (dossier de travail, réglages, création d’un dossier ou
+d’un coffre), **Parcourir…** ouvre le sélecteur de l’appli : les disques et les
+dossiers habituels, puis un clic pour entrer dans un dossier. Il marche depuis
+un téléphone ou un deuxième PC, où la fenêtre de Windows n’existe pas. Pour un
+espace isolé, **Choisir dans le dossier de travail…** coche les fichiers et
+dossiers à copier.
+
+Le sélecteur ne montre que des noms et ne modifie rien. Pour un dossier de
+travail, il reste dans les dossiers autorisés ; dans les réglages, il est
+réservé au propriétaire. Les dossiers cachés et les liens qui sortent du dossier
+ne sont pas montrés.
+
 ## Coffres Obsidian
 
 Le menu **Coffres Obsidian** (propriétaire) liste les coffres du PC serveur :

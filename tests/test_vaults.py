@@ -155,6 +155,21 @@ class ReadingTests(TempDirMixin, unittest.TestCase):
         with self.assertRaises(obsidian.ObsidianError):
             vaults.list_notes(str(plain))  # not the settings' folder: an ordinary folder
 
+    @unittest.skipUnless(os.name == "nt", "chemins réseau de Windows")
+    def test_a_network_vault_is_never_looked_at(self):
+        touched = []
+        real = Path.is_dir
+        def spy(self_path):
+            touched.append(str(self_path))
+            return real(self_path)
+        with mock.patch.object(Path, "is_dir", spy):
+            for path in (r"\\serveur\partage\coffre", "//serveur/partage/coffre"):
+                with self.subTest(path=path), self.assertRaisesRegex(obsidian.ObsidianError, "disque local"):
+                    vaults.list_notes(path)
+                with self.subTest(note=path), self.assertRaisesRegex(obsidian.ObsidianError, "disque local"):
+                    vaults.read_note(path, "Note.md")
+        self.assertEqual([p for p in touched if "serveur" in p], [])
+
     def test_a_long_note_is_cut(self):
         with mock.patch.object(vaults, "MAX_NOTE_BYTES", 4):
             note = vaults.read_note(str(self.vault), "Accueil.md")

@@ -28,7 +28,7 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
 from .. import VERSION_LABEL, __version__
-from .. import (auth, autonomous, backup, config, db, eveil, memory, notify, obsidian, providers, routing, runner,
+from .. import (auth, autonomous, backup, browse, config, db, eveil, memory, notify, obsidian, providers, routing, runner,
                 schedule, semantic, store, tools)
 from .. import access, accounts, attachments, compare, filesystem, importer, isolation, library, rag, resumption, sandbox_results, updater, usage, vaults
 from ..providers import claude_code, codex, ollama
@@ -1230,6 +1230,36 @@ def create_app(db_path, *, command=None, env=None, allowed_roots=(), permission_
             allowed = ", ".join(str(r) for r in roots)
             raise StoreError(f"dossier de travail non autorisé : {workdir} (autorisés : {allowed})")
         return str(workdir)
+
+    # --- the app's own folder picker (aihub/browse.py): names only, reading only ----------
+
+    @app.get('/api/filesystem/folders')
+    def browse_folders(path: str | None = None, scope: str = 'workdir'):
+        user = me()
+        if scope == 'settings':
+            # The owner chooses a setting (allowed folders, vault, backups): anywhere on the PC.
+            access.require_owner(user)
+            return browse.folders(path)
+        if not access.trusted(user):
+            raise access.Forbidden('parcourir le PC serveur est réservé au propriétaire et aux administrateurs')
+        return browse.folders(path, current().allowed_roots)
+
+    @app.get('/api/filesystem/entries')
+    def browse_entries(path: str = '', base: str | None = None, conversation_id: int | None = None):
+        """What a working folder holds, to pick the files an isolated space receives."""
+        user = me()
+        if conversation_id is not None:
+            with database() as conn:
+                conv = access.require(conn, user, conversation_id, 'owner')
+            if not conv['workdir']:
+                raise StoreError("cette conversation n'a pas de dossier de travail")
+            return browse.entries(conv['workdir'], path)
+        if not access.trusted(user):
+            raise access.Forbidden('parcourir le PC serveur est réservé au propriétaire et aux administrateurs')
+        if not base:
+            raise StoreError("indiquez d'abord le dossier de travail")
+        browse.local_path(base.strip())  # before check_workdir resolves it
+        return browse.entries(check_workdir(base), path)
 
     @app.post('/api/filesystem/create')
     def create_path(body: CreatePath, request: HttpRequest):

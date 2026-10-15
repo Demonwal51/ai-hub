@@ -1,5 +1,24 @@
 # Journal des versions
 
+## 1.0.10 — 16 octobre 2026 : choisir les dossiers dans l’appli
+
+- **Parcourir…** à côté de chaque chemin du PC serveur : dossier de travail
+  d’une conversation, d’un projet ou d’un import, dossiers autorisés, coffre
+  des notes, sauvegardes, stockage du moteur isolé, et création d’un dossier
+  ou d’un coffre. Plus besoin de la fenêtre de Windows ni de taper le chemin,
+  et cela marche depuis un téléphone ou un deuxième PC.
+- Le sélecteur part des disques et des dossiers habituels, entre dans un
+  dossier d’un clic, remonte, accepte un chemin tapé, signale les coffres et
+  peut créer un nouveau dossier sur place.
+- **Choisir dans le dossier de travail…** pour un espace isolé : les fichiers
+  et dossiers se cochent au lieu de s’écrire un par ligne.
+- **Ouvrir un dossier…** dans « Coffres Obsidian » : ouvre n’importe quel coffre
+  du PC, même absent de la liste.
+- Mêmes limites qu’avant : dossiers autorisés pour les dossiers de travail
+  (propriétaire et administrateurs), réglages réservés au propriétaire,
+  dossiers cachés non montrés, liens qui sortent du dossier ignorés. On ne
+  voit que des noms : aucun fichier n’est lu.
+
 ## 1.0.9 — 15 octobre 2026 : coffres Obsidian et deux corrections
 
 - Fenêtre « Coffres Obsidian » (menu, propriétaire) : les coffres créés par AI Hub,

@@ -1426,6 +1426,54 @@ MUTATIONS.append(('v109: a broken Obsidian list breaks the search', 'aihub/vault
 MUTATIONS.append(('v109: created vault listed twice', 'aihub/vaults.py',
                  '        known = [v for v in created(path_of_record) if _key(v["path"]) != _key(vault_path)]\n', '        known = list(created(path_of_record))\n'))
 
+MUTATIONS.append(('v110: guest browses the PC', 'aihub/web/app.py',
+                 "        if not access.trusted(user):\n            raise access.Forbidden('parcourir le PC serveur est réservé au propriétaire et aux administrateurs')\n        return browse.folders(path, current().allowed_roots)\n", '        return browse.folders(path, current().allowed_roots)\n'))
+MUTATIONS.append(("v110: admin chooses the owner's settings", 'aihub/web/app.py',
+                 "        if scope == 'settings':\n            # The owner chooses a setting (allowed folders, vault, backups): anywhere on the PC.\n            access.require_owner(user)\n", "        if scope == 'settings':\n            # The owner chooses a setting (allowed folders, vault, backups): anywhere on the PC.\n            access.trusted(user) or access.require_owner(user)\n"))
+MUTATIONS.append(('v110: working folder browsed past the allowed folders', 'aihub/web/app.py',
+                 '        return browse.folders(path, current().allowed_roots)\n', '        return browse.folders(path)\n'))
+MUTATIONS.append(("v110: a shared writer reads the conversation's files", 'aihub/web/app.py',
+                 "                conv = access.require(conn, user, conversation_id, 'owner')\n            if not conv['workdir']:", "                conv = access.require(conn, user, conversation_id, 'read')\n            if not conv['workdir']:"))
+MUTATIONS.append(('v110: guest lists a working folder', 'aihub/web/app.py',
+                 "        if not access.trusted(user):\n            raise access.Forbidden('parcourir le PC serveur est réservé au propriétaire et aux administrateurs')\n        if not base:\n", '        if not base:\n'))
+MUTATIONS.append(('v110: any base folder listed', 'aihub/web/app.py',
+                 '        return browse.entries(check_workdir(base), path)\n', '        return browse.entries(base, path)\n'))
+MUTATIONS.append(('v110: outside the allowed folders shown', 'aihub/browse.py',
+                 '    if allowed and not _inside(here, allowed):\n        raise StoreError("ce dossier est hors des dossiers autorisés")\n', ''))
+MUTATIONS.append(('v110: a link out of the allowed folders shown', 'aihub/browse.py',
+                 '        if allowed and not _inside(target, allowed):\n            continue  # a link out of the allowed folders\n', ''))
+MUTATIONS.append(('v110: a way up out of the allowed folders', 'aihub/browse.py',
+                 '    if parent is not None and allowed and not _inside(parent, allowed):\n        parent = None\n', ''))
+MUTATIONS.append(('v110: hidden folders shown', 'aihub/browse.py',
+                 'items = sorted((e for e in it if not e.name.startswith((".", "$"))), key=lambda e: e.name.lower())', 'items = sorted(it, key=lambda e: e.name.lower())'))
+MUTATIONS.append(('v110: files shown as folders', 'aihub/browse.py',
+                 '            if not entry.is_dir():\n                continue\n', ''))
+MUTATIONS.append(('v110: the allowed folders are not where it starts', 'aihub/browse.py',
+                 '    if roots:\n        return [{"name": str(r), "path": str(r)} for r in roots if r.is_dir()]\n', ''))
+# v110: "a relative path taken" retired: on Windows browse.local_path refuses a relative
+# path first, so the is_absolute() check only acts on Linux (test_bad_paths, run there).
+MUTATIONS.append(('v110: a file opened as a folder', 'aihub/browse.py',
+                 '    if not p.is_dir():\n        raise StoreError(f"ce dossier n\'existe pas : {p}")\n', ''))
+MUTATIONS.append(('v110: a folder out of the working folder entered', 'aihub/browse.py',
+                 '    if not _inside(here, [root]) or not here.is_dir():\n', '    if not here.is_dir():\n'))
+MUTATIONS.append(('v110: a link out of the working folder shown', 'aihub/browse.py',
+                 '            if kind is None or not _inside(Path(entry.path).resolve(), [root]):\n', '            if kind is None:\n'))
+MUTATIONS.append(('v110: a crowded folder listed whole', 'aihub/browse.py',
+                 '        if len(entries) >= MAX_ENTRIES:\n', '        if False:\n'))
+MUTATIONS.append(('v110: the parent of a subfolder lost', 'aihub/browse.py',
+                 '"parent": "" if parent == "." else parent,', '"parent": parent,'))
+
+MUTATIONS.append(('v110: going up out of the working folder', 'aihub/browse.py',
+                 '    if raw and (raw.startswith(("/", "\\\\")) or ":" in raw or ".." in re.split(r"[\\\\/]", raw)):\n', '    if False:\n'))
+MUTATIONS.append(('v110: a relative way out judged once changed', 'aihub/browse.py',
+                 '    if raw and (raw.startswith(("/", "\\\\")) or ":" in raw or ".." in re.split(r"[\\\\/]", raw)):\n', '    if raw and (":" in raw or ".." in re.split(r"[\\\\/]", raw)):\n'))
+MUTATIONS.append(('v110: a network path resolved', 'aihub/browse.py',
+                 '    local_path(path.strip())\n', ''))
+MUTATIONS.append(('v110: a network base resolved before the check', 'aihub/web/app.py',
+                 '        browse.local_path(base.strip())  # before check_workdir resolves it\n', ''))
+MUTATIONS.append(('v110: a network vault looked at', 'aihub/vaults.py',
+                 '    if os.name == "nt" and not re.match(r"^[A-Za-z]:[\\\\/]", path.strip()):\n', '    if False:\n'))
+
 TEST_MODULES = []
 
 

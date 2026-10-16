@@ -817,10 +817,10 @@ function renderConversation() {
   $("conv-shared").textContent = conv.shared ? "Partagée ✓" : "Privée";
   const others = state.conversations.filter((c) => inProject && c.project_id === conv.project_id && c.id !== conv.id);
   $("cite").classList.toggle("hidden", !inProject || !conv.shared || !others.length);
-  const vault = Boolean(conv.notes_vault);  // its project's vault, or the settings'
-  $("obsidian").classList.toggle("hidden", !vault && !isOwner());
+  const vault = Boolean(conv.notes_vault);  // its own vault, its project's, or the settings'
+  $("obsidian").classList.toggle("hidden", !vault && !isOwner());  // the owner chooses a vault when linking
   $("obsidian").classList.toggle("on", Boolean(conv.obsidian_note));
-  $("obsidian").textContent = conv.obsidian_note ? "Obsidian ✓" : "Obsidian";
+  $("obsidian").textContent = conv.obsidian_note ? "Obsidian ✓" : "Relier à Obsidian…";
   // Shared with someone: what is the owner's stays hidden, and reading only means no composer.
   const role = conv.my_role || "owner";
   for (const id of ["conv-project", "conv-assignment", "conv-model", "conv-mode", "obsidian", "tools", "instructions",
@@ -1871,8 +1871,6 @@ document.addEventListener("DOMContentLoaded", () => {
   $("getting-started").addEventListener("click", openGettingStarted);
   $("welcome-guide").addEventListener("click", openGettingStarted);
   $("create-path").addEventListener("click", () => openCreatePath({ conversation: state.data.conversation }));
-  $("new-create-folder").addEventListener("click", () => openCreatePath({ field: $("new-workdir") }));
-  $("project-create-folder").addEventListener("click", () => openCreatePath({ field: $("project-workdir") }));
   $("isolation-access").addEventListener("click", async () => {
     try {
       const data = await api("GET", `/api/conversations/${state.currentId}/isolation`);
@@ -1898,36 +1896,31 @@ document.addEventListener("DOMContentLoaded", () => {
   });
 });
 
-async function openCreatePath({ field = null, conversation = null, vault = false, onCreated = null, start = "" } = {}) {
-  const path = el("input", { required: true, maxlength: 1000, placeholder: conversation ? "src/resultat.txt" : "Chemin complet du dossier à créer", "aria-label": conversation ? "Nom ou chemin relatif" : "Chemin complet" });
-  path.value = start || (vault ? "" : field?.value.trim() || "");
-  // Where to create it: chosen in the app's picker, then the new name typed after it.
-  const browse = conversation ? null : el("button", { type: "button", class: "btn btn-ghost btn-small", text: "Parcourir…",
-    title: "Choisir le dossier où créer, dans l’appli", onclick: () => openPathPicker({ title: "Où créer le dossier", start: path.value.trim(),
-      scope: vault ? "settings" : "workdir", action: "Créer dans ce dossier",
-      onPick: (where) => { path.value = where.replace(/[\\/]+$/, "") + pathSeparator(where); path.focus(); } }) });
+// In a conversation's working folder (relative to it): a file or a folder made on purpose. Everything
+// else made on the PC (a folder, a vault) is made in the app's explorer, « ＋ Nouveau dossier ».
+async function openCreatePath({ conversation } = {}) {
+  const path = el("input", { required: true, maxlength: 1000, placeholder: "src/resultat.txt", "aria-label": "Nom ou chemin relatif" });
   const kind = el("select", { "aria-label": "Type à créer" }, el("option", { value: "directory", text: "Dossier" }), el("option", { value: "file", text: "Fichier vide" }));
   const parents = el("input", { type: "checkbox", checked: true });
   const password = el("input", { type: "password", autocomplete: "current-password", "aria-label": "Votre mot de passe AI Hub" });
   const error = el("p", { class: "form-error", role: "alert" });
   const submit = el("button", { type: "submit", class: "btn btn-primary", text: "Créer" });
   const dialog = el("dialog", { class: "dialog dialog-content" });
-  const form = el("form", {}, el("h2", { text: vault ? "Créer un nouveau coffre Obsidian" : conversation ? "Créer dans le dossier de travail" : "Créer le dossier de travail" }),
-    el("p", { class: "quota-note", text: conversation ? `Création sur le PC serveur, dans ${conversation.workdir}. Les accès de l’IA restent ceux que vous avez choisis.` : "Ce dossier sera créé sur le PC qui héberge AI Hub. Le chemin concerne ce serveur, même depuis un autre PC ou un téléphone." }),
-    conversation ? el("label", {}, "Type", kind) : null,
-    el("label", {}, conversation ? "Nom ou chemin relatif au dossier de travail" : "Chemin complet", path, browse),
+  const form = el("form", {}, el("h2", { text: "Créer dans le dossier de travail" }),
+    el("p", { class: "quota-note", text: `Création sur le PC serveur, dans ${conversation.workdir}. Les accès de l’IA restent ceux que vous avez choisis.` }),
+    el("label", {}, "Type", kind),
+    el("label", {}, "Nom ou chemin relatif au dossier de travail", path),
     el("label", { class: "check" }, parents, "Créer aussi les dossiers parents manquants"),
     state.me ? el("label", {}, "Votre mot de passe AI Hub (laissez vide si votre compte n’en a pas)", password) : null,
     error, el("div", { class: "dialog-actions" }, el("button", { type: "button", class: "btn btn-ghost", text: "Annuler", onclick: () => dialog.close() }), submit));
   form.addEventListener("submit", async (event) => {
     event.preventDefault(); submit.disabled = true; error.textContent = "";
     try {
-      const result = await api("POST", vault ? "/api/obsidian/vaults" : "/api/filesystem/create", { path: path.value.trim(), kind: conversation ? kind.value : "directory", parents: parents.checked,
-        conversation_id: conversation?.id || null, password: password.value });
+      const result = await api("POST", "/api/filesystem/create", { path: path.value.trim(), kind: kind.value, parents: parents.checked,
+        conversation_id: conversation.id, password: password.value });
       password.value = "";
-      if (field) { field.value = result.path; field.dispatchEvent(new Event("input", { bubbles: true })); }
-      if (onCreated) onCreated(result);
-      dialog.close(); toast(vault ? "Coffre créé. Enregistrez les réglages pour l’utiliser." : result.created ? (result.kind === "file" ? "Fichier vide créé." : "Dossier créé.") : "Ce dossier existe déjà ; vous pouvez l’utiliser.");
+      dialog.close();
+      toast(result.created ? (result.kind === "file" ? "Fichier vide créé." : "Dossier créé.") : "Ce dossier existe déjà ; vous pouvez l’utiliser.");
     } catch (err) { error.textContent = err.message; password.value = ""; }
     finally { submit.disabled = false; }
   });
@@ -1969,13 +1962,36 @@ async function openMemoryRag() {
   const searchForm = el('form', {}, el('label', {}, 'Chercher dans la mémoire', query), searchButton);
   const results = el('div');
   const documents = el('div');
-  const upload = el('input', { type: 'file', accept: '.md,.txt,.csv,.json,.yaml,.yml', 'aria-label': 'Document à associer au projet' });
+  // A file of the PC, in the app's explorer (the owner and the admins); else one of this device.
+  const KINDS = '.md,.txt,.csv,.json,.yaml,.yml';
+  const fromDevice = async (file) => {
+    if (file.size > 800000) { error.textContent = 'Document trop volumineux (800 Ko au maximum).'; return; }
+    try { await associate(file.name, await file.text()); } catch (err) { error.textContent = err.message; }
+  };
+  const upload = el('button', { type: 'button', class: 'btn btn-ghost', text: 'Ajouter un fichier…', onclick: () => {
+    if (!isAdmin()) {
+      const input = el('input', { type: 'file', accept: KINDS, hidden: true });
+      input.addEventListener('change', () => { const file = input.files?.[0]; input.remove(); if (file) fromDevice(file); });
+      document.body.append(input); input.click();
+      return;
+    }
+    openPathPicker({ title: 'Un fichier pour la mémoire du projet', files: KINDS.replace(/\./g, ''), action: 'Ajouter ce fichier',
+      device: { accept: KINDS, onFiles: (chosen) => fromDevice(chosen[0]) },
+      onPick: async (path) => {
+        error.textContent = '';
+        try {
+          await api('POST', `/api/projects/${data.project_id}/memory/file`, { path });
+          await refresh();
+          toast('Document associé et indexé dans la mémoire du projet.');
+        } catch (err) { error.textContent = err.message; }
+      } });
+  } });
   const name = el('input', { maxlength: 120, placeholder: 'Decisions.md', 'aria-label': 'Nom de la note' });
   const text = el('textarea', { rows: 4, maxlength: 200000, placeholder: 'Collez ici une note à garder pour ce projet.', 'aria-label': 'Texte de la note' });
   const add = el('button', { type: 'button', class: 'btn btn-primary', text: 'Associer cette note au projet' });
   const manage = el('section', {},
     el('p', { class: 'quota-note', text: 'Documents et notes ajoutés volontairement, accessibles aux personnes qui peuvent lire le projet. Texte uniquement : Markdown, TXT, CSV, JSON et YAML ; 200 000 caractères par document. Aucun coffre n’est parcouru automatiquement.' }),
-    el('label', {}, 'Ajouter un document au projet', upload),
+    el('div', { class: 'field-row' }, upload),
     el('label', {}, 'Ou écrire une note — nom du fichier', name), text, add);
   let data = null;
   async function refresh() {
@@ -2005,17 +2021,11 @@ async function openMemoryRag() {
     error.textContent = ''; add.disabled = true; upload.disabled = true;
     try {
       await api('POST', `/api/projects/${data.project_id}/memory/documents`, { name: filename, content });
-      text.value = ''; name.value = ''; upload.value = ''; await refresh();
+      text.value = ''; name.value = ''; await refresh();
       toast('Document associé et indexé dans la mémoire du projet.');
     } catch (err) { error.textContent = err.message; }
     finally { add.disabled = false; upload.disabled = false; }
   }
-  upload.addEventListener('change', async () => {
-    const file = upload.files?.[0];
-    if (!file) return;
-    if (file.size > 800000) { error.textContent = 'Document trop volumineux (800 Ko au maximum).'; upload.value = ''; return; }
-    try { await associate(file.name, await file.text()); } catch (err) { error.textContent = err.message; }
-  });
   add.addEventListener('click', () => associate(name.value.trim(), text.value));
   searchForm.addEventListener('submit', async event => {
     event.preventDefault(); error.textContent = ''; searchButton.disabled = true;
@@ -2270,7 +2280,6 @@ function setupProjectDialog() {
     $("project-name").value = project ? project.name : "";
     $("project-description").value = project ? project.description || "" : "";
     $("project-workdir").value = project ? project.workdir || "" : "";
-    $("project-create-folder").classList.toggle("hidden", !isAdmin());
     $("project-instructions").value = project ? project.instructions || "" : "";
     $("project-vault").value = project ? project.obsidian_vault || "" : "";
     $("project-vault-row").classList.toggle("hidden", !isOwner());  // a folder of the owner's PC
@@ -2551,64 +2560,128 @@ function setupNewDialog() {
   });
 }
 
-// --- Obsidian project note ------------------------------------------------------------------
+// --- Obsidian (1.2.2): link a conversation to a vault, a new one or one already on the PC ----------
 
 function setupObsidianDialog() {
   $('memory-rag').addEventListener('click', openMemoryRag);
-  const dialog = $("obsidian-dialog");
-  const refresh = () => {
-    const conv = state.data.conversation;
-    const configured = Boolean(conv.notes_vault);
-    $("obsidian-vault").textContent = conv.notes_vault
-      ? conv.notes_vault + (conv.project_id && conv.notes_vault !== (state.options.obsidian || {}).vault ? " (le coffre du projet)" : "")
-      : "aucun coffre configuré";
-    $("obsidian-state").textContent = conv.obsidian_note
-      ? `Note activée : ${conv.obsidian_note}`
-      : configured ? "La note n'est pas activée pour cette conversation." : "Créez un coffre ou choisissez son dossier dans les réglages.";
-    $("obsidian-on").disabled = !configured;
-    $("obsidian-path").value = conv.obsidian_note || `Projets AI Hub/${conv.title.replace(/[<>:"/\\|?*]/g, "-")}.md`;
-    $("obsidian-path").disabled = Boolean(conv.obsidian_note);
-    $("obsidian-on").classList.toggle("hidden", Boolean(conv.obsidian_note));
-    $("obsidian-off").classList.toggle("hidden", !conv.obsidian_note);
-    $("obsidian-rewrite").classList.toggle("hidden", !conv.obsidian_note);
-    $("obsidian-error").textContent = "";
-    $("obsidian-vaults").classList.toggle("hidden", !isOwner());  // the PC's vaults: the owner's
+  $("obsidian").addEventListener("click", () => openObsidian());
+}
+
+const folderName = (path) => String(path || "").replace(/[\\/]+$/, "").split(/[\\/]/).pop() || String(path || "");
+
+// The note made in the conversation's vault: an existing note is never taken without asking.
+async function activateNote(cid) {
+  const found = await api("GET", `/api/conversations/${cid}/obsidian/check`);
+  let existing = null;
+  if (found.exists) {
+    existing = await choiceDialog({
+      title: "Cette note existe déjà",
+      text: `« ${found.note} » est déjà dans le coffre` + (found.used_by.length
+        ? `, et la conversation « ${found.used_by.join(" », « ")} » y écrit aussi.` : ", peut-être d'une ancienne conversation.")
+        + ` Continuer cette note, ou en créer une nouvelle (« ${found.free} ») ?`,
+      choices: [{ value: "continue", label: "Continuer cette note" }, { value: "new", label: "Créer une nouvelle note", primary: true }] });
+    if (!existing) return false;
+  }
+  await api("PATCH", `/api/conversations/${cid}`, { obsidian: true, ...(existing ? { obsidian_existing: existing } : {}) });
+  return true;
+}
+
+// That vault becomes the conversation's own, then its note is made there.
+async function linkVault(cid, path) {
+  await api("PATCH", `/api/conversations/${cid}`, { obsidian_vault: path });
+  const linked = await activateNote(cid);
+  if (state.currentId === cid) await refreshConversation();
+  if (linked) toast(`Reliée à Obsidian : coffre « ${folderName(path)} ».`);
+  return linked;
+}
+
+async function openObsidian() {
+  const cid = state.currentId;
+  const body = el("div", { class: "obsidian-body" });
+  const error = el("p", { class: "form-error", role: "alert" });
+  const actions = el("div", { class: "dialog-actions" });
+  const dialog = el("dialog", { class: "dialog dialog-content obsidian-dialog" },
+    el("h2", { text: "Obsidian" }), body, error, actions);
+  const close = el("button", { type: "button", class: "btn btn-ghost", text: "Fermer", onclick: () => dialog.close() });
+  dialog.addEventListener("close", () => dialog.remove(), { once: true });
+  document.body.append(dialog);
+  dialog.showModal();
+  const run = async (work) => {
+    error.textContent = "";
+    try { return await work(); } catch (err) { error.textContent = err.message; return null; }
   };
-  const change = async (body) => {
-    try {
-      await api("PATCH", `/api/conversations/${state.currentId}`, body);
-      await refreshConversation();
-      refresh();
-    } catch (err) {
-      $("obsidian-error").textContent = err.message;
+  const what = el("p", { class: "quota-note", text: "Ce qui va dans la note : la création de la conversation, chaque plan "
+    + "terminé, et les réponses que vous choisissez (« Noter dans Obsidian » sous une réponse). La conversation elle-même n'y va pas." });
+
+  // The two ways: a vault made now, or one already on the PC.
+  const choose = () => {
+    body.replaceChildren(el("p", { text: "Reliez cette conversation à un coffre Obsidian :" }),
+      el("div", { class: "obsidian-choices" },
+        el("button", { type: "button", class: "obsidian-choice", onclick: createNew },
+          el("strong", { text: "Créer un nouveau coffre" }), el("span", { text: "Un dossier neuf sur ce PC, prêt à ouvrir dans Obsidian" })),
+        el("button", { type: "button", class: "obsidian-choice", onclick: pickExisting },
+          el("strong", { text: "Choisir un coffre existant" }), el("span", { text: "Un coffre déjà sur ce PC" }))),
+      what);
+    actions.replaceChildren(close);
+  };
+
+  const createNew = async () => {
+    // Beside the vaults already known, named after the conversation.
+    const known = await run(() => api("GET", "/api/obsidian/vaults"));
+    const first = (known?.vaults || []).find((v) => v.exists);
+    const title = state.data.conversation.title.replace(/[<>:"/\\|?*]/g, "-").trim().slice(0, 60) || "Coffre";
+    const start = first ? first.path.replace(/[\\/][^\\/]+[\\/]?$/, "") : "";
+    openPathPicker({ title: "Où créer le nouveau coffre ?", start, action: null, make: { kind: "vault", name: title,
+      onMade: async (made) => { if (await run(() => linkVault(cid, made.path))) dialog.close(); else render(); } } });
+  };
+
+  const pickExisting = async () => {
+    body.replaceChildren(el("p", { text: "Recherche des coffres de ce PC…" }));
+    actions.replaceChildren(el("button", { type: "button", class: "btn btn-ghost", text: "← Retour", onclick: render }), close);
+    const found = await run(() => api("GET", "/api/obsidian/vaults"));
+    if (!found || !dialog.open) return;
+    const usable = found.vaults.filter((v) => v.exists);
+    // Outside the allowed folders of the settings: shown, never linked (aihub/places.py).
+    const list = el("div", { class: "obsidian-vaults" }, ...usable.map((v) => el("button", { type: "button", class: "obsidian-vault",
+      title: v.path, disabled: !v.allowed, onclick: async () => {
+        if (await run(() => linkVault(cid, v.path))) dialog.close(); else render();
+      } }, el("strong", { text: v.name }), el("span", { text: v.allowed ? v.path : `${v.path} · hors des dossiers autorisés` }))));
+    body.replaceChildren(el("p", { text: usable.length ? "Choisissez le coffre :" : "Aucun coffre trouvé sur ce PC." }), list,
+      el("button", { type: "button", class: "btn btn-ghost btn-small", text: "Un autre dossier…",
+        onclick: () => openPathPicker({ title: "Choisir un coffre Obsidian", action: "Relier ce coffre",
+          vaultsOnly: true, onPick: async (path) => {
+            if (await run(() => linkVault(cid, path))) dialog.close();
+          } }) }));
+  };
+
+  const render = () => {
+    const conv = state.data?.conversation;
+    if (!conv || state.currentId !== cid) { dialog.close(); return; }
+    if (conv.obsidian_note) {
+      body.replaceChildren(el("p", { class: "obsidian-linked" }, "Reliée au coffre ", el("strong", { text: `« ${folderName(conv.notes_vault)} »` })),
+        el("p", { class: "quota-note", text: `${conv.notes_vault} · note « ${conv.obsidian_note} »` }), what);
+      actions.replaceChildren(
+        el("button", { type: "button", class: "btn btn-danger-ghost adv", text: "Réécrire la note", onclick: rewrite }),
+        el("button", { type: "button", class: "btn btn-ghost", text: "Délier", onclick: async () => {
+          if (await run(() => api("PATCH", `/api/conversations/${cid}`, { obsidian: false }))) { await refreshConversation(); render(); }
+        } }),
+        isOwner() ? el("button", { type: "button", class: "btn btn-ghost", text: "Changer de coffre", onclick: choose }) : null,
+        close);
+    } else if (isOwner()) {
+      choose();
+    } else if (conv.notes_vault) {
+      // An admin: the vault is the owner's choice; the note goes to the one already set.
+      body.replaceChildren(el("p", { text: `Coffre choisi par le propriétaire : « ${folderName(conv.notes_vault)} ».` }), what);
+      actions.replaceChildren(close, el("button", { type: "button", class: "btn btn-primary", text: "Relier", onclick: async () => {
+        if (await run(() => activateNote(cid))) { await refreshConversation(); render(); }
+      } }));
+    } else {
+      body.replaceChildren(el("p", { text: "Le propriétaire du serveur n'a pas encore choisi de coffre Obsidian." }));
+      actions.replaceChildren(close);
     }
   };
-  $("obsidian").addEventListener("click", () => { refresh(); dialog.showModal(); });
-  $("obsidian-close").addEventListener("click", () => dialog.close());
-  $("obsidian-vaults").addEventListener("click", () => openVaultsDialog());
-  $("obsidian-create-vault").addEventListener("click", () => {
-    dialog.close(); openSettingsDialog({ createVault: true });
-  });
-  $("obsidian-on").addEventListener("click", async () => {
-    const note = $("obsidian-path").value.trim();
-    let existing = null;
-    try {
-      const found = await api("GET", `/api/conversations/${state.currentId}/obsidian/check?note=${encodeURIComponent(note)}`);
-      if (found.exists) {
-        existing = await choiceDialog({
-          title: "Cette note existe déjà",
-          text: `« ${found.note} » est déjà dans le coffre` + (found.used_by.length
-            ? `, et la conversation « ${found.used_by.join(" », « ")} » y écrit aussi.` : ", peut-être d'une ancienne conversation.")
-            + ` Continuer cette note, ou en créer une nouvelle (« ${found.free} ») ?`,
-          choices: [{ value: "continue", label: "Continuer cette note" }, { value: "new", label: "Créer une nouvelle note", primary: true }] });
-        if (!existing) return;
-      }
-    } catch (err) { $("obsidian-error").textContent = err.message; return; }
-    change({ obsidian: true, obsidian_note: note, ...(existing ? { obsidian_existing: existing } : {}) });
-  });
-  $("obsidian-off").addEventListener("click", () => change({ obsidian: false }));
-  $("obsidian-rewrite").addEventListener("click", async () => {
-    dialog.close();
+
+  const rewrite = async () => {
     const ok = await confirmDialog({
       title: "Réécrire toute la note ?",
       text: "La note sera reconstruite : création, chaque plan exécuté et chaque réponse notée, dans l'ordre. "
@@ -2618,13 +2691,11 @@ function setupObsidianDialog() {
       check: "J'ai compris : la note actuelle sera remplacée",
     });
     if (!ok) return;
-    try {
-      const r = await api("POST", `/api/conversations/${state.currentId}/obsidian/rewrite`);
-      toast(r.backup ? `Note réécrite. Ancienne version : ${r.backup}` : "Note réécrite.");
-    } catch (err) {
-      toast(err.message);
-    }
-  });
+    const r = await run(() => api("POST", `/api/conversations/${cid}/obsidian/rewrite`));
+    if (r) toast(r.backup ? `Note réécrite. Ancienne version : ${r.backup}` : "Note réécrite.");
+  };
+
+  render();
 }
 
 // --- conversation actions ---------------------------------------------------------------
@@ -2815,6 +2886,55 @@ function setupActions() {
       event.target.value = previous;
       toast(err.message);
     }
+  });
+}
+
+// The person's password again, for making something on the PC (null: cancelled).
+function askPassword(title) {
+  return new Promise((resolve) => {
+    const input = el("input", { type: "password", autocomplete: "current-password", "aria-label": "Votre mot de passe AI Hub" });
+    const dialog = el("dialog", { class: "dialog dialog-content" });
+    let answer = null;
+    const finish = (value) => { answer = value; dialog.close(); };
+    const form = el("form", {}, el("h2", { text: title }),
+      el("label", {}, "Votre mot de passe AI Hub (laissez vide si votre compte n’en a pas)", input),
+      el("div", { class: "dialog-actions" }, el("button", { type: "button", class: "btn btn-ghost", text: "Annuler", onclick: () => finish(null) }),
+        el("button", { type: "submit", class: "btn btn-primary", text: "Confirmer" })));
+    form.addEventListener("submit", (event) => { event.preventDefault(); finish(input.value); });
+    dialog.append(form);
+    dialog.addEventListener("close", () => { input.value = ""; dialog.remove(); resolve(answer); }, { once: true });
+    document.body.append(dialog);
+    dialog.showModal();
+    input.focus();
+  });
+}
+
+// « Exporter » (1.2.3): the owner and the admins may save it into a folder of the PC, chosen in the
+// explorer (a new file, never over another one); anyone may download it on their device.
+function setupExport() {
+  $("export-md").addEventListener("click", async (event) => {
+    if (!isAdmin()) return;  // a download, as before
+    event.preventDefault();
+    const conv = state.data?.conversation;
+    if (!conv) return;
+    const href = $("export-md").href;
+    const choice = await choiceDialog({ title: "Exporter la conversation", text: "Un fichier Markdown, lisible partout.",
+      choices: [{ value: "device", label: "Télécharger sur cet appareil" }, { value: "pc", label: "Enregistrer sur le PC…", primary: true }] });
+    if (choice === "device") {
+      const link = el("a", { href, download: "" });
+      document.body.append(link); link.click(); link.remove();
+    }
+    if (choice !== "pc") return;
+    openPathPicker({ title: "Où enregistrer la conversation ?", action: "Enregistrer ici",
+      start: rememberedChoices().saveFolder || conv.workdir || "", onPick: async (folder) => {
+        const password = state.me ? await askPassword("Enregistrer sur le PC") : "";
+        if (password === null) return;
+        try {
+          const saved = await api("POST", `/api/conversations/${conv.id}/save`, { folder, format: "md", password });
+          rememberChoices({ saveFolder: folder });
+          toast(`Conversation enregistrée : ${saved.path}`);
+        } catch (err) { toast(err.message); }
+      } });
   });
 }
 
@@ -3177,6 +3297,7 @@ function setupSettingsDialog() {
     $("settings-file").textContent = data.file
       ? `Fichier : ${data.file}. Rien d'un mot de passe n'y est écrit.` : "";
     $("set-allowed_roots").value = s.allowed_roots.join("\n");
+    state.rootsField?.refresh();
     $("set-obsidian_vault").value = s.obsidian_vault || "";
     $("set-backup_dir").value = s.backup_dir || "";
     $("set-sandbox_cli").value = s.sandbox_cli || "";
@@ -3234,7 +3355,7 @@ function setupSettingsDialog() {
   openSettingsDialog = async ({ createVault = false, vault = null } = {}) => {
     try {
       fill(await api("GET", "/api/config")); dialog.showModal();
-      if (createVault) openCreatePath({ field: $("set-obsidian_vault"), vault: true });
+      if (createVault) createSettingsVault();
       if (vault) {
         // Chosen in « Coffres Obsidian »: saved like any setting, with the password.
         $("set-obsidian_vault").value = vault;
@@ -3245,7 +3366,9 @@ function setupSettingsDialog() {
     } catch (err) { toast(err.message); }
   };
   $("settings").addEventListener("click", () => openSettingsDialog());
-  $("settings-create-vault").addEventListener("click", () => openCreatePath({ field: $("set-obsidian_vault"), vault: true }));
+  const createSettingsVault = () => openPathPicker({ title: "Où créer le nouveau coffre ?", action: null, make: { kind: "vault",
+    onMade: (made) => { $("set-obsidian_vault").value = made.path; toast("Coffre créé : enregistrez les réglages pour l’utiliser."); } } });
+  $("settings-create-vault").addEventListener("click", createSettingsVault);
   $("settings-pick-vault").addEventListener("click", () => openVaultsDialog({ pick: (path) => { $("set-obsidian_vault").value = path; } }));
   $("settings-cancel").addEventListener("click", () => dialog.close());
   $("settings-form").addEventListener("submit", async (event) => {
@@ -3625,55 +3748,112 @@ const parentOf = (path) => {
   return cut > 0 ? trimmed.slice(0, cut + (/^[A-Za-z]:$/.test(trimmed.slice(0, cut)) ? 1 : 0)) : "";
 };
 
-// Folders of the server, one level at a time. `scope`: "workdir" (allowed folders) or
-// "settings" (the owner, anywhere). `vaultsOnly`: only an Obsidian vault can be chosen.
+// The app's file explorer (1.2.3): the server PC's folders and files, from any device, never a typed path.
+// The server judges every step with one rule (aihub/places.py): a local disk only, inside the allowed
+// folders of the settings when they name some. `scope`: "workdir" (that rule) or "settings" (the owner
+// choosing a setting: any local disk).
+// `files`: also show files of these kinds ("md,txt", "*") and choose one instead of a folder.
+// `make`: { kind: "folder" | "vault", name, onMade } a new folder (or vault) here, named in place.
+// `device`: { accept, multiple, onFiles } the same from this device instead (a phone's photo…).
+// `action`: the button that chooses (null: none, when the explorer only makes something).
 async function openPathPicker({ title = "Choisir un dossier", start = "", scope = "workdir", action = "Choisir ce dossier",
-                                vaultsOnly = false, onPick = () => {} } = {}) {
+                                vaultsOnly = false, files = null, make = null, device = null, onPick = () => {} } = {}) {
   const dialog = el("dialog", { class: "dialog dialog-wide picker-dialog" });
   const where = el("p", { class: "picker-where" });
   const starts = el("div", { class: "picker-starts" });
   const list = el("div", { class: "picker-list", role: "list" });
   const note = el("p", { class: "quota-note" });
   const error = el("p", { class: "form-error", role: "alert" });
-  const typed = el("input", { placeholder: "Ou tapez un chemin complet, puis Entrée", "aria-label": "Aller à un chemin" });
   const up = el("button", { type: "button", class: "btn btn-ghost", text: "↑ Dossier parent" });
-  const create = el("button", { type: "button", class: "btn btn-ghost", text: "Nouveau dossier ici…" });
-  const choose = el("button", { type: "button", class: "btn btn-primary", text: action });
+  const choose = el("button", { type: "button", class: "btn btn-primary", text: action || "" });
   let here = null;
+  let picked = null;  // the file chosen, in file mode
+  // A new folder (or vault) here: its name only; the password when the server asks for one.
+  const name = el("input", { maxlength: 120, "aria-label": make?.kind === "vault" ? "Nom du nouveau coffre" : "Nom du nouveau dossier",
+    placeholder: make?.kind === "vault" ? "Nom du coffre" : "Nom du dossier" });
+  const password = el("input", { type: "password", autocomplete: "current-password", "aria-label": "Votre mot de passe AI Hub",
+    placeholder: "Votre mot de passe AI Hub" });
+  const makeIt = el("button", { type: "button", class: make ? "btn btn-primary" : "btn btn-ghost",
+    text: make?.kind === "vault" ? "Créer le coffre ici" : "Créer ce dossier ici" });
+  const maker = el("div", { class: "picker-make" + (make ? "" : " hidden") }, name, state.me ? password : null, makeIt);
+  const newFolder = el("button", { type: "button", class: "btn btn-ghost", text: "＋ Nouveau dossier",
+    onclick: () => { maker.classList.toggle("hidden"); if (!maker.classList.contains("hidden")) name.focus(); } });
+  if (make?.name) name.value = make.name;
 
+  const pathOf = (child) => here.path.replace(/[\\/]+$/, "") + pathSeparator(here.path) + child;
+  let asked = 0;  // a click while a big folder is read: only the last answer counts
   const go = async (path) => {
     error.textContent = "";
+    const mine = ++asked;
+    if (path) where.textContent = `Lecture de ${path}…`;
     let data;
     try {
-      data = await api("GET", `/api/filesystem/folders?scope=${scope}${path ? `&path=${encodeURIComponent(path)}` : ""}`);
-    } catch (err) { error.textContent = err.message; return false; }
+      const query = new URLSearchParams({ scope });
+      if (path) query.set("path", path);
+      if (files) query.set("files", files);
+      data = await api("GET", `/api/filesystem/folders?${query}`);
+    } catch (err) { if (mine === asked) { error.textContent = err.message; where.textContent = here?.path || ""; } return false; }
+    if (mine !== asked) return false;
     here = data;
+    picked = null;
     where.textContent = data.path || "Choisissez un point de départ.";
-    typed.value = "";
     starts.replaceChildren(...data.starts.map((s) => el("button", { type: "button", class: "picker-start", text: s.name, title: s.path, onclick: () => go(s.path) })));
-    list.replaceChildren(...(data.path ? (data.entries.length ? data.entries.map((e) => el("button", {
-      type: "button", class: "picker-item", role: "listitem", title: e.path, onclick: () => go(e.path) },
-      el("span", { class: "picker-icon", text: "📁", "aria-hidden": "true" }), el("span", { text: e.name }),
-      e.vault ? el("span", { class: "vault-badge on", text: "coffre" }) : null))
-      : [el("p", { class: "list-empty", text: "Aucun sous-dossier." })]) : []));
+    list.replaceChildren(...(data.path ? (data.entries.length ? data.entries.map((e) => e.kind === "file"
+      ? el("button", { type: "button", class: "picker-item picker-file-item", role: "listitem", title: e.path, onclick: (event) => {
+          picked = e.path;
+          for (const other of list.querySelectorAll(".picked")) other.classList.remove("picked");
+          event.currentTarget.classList.add("picked");
+          refresh();
+        }, ondblclick: () => { picked = e.path; choose.click(); } },
+        el("span", { class: "picker-icon", text: "📄", "aria-hidden": "true" }), el("span", { text: e.name }),
+        el("span", { class: "quota-note", text: bytes(e.size || 0) }))
+      : el("button", { type: "button", class: "picker-item", role: "listitem", title: e.path, onclick: () => go(e.path) },
+        el("span", { class: "picker-icon", text: "📁", "aria-hidden": "true" }), el("span", { text: e.name }),
+        e.vault ? el("span", { class: "vault-badge on", text: "coffre" }) : null))
+      : [el("p", { class: "list-empty", text: files ? "Rien à choisir ici." : "Aucun sous-dossier." })]) : []));
     up.disabled = !data.parent;
-    create.disabled = !data.path;
-    choose.disabled = !data.path || (vaultsOnly && !data.vault);
+    refresh();
     note.textContent = [data.limited ? "Limité aux dossiers autorisés des réglages." : null,
-      data.complete ? null : "Seuls les 2 000 premiers dossiers sont affichés.",
+      data.complete ? null : "Seuls les 2 000 premiers éléments sont affichés.",
       vaultsOnly && data.path && !data.vault ? "Ce dossier n’est pas un coffre : il ne contient pas .obsidian." : null].filter(Boolean).join(" ");
     return true;
   };
+  const refresh = () => {
+    choose.disabled = files ? !picked : (!here?.path || (vaultsOnly && !here.vault));
+    newFolder.disabled = makeIt.disabled = !here?.path;
+  };
   up.addEventListener("click", () => here?.parent && go(here.parent));
-  typed.addEventListener("keydown", (event) => { if (event.key === "Enter") { event.preventDefault(); if (typed.value.trim()) go(typed.value.trim()); } });
-  create.addEventListener("click", () => openCreatePath({ start: here.path.replace(/[\\/]+$/, "") + pathSeparator(here.path), onCreated: (made) => go(made.path) }));
+  makeIt.addEventListener("click", async () => {
+    if (!here?.path) return;
+    if (!name.value.trim()) { name.focus(); return; }
+    makeIt.disabled = true; error.textContent = "";
+    try {
+      const made = await api("POST", make?.kind === "vault" ? "/api/obsidian/vaults" : "/api/filesystem/create",
+        { path: pathOf(name.value.trim()), kind: "directory", parents: false, password: password.value });
+      password.value = "";
+      if (make?.onMade) { done(); make.onMade(made); return; }
+      maker.classList.add("hidden");
+      name.value = "";
+      await go(made.path);  // into the new folder, to choose it
+      toast("Dossier créé.");
+    } catch (err) { error.textContent = err.message; password.value = ""; }
+    finally { makeIt.disabled = !here?.path; }
+  });
+  name.addEventListener("keydown", (event) => { if (event.key === "Enter") { event.preventDefault(); makeIt.click(); } });
   // Closed and taken out of the page at once (not left to the "close" event alone).
   const done = () => { dialog.close(); dialog.remove(); };
-  choose.addEventListener("click", () => { const chosen = here.path; done(); onPick(chosen); });
+  choose.addEventListener("click", () => { const chosen = files ? picked : here.path; if (!chosen) return; done(); onPick(chosen); });
+  const fromDevice = device ? el("button", { type: "button", class: "btn btn-ghost", text: "Depuis cet appareil…", onclick: () => {
+    const input = el("input", { type: "file", accept: device.accept || null, multiple: Boolean(device.multiple), hidden: true });
+    input.addEventListener("change", () => { const chosen = [...input.files]; input.remove(); if (chosen.length) { done(); device.onFiles(chosen); } });
+    document.body.append(input);
+    input.click();
+  } }) : null;
   dialog.append(el("h2", { text: title }),
     el("p", { class: "quota-note", text: "Les dossiers du PC qui héberge AI Hub, même depuis un téléphone ou un autre PC. Rien n’est modifié en parcourant." }),
-    starts, where, list, typed, note, error,
-    el("div", { class: "dialog-actions" }, up, create, el("button", { type: "button", class: "btn btn-ghost", text: "Annuler", onclick: () => done() }), choose));
+    starts, where, list, maker, note, error,
+    el("div", { class: "dialog-actions" }, up, make ? null : newFolder, fromDevice,
+      el("button", { type: "button", class: "btn btn-ghost", text: "Annuler", onclick: () => done() }), action ? choose : null));
   dialog.addEventListener("close", () => dialog.remove(), { once: true });
   document.body.append(dialog);
   dialog.showModal();
@@ -3732,30 +3912,60 @@ async function openFilePicker({ base = "", conversationId = null, chosen = [], o
   await go("");
 }
 
-// A "Parcourir…" button after each field that holds a path on the server.
-function setupPathPickers() {
-  const browseButton = (field, options, { trusted = false, append = false } = {}) => {
-    const button = el("button", { type: "button", class: "btn btn-ghost btn-small" + (trusted ? " picker-trusted" + (isAdmin() ? "" : " hidden") : ""), text: "Parcourir…",
-      title: "Choisir un dossier du PC serveur dans l’appli",
-      onclick: () => {
-        const lines = field.value.split(/\r?\n/).map((l) => l.trim()).filter(Boolean);
-        openPathPicker({ ...options, start: append ? lines.at(-1) || "" : field.value.trim(), onPick: (path) => {
-          if (append) { if (!lines.includes(path)) field.value = [...lines, path].join("\n"); } else field.value = path;
-          field.dispatchEvent(new Event("input", { bubbles: true }));
-          field.dispatchEvent(new Event("change", { bubbles: true }));
-        } });
-      } });
-    field.after(button);
-    return button;
+// A path field (1.2.3): chosen in the app's explorer, never typed; « Vider » when it may stay empty.
+function pathField(field, options, { trusted = false, list = false } = {}) {
+  field.readOnly = true;
+  field.classList.add("path-field");
+  const open = () => {
+    const lines = field.value.split(/\r?\n/).map((l) => l.trim()).filter(Boolean);
+    openPathPicker({ ...options, start: list ? lines.at(-1) || "" : field.value.trim(), onPick: (path) => {
+      if (list) { if (!lines.includes(path)) field.value = [...lines, path].join("\n"); } else field.value = path;
+      field.dispatchEvent(new Event("input", { bubbles: true }));
+      field.dispatchEvent(new Event("change", { bubbles: true }));
+      if (list) showList();
+    } });
   };
-  for (const id of ["new-workdir", "project-workdir", "import-workdir"]) {
-    browseButton($(id), { title: "Choisir le dossier de travail" }, { trusted: true });
+  const hide = trusted ? " picker-trusted" + (isAdmin() ? "" : " hidden") : "";
+  const browse = el("button", { type: "button", class: "btn btn-ghost btn-small" + hide, text: list ? "Ajouter un dossier…" : "Choisir…",
+    title: "Choisir dans l'explorateur de l'appli (les dossiers du PC serveur)", onclick: open });
+  const clear = el("button", { type: "button", class: "btn btn-ghost btn-small" + hide, text: "Vider", onclick: () => {
+    field.value = "";
+    field.dispatchEvent(new Event("input", { bubbles: true }));
+    field.dispatchEvent(new Event("change", { bubbles: true }));
+  } });
+  field.addEventListener("click", open);
+  // A list (the allowed folders): one line each, with its own ✕.
+  const rows = list ? el("div", { class: "path-list" }) : null;
+  const showList = () => {
+    const lines = field.value.split(/\r?\n/).map((l) => l.trim()).filter(Boolean);
+    rows.replaceChildren(...(lines.length ? lines.map((line) => el("div", { class: "path-row" }, el("span", { text: line }),
+      el("button", { type: "button", class: "fav-remove", text: "✕", title: "Retirer", "aria-label": `Retirer ${line}`, onclick: () => {
+        field.value = lines.filter((l) => l !== line).join("\n");
+        field.dispatchEvent(new Event("input", { bubbles: true }));
+        showList();
+      } }))) : [el("p", { class: "quota-note", text: "Aucun : tous les disques du PC." })]));
+  };
+  if (list) {
+    field.classList.add("hidden");
+    field.after(rows, browse);
+    field.addEventListener("change", showList);
+    field.addEventListener("input", showList);
+    showList();
+  } else {
+    field.after(browse, clear);
   }
-  browseButton($("set-allowed_roots"), { title: "Ajouter un dossier autorisé", scope: "settings", action: "Ajouter ce dossier" }, { append: true });
-  browseButton($("set-obsidian_vault"), { title: "Dossier des notes de projet", scope: "settings" });
-  browseButton($("project-vault"), { title: "Coffre des notes de ce projet", scope: "settings" });
-  browseButton($("set-backup_dir"), { title: "Dossier des sauvegardes", scope: "settings" });
-  browseButton($("set-sandbox_data"), { title: "Stockage du moteur isolé", scope: "settings" });
+  return { open, refresh: () => list && showList() };
+}
+
+function setupPathPickers() {
+  for (const id of ["new-workdir", "project-workdir", "import-workdir"]) {
+    pathField($(id), { title: "Choisir le dossier de travail" }, { trusted: true });
+  }
+  state.rootsField = pathField($("set-allowed_roots"), { title: "Ajouter un dossier autorisé", scope: "settings", action: "Ajouter ce dossier" }, { list: true });
+  pathField($("set-obsidian_vault"), { title: "Dossier des notes de projet", scope: "settings" });
+  pathField($("project-vault"), { title: "Coffre des notes de ce projet" });
+  pathField($("set-backup_dir"), { title: "Dossier des sauvegardes", scope: "settings" });
+  pathField($("set-sandbox_data"), { title: "Stockage du moteur isolé", scope: "settings" });
 }
 
 // --- « Essais à faire » (the owner's): what was never tried for real, and how it went --------------
@@ -4003,7 +4213,8 @@ function setupVaultsDialog() {
   $("vault-filter").addEventListener("keydown", (event) => { if (event.key === "Enter") { event.preventDefault(); searchText(); } });
   $("vault-search-text").addEventListener("click", searchText);
   $("vault-note-link").addEventListener("click", linkNote);
-  $("vaults-create").addEventListener("click", () => openCreatePath({ vault: true, onCreated: () => render(true) }));
+  $("vaults-create").addEventListener("click", () => openPathPicker({ title: "Où créer le nouveau coffre ?", action: null,
+    make: { kind: "vault", onMade: () => { toast("Coffre créé."); render(true); } } }));
 }
 
 // --- keyboard shortcuts -----------------------------------------------------------------
@@ -4411,7 +4622,21 @@ async function uploadFiles(fileList) {
 }
 
 function setupAttachments() {
-  $("attach").addEventListener("click", () => $("attach-input").click());
+  // The owner and the admins: a file of the PC, in the app's explorer, or one of this device (a phone's photo).
+  $("attach").addEventListener("click", () => {
+    if (!isAdmin()) { $("attach-input").click(); return; }
+    const cid = state.currentId;
+    openPathPicker({ title: "Joindre un fichier du PC", files: "*", action: "Joindre ce fichier",
+      device: { multiple: true, onFiles: (chosen) => uploadFiles(chosen) },
+      onPick: async (path) => {
+        try {
+          const made = await api("POST", `/api/conversations/${cid}/attachments/pc`, { path });
+          if (state.currentId !== cid) return;
+          state.pendingFiles = [...(state.pendingFiles || []), { id: made.id, name: made.name, size: made.size, image: made.image }];
+          renderPending();
+        } catch (err) { toast(err.message); }
+      } });
+  });
   $("attach-input").addEventListener("change", async () => {
     await uploadFiles([...$("attach-input").files]);
     $("attach-input").value = "";
@@ -4623,6 +4848,28 @@ function setupImportDialog() {
     dialog.showModal();
   });
   $("import-cancel").addEventListener("click", () => dialog.close());
+  // The import's files (1.2.3): of the PC in the app's explorer (the owner and the admins), else of this device.
+  for (const [id, kinds, title] of [["import-file", "zip,json", "Un export de ChatGPT ou de Claude"],
+    ["import-project-file", "zip", "Un projet AI Hub (.zip)"]]) {
+    const label = $(id).closest("label");
+    label.addEventListener("click", (event) => {
+      if (!isAdmin() || event.target === $(id)) return;  // the device's own window
+      event.preventDefault();
+      openPathPicker({ title, files: kinds, action: "Importer ce fichier",
+        device: { accept: kinds.split(",").map((k) => `.${k}`).join(","), onFiles: (chosen) => {
+          const box = $(id);
+          const shelf = new DataTransfer();
+          shelf.items.add(chosen[0]);
+          box.files = shelf.files;
+          box.dispatchEvent(new Event("change"));
+        } },
+        onPick: (path) => id === "import-file" ? importFromPc(path) : importProjectFromPc(path) });
+    });
+  }
+  const importFromPc = async (path) => {
+    wait(`Lecture de « ${path.split(/[\\/]/).pop()} »…`);
+    try { received(await api("POST", "/api/import/pc", { path })); } catch (err) { $("import-state").textContent = ""; error(err.message); }
+  };
   $("import-file").addEventListener("change", async () => {
     const file = $("import-file").files[0];
     if (!file) return;
@@ -4640,29 +4887,34 @@ function setupImportDialog() {
   $("import-project-file").addEventListener("change", () => {
     const file = $("import-project-file").files[0];
     $("import-project-file").value = "";
-    if (!file) return;
+    if (file) importProject({ file });
+  });
+  const importProjectFromPc = (path) => importProject({ path });
+  const importProject = ({ file = null, path = null }) => {
     $("import-dialog").close();
-    const workdir = el("input", { placeholder: "D:\\projets\\mon-projet", "aria-label": "Dossier de travail du projet" });
-    const browse = el("button", { type: "button", class: "btn btn-ghost btn-small", text: "Parcourir…",
-      onclick: () => openPathPicker({ title: "Dossier de travail du projet importé", start: workdir.value.trim(), onPick: (p) => { workdir.value = p; } }) });
+    const workdir = el("input", { placeholder: "À choisir", "aria-label": "Dossier de travail du projet" });
     const notes = el("input", { type: "checkbox", checked: true });
     const error = el("p", { class: "form-error", role: "alert" });
     const go = el("button", { type: "button", class: "btn btn-primary", text: "Importer le projet" });
     const dialog = el("dialog", { class: "dialog dialog-content" });
     const done = () => { dialog.close(); dialog.remove(); };
     dialog.append(el("h2", { text: "Importer un projet" }),
-      el("p", { class: "quota-note", text: `« ${file.name} » (${Math.max(1, Math.ceil(file.size / 1024))} Ko) : le projet, ses conversations (elles repartent de leur mémoire), ses consignes et ses documents. Un projet du même nom reçoit « (importé) ».` }),
-      isAdmin() ? el("label", {}, "Dossier de travail du projet, sur le PC serveur", workdir, browse) : null,
+      el("p", { class: "quota-note", text: `« ${file ? file.name : path.split(/[\\/]/).pop()} » : le projet, ses conversations (elles repartent de leur mémoire), ses consignes et ses documents. Un projet du même nom reçoit « (importé) ».` }),
+      isAdmin() ? el("label", {}, "Dossier de travail du projet, sur le PC serveur", workdir) : null,
       isOwner() ? el("label", { class: "check" }, notes, "Recopier ses notes de projet dans le coffre (sans jamais en écraser une)") : null,
       error, el("div", { class: "dialog-actions" }, el("button", { type: "button", class: "btn btn-ghost", text: "Annuler", onclick: done }), go));
     go.addEventListener("click", async () => {
       go.disabled = true; error.textContent = "";
       try {
         const query = new URLSearchParams({ workdir: workdir.value.trim(), notes: isOwner() && notes.checked ? "true" : "false" });
-        const res = await fetch(`/api/projects/import?${query}`, { method: "POST", body: file,
-          headers: { "X-AIHub": "1", "Content-Type": "application/zip" } });
-        const data = await res.json().catch(() => ({}));
-        if (!res.ok) throw new Error(typeof data.detail === "string" ? data.detail : `erreur ${res.status}`);
+        let data;
+        if (path) data = await api("POST", `/api/projects/import/pc?${query}`, { path });
+        else {
+          const res = await fetch(`/api/projects/import?${query}`, { method: "POST", body: file,
+            headers: { "X-AIHub": "1", "Content-Type": "application/zip" } });
+          data = await res.json().catch(() => ({}));
+          if (!res.ok) throw new Error(typeof data.detail === "string" ? data.detail : `erreur ${res.status}`);
+        }
         done();
         await loadConversations();
         toast(`Projet « ${data.project.name} » importé : ${data.conversations} conversation(s), ${data.documents} document(s)`
@@ -4671,7 +4923,8 @@ function setupImportDialog() {
     });
     document.body.append(dialog);
     dialog.showModal();
-  });
+    if (isAdmin()) pathField(workdir, { title: "Dossier de travail du projet importé" });
+  };
   $("import-local").addEventListener("click", async () => {
     wait("Lecture des sessions de Claude Code et de Codex sur ce PC…");
     try { received(await api("GET", "/api/import/local")); } catch (err) { $("import-state").textContent = ""; error(err.message); }
@@ -5080,6 +5333,7 @@ async function main() {
   setupProjectActions();
   setupActions();
   setupOrganisation();
+  setupExport();
   setupObsidianDialog();
   setupHome();
   try {

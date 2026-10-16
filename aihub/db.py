@@ -10,7 +10,7 @@ import sqlite3
 from contextlib import contextmanager
 from datetime import datetime, timezone
 
-SCHEMA_VERSION = 28
+SCHEMA_VERSION = 29
 
 # One statement per string: triggers contain semicolons, so the schema
 # cannot be split on ";" and executescript() would commit mid-migration.
@@ -930,6 +930,12 @@ _SCHEMA_V28 = [
     """,
 ]
 
+# 1.2.2: a conversation's own Obsidian vault, chosen when it is linked (a new one or one already
+# there); NULL: its project's, else the settings'.
+_SCHEMA_V29 = [
+    "ALTER TABLE conversations ADD COLUMN obsidian_vault TEXT",
+]
+
 
 class SchemaError(Exception):
     """The database file cannot be used by this version of the code."""
@@ -1070,6 +1076,9 @@ def migrate(conn: sqlite3.Connection) -> None:
                 conn.execute(statement)
         if version < 28:
             for statement in _SCHEMA_V28:
+                conn.execute(statement)
+        if version < 29:
+            for statement in _SCHEMA_V29:
                 conn.execute(statement)
         # PRAGMA does not accept bound parameters; SCHEMA_VERSION is an int constant.
         conn.execute(f"PRAGMA user_version = {SCHEMA_VERSION}")

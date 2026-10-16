@@ -171,10 +171,10 @@ MUTATIONS = [
      '            if False:\n                raise store.Busy('),
     ("web: decalage du texte faux", "aihub/web/jobs.py",
      "                offset = job.length\n", "                offset = 0\n"),
-    ("web: dossiers autorises ignores", "aihub/web/app.py",
-     "if roots and not any(", "if False and not any("),
-    ("web: chemin relatif accepte", "aihub/web/app.py",
-     "        if not workdir.is_absolute():\n", "        if False:\n"),
+    ("web: dossiers autorises ignores", "aihub/places.py",
+     "        if not self.allows(path):\n", "        if False:\n"),
+    ("web: chemin relatif accepte", "aihub/places.py",
+     '        if not path.is_absolute() or (os.name == "nt" and not path.drive):\n', "        if False:\n"),
     ("web: occupe renvoie 400", "aihub/web/app.py",
      '        return JSONResponse({"detail": str(exc)}, 409)\n', '        return JSONResponse({"detail": str(exc)}, 400)\n'),
     ("web: code du warning absent", "aihub/web/app.py",
@@ -344,7 +344,8 @@ MUTATIONS = [
     ("obsidian: creation ecrite deux fois", "aihub/web/app.py",
      '                if note != conv["obsidian_note"]:\n', "                if True:\n"),
     ("obsidian: desactivation sans effet", "aihub/web/app.py",
-     "                store.set_obsidian_note(conn, cid, None)\n", "                pass\n"),
+     "                # The note stays in the vault; only the hub stops writing to it.\n                store.set_obsidian_note(conn, cid, None)\n",
+     "                # The note stays in the vault; only the hub stops writing to it.\n                pass\n"),
     # --- phase 6: password, sessions, lockout, backups ---
     ("auth: tout mot de passe accepte", "aihub/auth.py",
      "    return hmac.compare_digest(actual, expected)\n", "    return True\n"),
@@ -581,7 +582,7 @@ MUTATIONS = [
     ("reglages: jamais appliques", "aihub/web/app.py",
      "            apply(in_force)\n        return get_config()", "            pass\n        return get_config()"),
     ("reglages: dossiers autorises figes", "aihub/web/app.py",
-     "roots = [Path(r).resolve() for r in current().allowed_roots]", "roots = []"),
+     "        return places.Places(current().allowed_roots)\n", "        return places.Places()\n"),
     ("reglages: coffre non transmis aux taches", "aihub/web/app.py",
      "        jobs.obsidian_vault = new.obsidian_vault\n", ""),
     ("reglages: regles de session figees", "aihub/web/app.py",
@@ -1432,11 +1433,11 @@ MUTATIONS.append(('v109: created vault listed twice', 'aihub/vaults.py',
                  '        known = [v for v in created(path_of_record) if _key(v["path"]) != _key(vault_path)]\n', '        known = list(created(path_of_record))\n'))
 
 MUTATIONS.append(('v110: guest browses the PC', 'aihub/web/app.py',
-                 "        if not access.trusted(user):\n            raise access.Forbidden('parcourir le PC serveur est réservé au propriétaire et aux administrateurs')\n        return browse.folders(path, current().allowed_roots)\n", '        return browse.folders(path, current().allowed_roots)\n'))
+                 "        if not access.trusted(user):\n            raise access.Forbidden('parcourir le PC serveur est réservé au propriétaire et aux administrateurs')\n        return browse.folders(path, current().allowed_roots, files=kinds)\n", '        return browse.folders(path, current().allowed_roots, files=kinds)\n'))
 MUTATIONS.append(("v110: admin chooses the owner's settings", 'aihub/web/app.py',
-                 "        if scope == 'settings':\n            # The owner chooses a setting (allowed folders, vault, backups): anywhere on the PC.\n            access.require_owner(user)\n", "        if scope == 'settings':\n            # The owner chooses a setting (allowed folders, vault, backups): anywhere on the PC.\n            access.trusted(user) or access.require_owner(user)\n"))
+                 "        if scope == 'settings':\n            # The owner chooses a setting (allowed folders, vault, backups): anywhere on the PC's local disks.\n            access.require_owner(user)\n", "        if scope == 'settings':\n            # The owner chooses a setting (allowed folders, vault, backups): anywhere on the PC's local disks.\n            access.trusted(user) or access.require_owner(user)\n"))
 MUTATIONS.append(('v110: working folder browsed past the allowed folders', 'aihub/web/app.py',
-                 '        return browse.folders(path, current().allowed_roots)\n', '        return browse.folders(path)\n'))
+                 '        return browse.folders(path, current().allowed_roots, files=kinds)\n', '        return browse.folders(path, files=kinds)\n'))
 MUTATIONS.append(("v110: a shared writer reads the conversation's files", 'aihub/web/app.py',
                  "                conv = access.require(conn, user, conversation_id, 'owner')\n            if not conv['workdir']:", "                conv = access.require(conn, user, conversation_id, 'read')\n            if not conv['workdir']:"))
 MUTATIONS.append(('v110: guest lists a working folder', 'aihub/web/app.py',
@@ -1444,21 +1445,23 @@ MUTATIONS.append(('v110: guest lists a working folder', 'aihub/web/app.py',
 MUTATIONS.append(('v110: any base folder listed', 'aihub/web/app.py',
                  '        return browse.entries(check_workdir(base), path)\n', '        return browse.entries(base, path)\n'))
 MUTATIONS.append(('v110: outside the allowed folders shown', 'aihub/browse.py',
-                 '    if allowed and not _inside(here, allowed):\n        raise StoreError("ce dossier est hors des dossiers autorisés")\n', ''))
+                 '    here = rule.folder(path)  # local, allowed, existing: or said why not\n', '    here = places.Places().folder(path)\n'))
 MUTATIONS.append(('v110: a link out of the allowed folders shown', 'aihub/browse.py',
                  '        if allowed and not _inside(target, allowed):\n            continue  # a link out of the allowed folders\n', ''))
 MUTATIONS.append(('v110: a way up out of the allowed folders', 'aihub/browse.py',
                  '    if parent is not None and allowed and not _inside(parent, allowed):\n        parent = None\n', ''))
 MUTATIONS.append(('v110: hidden folders shown', 'aihub/browse.py',
-                 'items = sorted((e for e in it if not e.name.startswith((".", "$"))), key=lambda e: e.name.lower())', 'items = sorted(it, key=lambda e: e.name.lower())'))
+                 '                if not e.name.startswith((".", "$")):\n                    items.append(e)\n', '                items.append(e)\n'))
 MUTATIONS.append(('v110: files shown as folders', 'aihub/browse.py',
-                 '            if not entry.is_dir():\n                continue\n', ''))
+                 '            elif files is not None and entry.is_file() and (files == "*" or Path(entry.name).suffix.lower() in files):\n',
+                 '            elif entry.is_file():\n'))
 MUTATIONS.append(('v110: the allowed folders are not where it starts', 'aihub/browse.py',
                  '    if roots:\n        return [{"name": str(r), "path": str(r)} for r in roots if r.is_dir()]\n', ''))
 # v110: "a relative path taken" retired: on Windows browse.local_path refuses a relative
 # path first, so the is_absolute() check only acts on Linux (test_bad_paths, run there).
-MUTATIONS.append(('v110: a file opened as a folder', 'aihub/browse.py',
-                 '    if not p.is_dir():\n        raise StoreError(f"ce dossier n\'existe pas : {p}")\n', ''))
+MUTATIONS.append(('v110: a file opened as a folder', 'aihub/places.py',
+                 '        if not path.is_dir():\n            raise StoreError(f"ce {what} n\'existe pas : {path}")\n        return path\n\n    def file(',
+                 '        return path\n\n    def file('))
 MUTATIONS.append(('v110: a folder out of the working folder entered', 'aihub/browse.py',
                  '    if not _inside(here, [root]) or not here.is_dir():\n', '    if not here.is_dir():\n'))
 MUTATIONS.append(('v110: a link out of the working folder shown', 'aihub/browse.py',
@@ -1472,10 +1475,10 @@ MUTATIONS.append(('v110: going up out of the working folder', 'aihub/browse.py',
                  '    if raw and (raw.startswith(("/", "\\\\")) or ":" in raw or ".." in re.split(r"[\\\\/]", raw)):\n', '    if False:\n'))
 MUTATIONS.append(('v110: a relative way out judged once changed', 'aihub/browse.py',
                  '    if raw and (raw.startswith(("/", "\\\\")) or ":" in raw or ".." in re.split(r"[\\\\/]", raw)):\n', '    if raw and (":" in raw or ".." in re.split(r"[\\\\/]", raw)):\n'))
-MUTATIONS.append(('v110: a network path resolved', 'aihub/browse.py',
-                 '    local_path(path.strip())\n', ''))
-MUTATIONS.append(('v110: a network base resolved before the check', 'aihub/web/app.py',
-                 '        browse.local_path(base.strip())  # before check_workdir resolves it\n', ''))
+MUTATIONS.append(('v110: a network path resolved', 'aihub/places.py',
+                 '        if raw[:1] in ("\\\\", "/") or re.match(r"^[A-Za-z]:", raw):\n            local(raw)\n', ''))
+# v110: "a network base resolved before the check" retired with its line (1.2.3): check_workdir is
+# aihub/places.py, which refuses a network path before anything resolves it ("v110: a network path resolved").
 MUTATIONS.append(('v110: a network vault looked at', 'aihub/vaults.py',
                  '    if os.name == "nt" and not re.match(r"^[A-Za-z]:[\\\\/]", path.strip()):\n', '    if False:\n'))
 
@@ -1486,7 +1489,7 @@ MUTATIONS.append(('v111: a member chooses a project vault', 'aihub/web/app.py',
 MUTATIONS.append(('v111: a member changes a project vault', 'aihub/web/app.py',
                  "            if body.obsidian_vault is not None:\n                access.require_owner(user)  # a folder of the owner's PC\n", '            if body.obsidian_vault is not None:\n'))
 MUTATIONS.append(('v111: a project vault never checked', 'aihub/obsidian.py',
-                 '    if not folder.is_dir():\n        raise ObsidianError(f"ce coffre n\'existe pas : {folder}")\n', ''))
+                 '        return str(Places(roots).folder(str(path), "coffre"))\n', '        return str(Path(str(path)))\n'))
 # v111: "a relative project vault" retired: on Windows the local-disk check of
 # check_project_vault refuses a relative path first; is_absolute() acts on Linux only.
 MUTATIONS.append(('v111: plan note in the settings vault', 'aihub/web/jobs.py',
@@ -1658,7 +1661,7 @@ MUTATIONS.append(('v112: a finished task given away', 'aihub/db.py',
 MUTATIONS.append(('v112: a model changed alone', 'aihub/db.py',
                  "         AND NOT ((SELECT status FROM plans WHERE id = OLD.plan_id) IN ('validated', 'running', 'error', 'stopped')\n                  AND OLD.status IN ('pending', 'error', 'stopped')\n                  AND NEW.agent_id IS NOT NULL\n                  AND NEW.agent_id IS NOT OLD.agent_id   -- given to another agent, never a model changed alone\n", "         AND NOT ((SELECT status FROM plans WHERE id = OLD.plan_id) IN ('validated', 'running', 'error', 'stopped')\n                  AND OLD.status IN ('pending', 'error', 'stopped')\n                  AND NEW.agent_id IS NOT NULL\n"))
 MUTATIONS.append(("v112: a task's content changed after validation", 'aihub/db.py',
-                 '                  AND NEW.agent_id IS NOT OLD.agent_id   -- given to another agent, never a model changed alone\n                  AND NEW.description IS OLD.description\n                  AND NEW.position IS OLD.position\n                  AND NEW.title IS OLD.title\n                  AND NEW.files_json IS OLD.files_json\n                  AND NEW.kind IS OLD.kind)\n    BEGIN\n        SELECT RAISE(ABORT, \'plan is frozen\');\n    END\n    """,\n]\n\n\nclass SchemaError', '                  AND NEW.agent_id IS NOT OLD.agent_id   -- given to another agent, never a model changed alone\n                  AND NEW.position IS OLD.position\n                  AND NEW.title IS OLD.title\n                  AND NEW.files_json IS OLD.files_json\n                  AND NEW.kind IS OLD.kind)\n    BEGIN\n        SELECT RAISE(ABORT, \'plan is frozen\');\n    END\n    """,\n]\n\n\nclass SchemaError'))
+                 '                  AND NEW.agent_id IS NOT OLD.agent_id   -- given to another agent, never a model changed alone\n                  AND NEW.description IS OLD.description\n                  AND NEW.position IS OLD.position\n                  AND NEW.title IS OLD.title\n                  AND NEW.files_json IS OLD.files_json\n                  AND NEW.kind IS OLD.kind)\n    BEGIN\n        SELECT RAISE(ABORT, \'plan is frozen\');\n    END\n    """,\n]\n\n# 1.2.2: a conversation\'s own Obsidian vault', '                  AND NEW.agent_id IS NOT OLD.agent_id   -- given to another agent, never a model changed alone\n                  AND NEW.position IS OLD.position\n                  AND NEW.title IS OLD.title\n                  AND NEW.files_json IS OLD.files_json\n                  AND NEW.kind IS OLD.kind)\n    BEGIN\n        SELECT RAISE(ABORT, \'plan is frozen\');\n    END\n    """,\n]\n\n# 1.2.2: a conversation\'s own Obsidian vault'))
 MUTATIONS.append(('v112: a proposed or finished plan switched', 'aihub/store.py',
                  '    if plan["status"] not in SWITCHABLE and not can_resume_plan(conn, plan):\n', '    if False:\n'))
 MUTATIONS.append(('v112: running tasks switched too', 'aihub/store.py',
@@ -1729,9 +1732,68 @@ MUTATIONS.append(('v113: an import gets a folder of its own', 'aihub/web/app.py'
                  '    def new_conversation(conn, body, user=None, auto_folder=True):\n'))
 MUTATIONS.append(("v113: the app's own folder checked against the allowed ones", 'aihub/web/app.py',
                  '            if not made:\n                workdir = check_workdir(workdir)\n', '            workdir = check_workdir(workdir)\n'))
+MUTATIONS.append(('v114: the conversation\'s own vault ignored', 'aihub/obsidian.py',
+                 '    if conversation["obsidian_vault"]:\n        return conversation["obsidian_vault"]\n', ''))
+MUTATIONS.append(('v114: anyone chooses a folder of the PC as a vault', 'aihub/web/app.py',
+                 '                access.require_owner(user)\n                vault = obsidian.check_project_vault(body.obsidian_vault, current().allowed_roots)\n',
+                 '                vault = obsidian.check_project_vault(body.obsidian_vault, current().allowed_roots)\n'))
+MUTATIONS.append(('v114: any path taken as a vault', 'aihub/web/app.py',
+                 '                access.require_owner(user)\n                vault = obsidian.check_project_vault(body.obsidian_vault, current().allowed_roots)\n',
+                 '                access.require_owner(user)\n                vault = body.obsidian_vault or None\n'))
+MUTATIONS.append(('v114: the note of the former vault kept', 'aihub/web/app.py',
+                 '                    store.set_conversation_vault(conn, cid, vault)\n                    # The note of the former vault stays there; one is made in the new vault when linked.\n                    store.set_obsidian_note(conn, cid, None)\n',
+                 '                    store.set_conversation_vault(conn, cid, vault)\n'))
+MUTATIONS.append(('v114: the same vault again unlinks', 'aihub/web/app.py',
+                 '                if vault != store.get_conversation(conn, cid)["obsidian_vault"]:\n', '                if True:\n'))
+MUTATIONS.append(('v114: the vault not saved', 'aihub/store.py',
+                 '    conn.execute("UPDATE conversations SET obsidian_vault = ? WHERE id = ?", (vault, conversation_id))\n', ''))
+MUTATIONS.append(("v114: the vault reader blind to conversations' vaults", 'aihub/web/app.py',
+                 '                "SELECT obsidian_vault FROM projects WHERE obsidian_vault IS NOT NULL "\n                "UNION SELECT obsidian_vault FROM conversations WHERE obsidian_vault IS NOT NULL")]\n',
+                 '                "SELECT obsidian_vault FROM projects WHERE obsidian_vault IS NOT NULL")]\n'))
 MUTATIONS.append(('v113: two conversations in one folder', 'aihub/web/app.py',
                  '        while folder.exists() and (fresh or any(folder.iterdir())):\n',
                  '        while folder.exists() and any(folder.iterdir()):\n'))
+
+# v115 (1.2.3): one rule for the PC's files and folders (aihub/places.py), and what the explorer does with them.
+MUTATIONS.append(('v115: a path name taken whole', 'aihub/places.py',
+                 ' or _BAD_NAME.search(name.strip())\n', '\n'))
+MUTATIONS.append(('v115: any kind of file read', 'aihub/places.py',
+                 '        if extensions is not None and path.suffix.lower() not in extensions:\n', '        if False:\n'))
+MUTATIONS.append(('v115: a file of any size read', 'aihub/places.py',
+                 '        if max_size is not None and path.stat().st_size > max_size:\n', '        if False:\n'))
+MUTATIONS.append(('v115: a folder read as a file', 'aihub/places.py',
+                 '        if not path.is_file():\n            raise StoreError(f"ce {what} n\'existe pas : {path}")\n', ''))
+MUTATIONS.append(('v115: a free name that is taken', 'aihub/places.py',
+                 '    if not path.exists():\n        return path\n', ''))
+MUTATIONS.append(('v115: a member reads the PC', 'aihub/web/app.py',
+                 '        if not access.trusted(user):\n            raise access.Forbidden("les fichiers du PC serveur sont réservés au propriétaire et aux administrateurs")\n', ''))
+MUTATIONS.append(('v115: a file read outside the allowed folders', 'aihub/web/app.py',
+                 '        return allowed_places().file(raw, **limits)\n', '        return places.Places().file(raw, **limits)\n'))
+MUTATIONS.append(('v115: any file into the memory', 'aihub/web/app.py',
+                 '        path = pc_file(user, body.path, extensions=MEMORY_KINDS, max_size=MEMORY_FILE)\n', '        path = pc_file(user, body.path)\n'))
+MUTATIONS.append(('v115: a file not in UTF-8 into the memory', 'aihub/web/app.py',
+                 '            content = path.read_text(encoding="utf-8")\n        except UnicodeDecodeError:\n',
+                 '            content = path.read_text(encoding="utf-8", errors="replace")\n        except UnicodeDecodeError:\n'))
+MUTATIONS.append(('v115: a member writes on the PC', 'aihub/web/app.py',
+                 '        if not access.trusted(user):\n            raise access.Forbidden("enregistrer sur le PC serveur est réservé au propriétaire et aux administrateurs")\n', ''))
+MUTATIONS.append(('v115: a saved file without the password', 'aihub/web/app.py',
+                 '        with database() as conn:\n            confirm_maker(conn, user, body.password, request)\n        target = places.free(',
+                 '        target = places.free('))
+MUTATIONS.append(('v115: a saved file over another one', 'aihub/web/app.py',
+                 '        target = places.free(allowed_places().child(body.folder, name))\n', '        target = allowed_places().child(body.folder, name)\n'))
+MUTATIONS.append(('v115: any format saved', 'aihub/web/app.py',
+                 '        if body.format not in ("md", "json"):\n            raise StoreError("format : md ou json")\n', ''))
+MUTATIONS.append(('v115: a vault outside the allowed folders offered', 'aihub/web/app.py',
+                 '"allowed": bool(v["exists"]) and rule.allows(Path(v["path"]))', '"allowed": bool(v["exists"])'))
+MUTATIONS.append(('v115: a vault outside the allowed folders read', 'aihub/web/app.py',
+                 '            allowed_places().folder(str(vault or ""), "coffre")\n', '            pass\n'))
+MUTATIONS.append(('v115: a vault chosen outside the allowed folders', 'aihub/obsidian.py',
+                 '        return str(Places(roots).folder(str(path), "coffre"))\n', '        return str(Places().folder(str(path), "coffre"))\n'))
+MUTATIONS.append(('v115: a network folder in the settings resolved', 'aihub/config.py',
+                 '    if os.name == "nt" and not re.match(r"^[A-Za-z]:[\\\\/]", value.strip()):\n        # Never looked at',
+                 '    if False:\n        # Never looked at'))
+MUTATIONS.append(('v115: a huge folder read whole', 'aihub/browse.py',
+                 '                if len(items) >= MAX_SCAN:\n', '                if False:\n'))
 
 TEST_MODULES = []
 

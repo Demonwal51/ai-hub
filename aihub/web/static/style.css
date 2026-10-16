@@ -794,3 +794,24 @@ body.offline .composer, body.offline #fresh-banner { opacity: .55; pointer-event
   .composer-bar #conv-mode { max-width: 104px; }
   .pending-files, .compare-chip { padding: 8px 12px 0; }
 }
+
+/* « Relier à Obsidian » (1.2.2): a new vault, or one already on the PC. */
+.obsidian-dialog { width: min(560px, calc(100vw - 32px)); }
+.obsidian-choices { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px; }
+.obsidian-choice, .obsidian-vault { display: flex; flex-direction: column; gap: 4px; text-align: left; padding: 14px; border: 1px solid var(--border); border-radius: 12px; background: var(--panel); color: inherit; font: inherit; cursor: pointer; min-width: 0; }
+.obsidian-choice:hover, .obsidian-choice:focus-visible, .obsidian-vault:hover, .obsidian-vault:focus-visible { border-color: var(--accent); background: var(--panel-2); }
+.obsidian-choice strong { color: var(--accent); }
+.obsidian-choice span, .obsidian-vault span { font-size: 12.5px; color: var(--muted); overflow-wrap: anywhere; }
+.obsidian-vaults { display: flex; flex-direction: column; gap: 6px; max-height: 45dvh; overflow: auto; }
+.obsidian-vault { padding: 10px 12px; }
+.obsidian-linked { margin: 0; font-size: 16px; }
+@media (max-width: 520px) { .obsidian-choices { grid-template-columns: minmax(0, 1fr); } }
+
+/* The app's explorer (1.2.3): a file chosen, a new folder or vault named in place; path fields never typed. */
+.picker-file-item.picked { background: var(--user-bg); box-shadow: inset 3px 0 0 var(--accent); }
+.picker-make { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; margin: 4px 0 8px; }
+.picker-make input { flex: 1 1 180px; min-width: 0; }
+.path-field { cursor: pointer; background: var(--panel-2); }
+.path-field:placeholder-shown { color: var(--muted); }
+.path-list { display: flex; flex-direction: column; gap: 4px; margin: 4px 0; }
+.path-row { display: flex; align-items: center; justify-content: space-between; gap: 8px; padding: 4px 8px; border: 1px solid var(--border); border-radius: 8px; font-family: ui-monospace, Consolas, monospace; font-size: 12.5px; overflow-wrap: anywhere; }

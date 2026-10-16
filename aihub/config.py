@@ -110,6 +110,9 @@ def _folder(value, what, *, must_exist=True):
     path = Path(value.strip()).expanduser()
     if not path.is_absolute():
         raise ConfigError(f"{what} : indiquez un chemin complet ({value})")
+    if os.name == "nt" and not re.match(r"^[A-Za-z]:[\\/]", value.strip()):
+        # Never looked at (aihub/places.py): a network path would make Windows connect to that machine.
+        raise ConfigError(f"{what} : choisissez un dossier d'un disque local du serveur ({value})")
     if must_exist and not path.is_dir():
         raise ConfigError(f"{what} : dossier introuvable ({path})")
     return str(path.resolve())

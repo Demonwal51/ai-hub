@@ -7,7 +7,7 @@ une interface en français. Discutez avec une IA, comparez leurs réponses ou
 faites travailler plusieurs agents ensemble. Retrouvez vos conversations et
 vos projets depuis votre ordinateur ou votre téléphone.
 
-**Version 1.2.1 · Windows et Linux · Licence GPL-3.0**
+**Version 1.2.3 · Windows et Linux · Licence GPL-3.0**
 
 [Télécharger la dernière version](https://github.com/Demonwal51/ai-hub/releases/latest)
 · [Voir les changements](CHANGELOG.md) · [Licence](LICENSE)
@@ -43,8 +43,8 @@ permissions.
 L’écran ressemble à Claude Code : la liste à gauche, la conversation au
 centre, une seule zone de saisie en bas avec 📎, l’IA, ce qu’elle peut faire
 sans demander, et la flèche ↑. Le menu **⋯** d’une conversation la renomme,
-l’archive, la range dans un projet, lui donne des consignes, l’exporte ou la
-supprime. **Réglages** (en bas à gauche) donne le quota, l’apparence, les
+l’archive, la range dans un projet, lui donne des consignes, la relie à
+Obsidian (un nouveau coffre ou un coffre existant), l’exporte ou la supprime. **Réglages** (en bas à gauche) donne le quota, l’apparence, les
 notifications, les mises à jour et les IA proposées.
 
 Le reste est derrière **Réglages → Fonctions avancées** (sur chaque appareil) :
@@ -172,19 +172,30 @@ avec votre mot de passe, après avoir gardé la base actuelle ; le serveur
 redémarre et vérifie qu’il répond. Menu → **Essais à faire** liste ce qui n’a
 pas encore été essayé en vrai, avec ses étapes et votre compte rendu.
 
-## Choisir un dossier du PC serveur
+## L’explorateur et la règle des fichiers du PC
 
-À côté de chaque chemin (dossier de travail, réglages, création d’un dossier ou
-d’un coffre), **Parcourir…** ouvre le sélecteur de l’appli : les disques et les
-dossiers habituels, puis un clic pour entrer dans un dossier. Il marche depuis
-un téléphone ou un deuxième PC, où la fenêtre de Windows n’existe pas. Pour un
-espace isolé, **Choisir dans le dossier de travail…** coche les fichiers et
+Tout ce qui touche aux fichiers passe par l’explorateur de l’appli, jamais par un chemin
+tapé : les dossiers de travail, les coffres, les dossiers autorisés et les sauvegardes, un
+fichier pour la mémoire d’un projet, une pièce jointe, un import, une conversation
+enregistrée sur le PC. Une seule règle les juge (`aihub/places.py`) :
+
+- un disque local du serveur seulement : un chemin réseau n’est jamais résolu ;
+- dans les **dossiers autorisés** des réglages quand il y en a (sinon tous les disques
+  locaux), les liens étant jugés là où ils mènent ;
+- lire un fichier du PC : le propriétaire et les administrateurs ; y créer un dossier, un
+  coffre ou un fichier demande en plus votre mot de passe AI Hub ;
+- les membres et les invités ne lisent ni n’écrivent rien sur le PC : leurs fichiers
+  viennent de leur appareil (« Depuis cet appareil… »).
+
+Seule la fenêtre des réglages, au propriétaire, choisit ses dossiers sur tous les disques
+locaux : c’est là que les dossiers autorisés se définissent.
+
+L’explorateur part des disques et des dossiers habituels (ou des dossiers autorisés), puis
+un clic entre dans un dossier ; il marche depuis un téléphone ou un deuxième PC, où la
+fenêtre de Windows n’existe pas. Il ne montre que des noms et ne modifie rien en
+parcourant ; les dossiers cachés et les liens qui sortent du dossier ne sont pas montrés.
+Pour un espace isolé, **Choisir dans le dossier de travail…** coche les fichiers et
 dossiers à copier.
-
-Le sélecteur ne montre que des noms et ne modifie rien. Pour un dossier de
-travail, il reste dans les dossiers autorisés ; dans les réglages, il est
-réservé au propriétaire. Les dossiers cachés et les liens qui sortent du dossier
-ne sont pas montrés.
 
 ## Coffres Obsidian
 
@@ -201,7 +212,7 @@ système. Tout se fait en lecture seule ; rien d’un coffre n’est envoyé à 
 
 ## Installation Windows
 
-1. Téléchargez `ai-hub-1.2.1.zip` dans les
+1. Téléchargez `ai-hub-1.2.3.zip` dans les
    [versions publiées](https://github.com/Demonwal51/ai-hub/releases/latest), puis extrayez-le.
 2. Installez Python **3.12 ou plus** si nécessaire.
 3. Lancez `installer.bat`. Il prépare l’environnement Python, installe les
@@ -218,7 +229,7 @@ L’installation et le démarrage de l’application ont été vérifiés sur
 
 1. Installez Python **3.12 ou plus**, ainsi que le support `venv` et `pip` de
    votre distribution.
-2. Téléchargez et extrayez `ai-hub-1.2.1-linux.tar.gz`.
+2. Téléchargez et extrayez `ai-hub-1.2.3-linux.tar.gz`.
 3. Depuis le dossier extrait, lancez :
 
 ```sh

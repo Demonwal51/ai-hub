@@ -395,6 +395,12 @@ def set_obsidian_note(conn, conversation_id, note_path):
                  (note_path.strip() if note_path else None, conversation_id))
 
 
+def set_conversation_vault(conn, conversation_id, vault):
+    """The conversation's own vault (a checked folder), or None: its project's, else the settings'."""
+    get_conversation(conn, conversation_id)
+    conn.execute("UPDATE conversations SET obsidian_vault = ? WHERE id = ?", (vault, conversation_id))
+
+
 def mark_noted(conn, message_id):
     """Remember that a reply was sent to the project note."""
     get_message(conn, message_id)

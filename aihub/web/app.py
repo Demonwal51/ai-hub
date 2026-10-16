@@ -32,7 +32,7 @@ from .. import (auth, autonomous, backup, browse, config, db, eveil, memory, not
                 schedule, semantic, store, tools)
 from .. import access, accounts, attachments, compare, filesystem, importer, isolation, library, rag, resumption, sandbox_results, updater, usage, vaults
 from .. import restore as restoring
-from .. import project_export, relaunch, trials
+from .. import places, project_export, relaunch, trials
 from ..providers import claude_code, codex, ollama
 from ..providers.claude_code import ProviderError
 from ..store import BypassConfirmationRequired, Busy, NotFound, StoreError
@@ -72,6 +72,18 @@ class CreatePath(BaseModel):
     parents: bool = True
     conversation_id: int | None = None
     password: str = ''
+
+
+class PcFile(BaseModel):
+    """A file of the server PC, chosen in the app's explorer (aihub/places.py judges it)."""
+    path: str = Field(min_length=1, max_length=1000)
+
+
+class SaveToPc(BaseModel):
+    """A conversation saved into a folder of the PC: a new file, never over another one."""
+    folder: str = Field(min_length=1, max_length=1000)
+    format: str = "md"
+    password: str = ""
 
 
 class MemoryDocument(BaseModel):
@@ -125,6 +137,7 @@ class ConversationChange(BaseModel):
     obsidian: bool | None = None      # turn the project note on or off
     obsidian_note: str | None = None  # its path in the vault (default: from the title)
     obsidian_existing: str | None = None  # the note's file is there already: "continue" it, or a "new" one
+    obsidian_vault: str | None = None  # its own vault, chosen when linking ("": its project's, else the settings')
     project_id: int | None = None     # move into this project
     leave_project: bool = False       # take it out of its project
     shared: bool | None = None        # open or close it to the project's other conversations
@@ -1385,31 +1398,48 @@ def create_app(db_path, *, command=None, env=None, allowed_roots=(), permission_
     def _refused(request: HttpRequest, exc):
         return JSONResponse({"detail": str(exc)}, 400)
 
+    def allowed_places():
+        """The one rule for the PC's files and folders (aihub/places.py): the settings' allowed folders."""
+        return places.Places(current().allowed_roots)
+
+    # The memory reads text files only; the size the app took from a device before (800 Ko).
+    MEMORY_KINDS = {".md", ".txt", ".csv", ".json", ".yaml", ".yml"}
+    MEMORY_FILE = 800_000
+
+    def pc_file(user, raw, **limits):
+        """A file of the PC read by the app: the owner's and the admins' only (they already run AIs on
+        this PC), inside the allowed folders. Members and guests never read the PC's files."""
+        if not access.trusted(user):
+            raise access.Forbidden("les fichiers du PC serveur sont réservés au propriétaire et aux administrateurs")
+        return allowed_places().file(raw, **limits)
+
+    def confirm_maker(conn, user, password, request):
+        """Making something on the PC (a folder, a vault, a saved file) asks the person's password again."""
+        if authority is not None:
+            verified = authority.verify(conn, password, client_of(request.scope), name=user['name'])
+            if verified['id'] != user['id'] or not access.trusted(verified):
+                raise access.Forbidden('les droits du compte ont changé : création refusée')
+
     def check_workdir(path):
-        workdir = Path(path).expanduser()
-        if not workdir.is_absolute():
-            raise StoreError("indiquez un chemin complet pour le dossier de travail")
-        workdir = workdir.resolve()
-        if not workdir.is_dir():
-            raise StoreError(f"ce dossier de travail n'existe pas : {workdir}")
-        roots = [Path(r).resolve() for r in current().allowed_roots]
-        if roots and not any(workdir == r or workdir.is_relative_to(r) for r in roots):
-            allowed = ", ".join(str(r) for r in roots)
-            raise StoreError(f"dossier de travail non autorisé : {workdir} (autorisés : {allowed})")
-        return str(workdir)
+        return str(allowed_places().folder(path, "dossier de travail"))
 
     # --- the app's own folder picker (aihub/browse.py): names only, reading only ----------
 
     @app.get('/api/filesystem/folders')
-    def browse_folders(path: str | None = None, scope: str = 'workdir'):
+    def browse_folders(path: str | None = None, scope: str = 'workdir', files: str | None = None):
+        """The app's file explorer: folders, and the files of the kinds asked (`files`: "md,txt", or "*")."""
         user = me()
+        kinds = None if files is None else "*" if files.strip() == "*" else \
+            {"." + k.strip().lower().lstrip(".") for k in files.split(",") if k.strip()}
         if scope == 'settings':
-            # The owner chooses a setting (allowed folders, vault, backups): anywhere on the PC.
+            # The owner chooses a setting (allowed folders, vault, backups): anywhere on the PC's local disks.
             access.require_owner(user)
+            if kinds is not None:
+                raise StoreError("les réglages ne choisissent que des dossiers")
             return browse.folders(path)
         if not access.trusted(user):
             raise access.Forbidden('parcourir le PC serveur est réservé au propriétaire et aux administrateurs')
-        return browse.folders(path, current().allowed_roots)
+        return browse.folders(path, current().allowed_roots, files=kinds)
 
     @app.get('/api/filesystem/entries')
     def browse_entries(path: str = '', base: str | None = None, conversation_id: int | None = None):
@@ -1425,7 +1455,7 @@ def create_app(db_path, *, command=None, env=None, allowed_roots=(), permission_
             raise access.Forbidden('parcourir le PC serveur est réservé au propriétaire et aux administrateurs')
         if not base:
             raise StoreError("indiquez d'abord le dossier de travail")
-        browse.local_path(base.strip())  # before check_workdir resolves it
+        # check_workdir is aihub/places.py: a network path is refused before anything resolves it.
         return browse.entries(check_workdir(base), path)
 
     @app.post('/api/filesystem/create')
@@ -1440,10 +1470,7 @@ def create_app(db_path, *, command=None, env=None, allowed_roots=(), permission_
                 if isolation.suspended(conn, conv['id']):
                     raise StoreError('les accès de cette conversation sont suspendus')
                 base = check_workdir(conv['workdir'])
-            if authority is not None:
-                verified = authority.verify(conn, body.password, client_of(request.scope), name=user['name'])
-                if verified['id'] != user['id'] or not access.trusted(verified):
-                    raise access.Forbidden('les droits du compte ont changé : création refusée')
+            confirm_maker(conn, user, body.password, request)
         return filesystem.create(body.path, body.kind, roots=current().allowed_roots,
                                  base=base, parents=body.parents)
 
@@ -1474,9 +1501,13 @@ def create_app(db_path, *, command=None, env=None, allowed_roots=(), permission_
         with database() as conn:
             own = [(row["name"], row["obsidian_vault"]) for row in conn.execute(
                 "SELECT name, obsidian_vault FROM projects WHERE obsidian_vault IS NOT NULL ORDER BY name")]
-        return vaults.discover(configured=current().obsidian_vault, record=vaults.record_file(db_path),
+        found = vaults.discover(configured=current().obsidian_vault, record=vaults.record_file(db_path),
                                lists=hooks.get("lists"), roots=hooks.get("roots"), projects=own,
                                extra_roots=[(r, 2) for r in current().allowed_roots], refresh=refresh)
+        # Which may be linked to a conversation or a project: inside the allowed folders (aihub/places.py).
+        rule = allowed_places()
+        return {**found, "vaults": [{**v, "allowed": bool(v["exists"]) and rule.allows(Path(v["path"]))}
+                                    for v in found["vaults"]]}
 
     def notes_vaults(vault):
         """The folder asked for, when AI Hub writes notes there (the settings' or a project's vault)."""
@@ -1487,23 +1518,32 @@ def create_app(db_path, *, command=None, env=None, allowed_roots=(), permission_
         if current().obsidian_vault and vaults._key(vault) == vaults._key(current().obsidian_vault):
             return vault
         with database() as conn:
-            mine = [row[0] for row in conn.execute("SELECT obsidian_vault FROM projects WHERE obsidian_vault IS NOT NULL")]
+            mine = [row[0] for row in conn.execute(
+                "SELECT obsidian_vault FROM projects WHERE obsidian_vault IS NOT NULL "
+                "UNION SELECT obsidian_vault FROM conversations WHERE obsidian_vault IS NOT NULL")]
         return vault if any(vaults._key(vault) == vaults._key(m) for m in mine) else None
+
+    def readable_vault(vault):
+        """A vault read here: one AI Hub writes notes to, else one inside the allowed folders (aihub/places.py)."""
+        configured = notes_vaults(vault)
+        if configured is None:
+            allowed_places().folder(str(vault or ""), "coffre")
+        return configured
 
     @app.get("/api/obsidian/vault/notes")
     def vault_notes(vault: str):
         access.require_owner(me())
-        return vaults.list_notes(vault, configured=notes_vaults(vault))
+        return vaults.list_notes(vault, configured=readable_vault(vault))
 
     @app.get("/api/obsidian/vault/search")
     def vault_search(vault: str, q: str):
         access.require_owner(me())
-        return vaults.search(vault, q, configured=notes_vaults(vault))
+        return vaults.search(vault, q, configured=readable_vault(vault))
 
     @app.get("/api/obsidian/vault/note")
     def vault_note(vault: str, path: str):
         access.require_owner(me())
-        return vaults.read_note(vault, path, configured=notes_vaults(vault))
+        return vaults.read_note(vault, path, configured=readable_vault(vault))
 
     def agent_for(conn, model, *, isolated=False):
         offered = (isolated_models(current()) if isolated and config.provider_of(model) in ('claude_code', 'codex') else
@@ -1795,7 +1835,7 @@ def create_app(db_path, *, command=None, env=None, allowed_roots=(), permission_
             vault = None
             if body.obsidian_vault:
                 access.require_owner(user)  # a folder of the owner's PC
-                vault = obsidian.check_project_vault(body.obsidian_vault)
+                vault = obsidian.check_project_vault(body.obsidian_vault, current().allowed_roots)
             pid = store.create_project(conn, body.name, description=body.description, workdir=workdir)
             conn.execute("UPDATE projects SET instructions = ?, obsidian_vault = ? WHERE id = ?",
                          (store.check_instructions(body.instructions), vault, pid))
@@ -1824,12 +1864,30 @@ def create_app(db_path, *, command=None, env=None, allowed_roots=(), permission_
             did = rag.add(conn, pid, body.name, body.content)
             return {'document': next(d for d in rag.documents(conn, pid) if d['id'] == did)}
 
+    @app.post('/api/projects/{pid}/memory/file', status_code=201)
+    def add_memory_file(pid: int, body: PcFile):
+        """A text file of the PC, chosen in the app's explorer, becomes a document of the project's memory."""
+        user = me()
+        with database() as conn:
+            store.get_project(conn, pid)
+            require_project(conn, user, pid)
+        path = pc_file(user, body.path, extensions=MEMORY_KINDS, max_size=MEMORY_FILE)
+        try:
+            content = path.read_text(encoding="utf-8")
+        except UnicodeDecodeError:
+            raise StoreError("ce fichier n'est pas un texte lisible (UTF-8)") from None
+        if len(content) > rag.MAX_CHARS:
+            raise StoreError(f"fichier trop long pour la mémoire du projet ({rag.MAX_CHARS} caractères au plus)")
+        with database() as conn:
+            did = rag.add(conn, pid, path.name[:120], content)
+            return {'document': next(d for d in rag.documents(conn, pid) if d['id'] == did)}
+
     @app.post('/api/projects/{pid}/memory/notes', status_code=201)
     def link_memory_note(pid: int, body: LinkedNote):
         """A vault note becomes a document of the project's memory, and follows its file when it changes."""
         user = me()
         access.require_owner(user)  # the vaults are folders of the owner's PC
-        note = vaults.read_note(body.vault, body.path, configured=notes_vaults(body.vault))
+        note = vaults.read_note(body.vault, body.path, configured=readable_vault(body.vault))
         if note["cut"]:
             raise StoreError("note trop longue pour la mémoire du projet (200 000 caractères au maximum)")
         source = Path(note["vault"]) / note["path"]
@@ -1905,7 +1963,7 @@ def create_app(db_path, *, command=None, env=None, allowed_roots=(), permission_
             if body.obsidian_vault is not None:
                 access.require_owner(user)  # a folder of the owner's PC
                 conn.execute("UPDATE projects SET obsidian_vault = ? WHERE id = ?",
-                             (obsidian.check_project_vault(body.obsidian_vault), pid))
+                             (obsidian.check_project_vault(body.obsidian_vault, current().allowed_roots), pid))
             store.update_project(conn, pid, name=body.name, description=body.description, workdir=workdir)
             if body.instructions is not None:
                 conn.execute("UPDATE projects SET instructions = ? WHERE id = ?",
@@ -2224,6 +2282,14 @@ def create_app(db_path, *, command=None, env=None, allowed_roots=(), permission_
         items = await asyncio.to_thread(importer.parse_export, data)
         return keep_reading(items, user)
 
+    @app.post("/api/import/pc")
+    def import_pc_file(body: PcFile, request: HttpRequest):
+        """The same export, as a file of the PC chosen in the app's explorer."""
+        user = me(request)
+        access.require_creator(user)
+        path = pc_file(user, body.path, extensions={".zip", ".json"}, max_size=importer.MAX_UPLOAD)
+        return keep_reading(importer.parse_export(path.read_bytes()), user)
+
     @app.get("/api/import/local")
     def import_local(request: HttpRequest):
         """The Claude Code and Codex sessions of this computer (the owner's: they are on their PC)."""
@@ -2331,27 +2397,59 @@ def create_app(db_path, *, command=None, env=None, allowed_roots=(), permission_
             store.set_tools(conn, cid, [])
         return cid
 
+    def export_parts(cid):
+        """The conversation (whoever sees it may take it away), its messages, and who wrote each."""
+        with database() as conn:
+            conv = dict(access.require(conn, me(), cid))
+            names = {u["id"]: u["name"] for u in auth.list_users(conn)}
+            messages = [dict(m) for m in store.list_messages(conn, cid)]
+        author = lambda m: (names.get(m["user_id"]) or "Vous") if m["role"] == "user" else (m["model"] or "IA")
+        return conv, messages, author
+
+    def exported(cid, format):
+        """(text, media type, file name) of the export in Markdown or in AI Hub's JSON."""
+        conv, messages, author = export_parts(cid)
+        safe = "".join(c if c.isalnum() or c in " -_" else "-" for c in conv["title"]).strip()[:80] or "conversation"
+        if format == "json":
+            body = json.dumps(importer.export_json(conv, messages, author), ensure_ascii=False, indent=2)
+            return body, "application/json", f"{safe}.json"
+        shown = [m for m in messages if m["content"] and m["status"] in ("ok", "stopped")]
+        parts = [f"# {conv['title']}", "", f"_Exporté d'AI Hub le {db.utc_now()[:10]}._", ""]
+        for m in shown:
+            parts += [f"## {author(m)} — {m['created_at'][:16].replace('T', ' ')}", "", m["content"], ""]
+        return "\n".join(parts), "text/markdown", f"{safe}.md"
+
+    @app.post("/api/conversations/{cid}/save", status_code=201)
+    def save_conversation(cid: int, body: SaveToPc, request: HttpRequest):
+        """The export saved into a folder of the PC chosen in the app's explorer: a new file, never over one."""
+        user = me(request)
+        if body.format not in ("md", "json"):
+            raise StoreError("format : md ou json")
+        if not access.trusted(user):
+            raise access.Forbidden("enregistrer sur le PC serveur est réservé au propriétaire et aux administrateurs")
+        text, _, name = exported(cid, body.format)
+        with database() as conn:
+            confirm_maker(conn, user, body.password, request)
+        target = places.free(allowed_places().child(body.folder, name))
+        try:
+            with open(target, "x", encoding="utf-8", newline="\n") as fh:
+                fh.write(text)
+        except FileExistsError:
+            raise StoreError("un fichier de ce nom vient d'apparaître : réessayez") from None
+        except OSError as exc:
+            raise StoreError(f"enregistrement impossible : {exc.strerror or exc}") from None
+        return {"path": str(target)}
+
     @app.get("/api/conversations/{cid}/export")
     def export_conversation(cid: int, format: str = "md"):
         """A conversation to keep or to send: Markdown, AI Hub's JSON (the import reads it back), or a page
         to print (« Enregistrer en PDF »). Whoever sees the conversation may export it."""
         if format not in ("md", "json", "html"):
             raise StoreError("format : md, json ou html")
-        with database() as conn:
-            conv = dict(access.require(conn, me(), cid))
-            names = {u["id"]: u["name"] for u in auth.list_users(conn)}
-            messages = [dict(m) for m in store.list_messages(conn, cid)]
-        author = lambda m: (names.get(m["user_id"]) or "Vous") if m["role"] == "user" else (m["model"] or "IA")
-        safe = "".join(c if c.isalnum() or c in " -_" else "-" for c in conv["title"]).strip()[:80] or "conversation"
-        if format == "json":
-            body = json.dumps(importer.export_json(conv, messages, author), ensure_ascii=False, indent=2)
-            return export_response(body, "application/json", f"{safe}.json")
+        if format != "html":
+            return export_response(*exported(cid, format))
+        conv, messages, author = export_parts(cid)
         shown = [m for m in messages if m["content"] and m["status"] in ("ok", "stopped")]
-        if format == "md":
-            parts = [f"# {conv['title']}", "", f"_Exporté d'AI Hub le {db.utc_now()[:10]}._", ""]
-            for m in shown:
-                parts += [f"## {author(m)} — {m['created_at'][:16].replace('T', ' ')}", "", m["content"], ""]
-            return export_response("\n".join(parts), "text/markdown", f"{safe}.md")
         import html
         rows = "".join(f'<section class="{m["role"]}"><h2>{html.escape(author(m))} '
                        f'<small>{html.escape(m["created_at"][:16].replace("T", " "))}</small></h2>'
@@ -2499,6 +2597,18 @@ def create_app(db_path, *, command=None, env=None, allowed_roots=(), permission_
         except project_export.ProjectFileError as exc:
             raise StoreError(str(exc)) from None
         return await asyncio.to_thread(import_project_from, bundle, user, workdir, notes)
+
+    @app.post("/api/projects/import/pc", status_code=201)
+    def import_project_pc(body: PcFile, request: HttpRequest, workdir: str = "", notes: bool = False):
+        """The same .zip, as a file of the PC chosen in the app's explorer."""
+        user = me(request)
+        access.require_creator(user)
+        path = pc_file(user, body.path, extensions={".zip"}, max_size=project_export.MAX_ZIP)
+        try:
+            bundle = project_export.read(path.read_bytes())
+        except project_export.ProjectFileError as exc:
+            raise StoreError(str(exc)) from None
+        return import_project_from(bundle, user, workdir, notes)
 
     @app.get("/api/conversations/{cid}")
     def conversation(cid: int, request: HttpRequest, last: int | None = None):
@@ -2804,6 +2914,14 @@ def create_app(db_path, *, command=None, env=None, allowed_roots=(), permission_
                 store.move_conversation(conn, cid, body.project_id)
             if body.shared is not None:
                 store.set_shared(conn, cid, body.shared)
+            if body.obsidian_vault is not None:
+                # A folder of the owner's PC, like a project's vault: the owner's choice only.
+                access.require_owner(user)
+                vault = obsidian.check_project_vault(body.obsidian_vault, current().allowed_roots)
+                if vault != store.get_conversation(conn, cid)["obsidian_vault"]:
+                    store.set_conversation_vault(conn, cid, vault)
+                    # The note of the former vault stays there; one is made in the new vault when linked.
+                    store.set_obsidian_note(conn, cid, None)
             if body.obsidian is False:
                 # The note stays in the vault; only the hub stops writing to it.
                 store.set_obsidian_note(conn, cid, None)
@@ -2863,7 +2981,8 @@ def create_app(db_path, *, command=None, env=None, allowed_roots=(), permission_
             path = note or conv["obsidian_note"] or obsidian.default_note_path(conv["title"])
             exists = obsidian.resolve(vault, path).exists()
             users = [row["title"] for row in conn.execute(
-                "SELECT id, title, project_id FROM conversations WHERE obsidian_note = ? AND id <> ?", (path, cid))
+                "SELECT id, title, project_id, obsidian_vault FROM conversations WHERE obsidian_note = ? AND id <> ?",
+                (path, cid))
                 if obsidian.vault_of(conn, row, current().obsidian_vault) == vault]
         return {"note": path, "vault": vault, "exists": exists, "used_by": users,
                 "free": obsidian.free_note_path(vault, path) if exists else path}
@@ -3061,6 +3180,17 @@ def create_app(db_path, *, command=None, env=None, allowed_roots=(), permission_
                 return attachments.view(attachments.save(conn, pieces, cid, (user or {}).get("id"), name, data,
                                                          declared))
         return await asyncio.to_thread(keep)
+
+    @app.post("/api/conversations/{cid}/attachments/pc", status_code=201)
+    def attach_pc_file(cid: int, body: PcFile):
+        """A file of the PC for the next request, chosen in the app's explorer (not sent from a device)."""
+        user = me()
+        with database() as conn:
+            access.require(conn, user, cid, "write")
+        path = pc_file(user, body.path, max_size=attachments.MAX_SIZE)
+        data = path.read_bytes()
+        with database() as conn:
+            return attachments.view(attachments.save(conn, pieces, cid, (user or {}).get("id"), path.name, data))
 
     @app.delete("/api/attachments/{aid}")
     def remove_attachment(aid: int):

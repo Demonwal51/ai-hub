@@ -1,5 +1,39 @@
 # Journal des versions
 
+## 1.2.3 — 16 octobre 2026 : l’explorateur partout, une seule règle pour les fichiers du PC
+
+- **L’explorateur de l’appli pour tout ce qui touche aux fichiers** : plus aucun chemin à
+  taper. Les dossiers de travail, du projet, de l’import, des sauvegardes, les coffres et
+  les dossiers autorisés se choisissent dans l’explorateur (« Choisir… », « Vider »).
+  On y crée aussi un dossier (« ＋ Nouveau dossier ») ou un coffre, nommé sur place.
+- **Depuis le PC, par l’explorateur** (le propriétaire et les administrateurs) :
+  - « Ajouter un fichier… » à la mémoire d’un projet (Markdown, texte, CSV, JSON, YAML) ;
+  - 📎 un fichier du PC à la prochaine demande ;
+  - l’import d’un export ChatGPT ou Claude, ou d’un projet AI Hub (.zip) ;
+  - « Exporter » propose **Enregistrer sur le PC…** : la conversation en Markdown, dans
+    le dossier choisi, comme nouveau fichier (« (2) »… si le nom est pris).
+  « Depuis cet appareil… » reste là pour un fichier du téléphone ou de l’autre PC.
+- **Une seule règle** (`aihub/places.py`) juge chaque fichier et chaque dossier : un disque
+  local du serveur (un chemin réseau n’est jamais résolu, aussi dans les réglages), dans
+  les dossiers autorisés des réglages quand il y en a, liens jugés là où ils mènent. Les
+  coffres (d’un projet, d’une conversation, lus dans « Coffres Obsidian ») la suivent aussi.
+  Lire un fichier du PC : le propriétaire et les administrateurs ; y créer quelque chose
+  demande en plus le mot de passe. Les membres et les invités ne touchent pas au PC.
+- Un dossier immense (un Temp) s’ouvre vite : il est lu en partie, et l’explorateur le dit.
+
+## 1.2.2 — 16 octobre 2026 : relier une conversation à Obsidian
+
+- **« Relier à Obsidian… »** revient dans le menu ⋯ d’une conversation. On choisit
+  **Créer un nouveau coffre** (un dossier neuf, prêt à ouvrir dans Obsidian, proposé
+  à côté des coffres connus) ou **Choisir un coffre existant** (les coffres trouvés
+  sur le PC, ou un autre dossier). La note de la conversation se fait dans ce coffre ;
+  une note qui existe déjà n’est jamais reprise sans le demander.
+- Une fois reliée : le coffre et la note sont dits, avec **Changer de coffre** et
+  **Délier**. « Noter dans Obsidian » sous une réponse l’y ajoute.
+- **Un coffre par conversation** (schéma 29) : celui choisi en la reliant passe avant
+  celui de son projet, puis celui des réglages. Seul le propriétaire du serveur le
+  choisit.
+
 ## 1.2.1 — 16 octobre 2026 : l’essentiel seulement, comme Claude Code
 
 - **À gauche** : « Nouvelle conversation », la recherche, la liste, « Réglages ».

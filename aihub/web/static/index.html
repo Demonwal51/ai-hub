@@ -178,7 +178,7 @@
                 <button class="menu-item hidden adv" id="create-path" type="button">Créer un fichier ou un dossier…</button>
                 <p class="menu-heading adv">Plus</p>
                 <button class="menu-item adv" id="schedules" type="button" title="Demandes qui se relancent seules (chaque jour, chaque heure…)">Planifier…</button>
-                <button class="menu-item hidden adv" id="obsidian" type="button" title="Note de projet dans Obsidian">Obsidian</button>
+                <button class="menu-item hidden" id="obsidian" type="button" title="Une note Obsidian pour cette conversation : un nouveau coffre ou un coffre existant">Relier à Obsidian…</button>
                 <a class="menu-item" id="export-md" download title="Le texte de la conversation, lisible partout">Exporter</a>
                 <a class="menu-item adv" id="export-json" download
                    title="Pour la recharger, ici ou sur un autre serveur (« Importer… »)">Exporter (JSON, réimportable)</a>
@@ -334,8 +334,7 @@
       <details class="new-advanced" id="new-advanced">
         <summary>Options avancées : dossier, plusieurs IA, espace isolé, permissions</summary>
         <label id="new-workdir-row">Dossier de travail (chemin complet ; vide : celui du projet, sinon un dossier rien qu'à elle)
-          <input name="workdir" id="new-workdir" placeholder="D:\projets\mon-projet">
-          <button class="btn btn-ghost btn-small" id="new-create-folder" type="button">Créer ce dossier sur le serveur</button>
+          <input name="workdir" id="new-workdir" placeholder="Automatique">
         </label>
         <label>Fonctionnement
           <select name="mode" id="new-kind">
@@ -372,29 +371,6 @@
     </form>
   </dialog>
 
-  <dialog id="obsidian-dialog" class="dialog">
-    <form method="dialog" id="obsidian-form">
-      <h2>Note de projet dans Obsidian</h2>
-      <p id="obsidian-state"></p>
-      <button class="btn btn-ghost" type="button" id="obsidian-create-vault">Créer un nouveau coffre…</button>
-      <button class="btn btn-ghost" type="button" id="obsidian-vaults">Voir les coffres du PC…</button>
-      <p class="quota-note">Coffre : <span id="obsidian-vault"></span>. La note reçoit la création du projet puis
-        une mise à jour après chaque plan exécuté. Les conversations n'y vont pas : une réponse n'y va que si
-        vous cliquez « Noter dans Obsidian » sous elle.</p>
-      <label>Chemin de la note dans le coffre
-        <input id="obsidian-path" placeholder="Projets AI Hub/Mon projet.md">
-      </label>
-      <p class="form-error" id="obsidian-error" role="alert"></p>
-      <div class="dialog-actions">
-        <button class="btn btn-danger-ghost" type="button" id="obsidian-rewrite"
-                title="Reconstruit toute la note ; l'ancienne version est sauvegardée">Réécrire la note</button>
-        <button class="btn btn-ghost" type="button" id="obsidian-off">Désactiver</button>
-        <button class="btn btn-ghost" type="button" id="obsidian-close">Fermer</button>
-        <button class="btn btn-primary" type="button" id="obsidian-on">Activer</button>
-      </div>
-    </form>
-  </dialog>
-
   <dialog id="project-dialog" class="dialog">
     <form method="dialog" id="project-form">
       <h2 id="project-dialog-title">Nouveau projet</h2>
@@ -406,11 +382,10 @@
                   placeholder="De quoi parle ce projet"></textarea>
       </label>
       <label>Dossier de travail (facultatif : sans dossier, chaque conversation a le sien)
-        <input name="workdir" id="project-workdir" placeholder="D:\projets\boutique">
-        <button class="btn btn-ghost btn-small adv" id="project-create-folder" type="button">Créer ce dossier sur le serveur</button>
+        <input name="workdir" id="project-workdir" placeholder="Aucun : chaque conversation a le sien">
       </label>
       <label id="project-vault-row" class="adv">Coffre des notes de ce projet (vide : celui des réglages)
-        <input id="project-vault" placeholder="D:\notes\mon-projet">
+        <input id="project-vault" placeholder="Celui des réglages">
       </label>
       <label>Consignes pour l'IA (facultatives, pour toutes ses conversations)
         <textarea id="project-instructions" rows="3" maxlength="4000"
@@ -445,7 +420,7 @@
           <textarea id="set-allowed_roots" rows="3" placeholder="D:\projets"></textarea>
         </label>
         <label>Coffre Obsidian des notes de projet (vide : pas de notes)
-          <input id="set-obsidian_vault" placeholder="D:\notes\coffre">
+          <input id="set-obsidian_vault" placeholder="Aucun : pas de notes">
         </label>
         <button class="btn btn-ghost" type="button" id="settings-create-vault">Créer un nouveau coffre…</button>
         <button class="btn btn-ghost" type="button" id="settings-pick-vault">Choisir parmi les coffres du PC…</button>
@@ -610,7 +585,7 @@
         </label>
         <div class="field-row">
           <label>Dossier de travail
-            <input id="import-workdir" placeholder="D:\projets\mon-projet">
+            <input id="import-workdir" placeholder="À choisir">
           </label>
           <label>Projet
             <select id="import-project"></select>

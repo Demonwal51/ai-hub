@@ -1,19 +1,16 @@
-AI Hub 1.2.1 ne montre que l’essentiel, comme Claude Code, et dit quand une mise à jour est à faire.
+AI Hub 1.2.3 fait tout passer par l’explorateur de l’appli, sous une seule règle pour les fichiers du PC.
 
-- **L’écran** : la liste à gauche, la conversation au centre, une seule zone de saisie
-  en bas (📎, l’IA, ce qu’elle peut faire sans demander, ↑). L’accueil : la demande,
-  le projet, l’IA.
-- **Des menus courts** : ⋯ (renommer, archiver, projet, consignes, exporter,
-  supprimer) et Réglages (quota, apparence, notifications, mises à jour, IA proposées).
-- **« Fonctions avancées »** (Réglages) remet le reste à l’écran : plusieurs IA, travail
-  autonome, comparer, planifier, espaces isolés, partage, coffres…
-- **Mises à jour détectées** : « ⬆ Mise à jour à faire » et la fenêtre « Mises à jour ».
-  Une version plus récente sur GitHub s’installe en un clic (installation .zip) ; le code
-  changé sur le PC (copie git) se met en service par « Redémarrer sur le nouveau code ».
-- **Sans dossier**, une conversation reçoit un dossier vide rien qu’à elle.
+- **Plus de chemin à taper** : dossiers de travail, coffres, dossiers autorisés et sauvegardes
+  se choisissent dans l’explorateur, qui crée aussi un dossier ou un coffre sur place.
+- **Depuis le PC** : un fichier pour la mémoire d’un projet, une pièce jointe, un import, et
+  « Exporter → Enregistrer sur le PC… ». « Depuis cet appareil… » reste pour le téléphone.
+- **Une seule règle** : un disque local du serveur (jamais un chemin réseau), dans les dossiers
+  autorisés des réglages quand il y en a ; le mot de passe pour créer ; rien pour les membres
+  et les invités. Les coffres la suivent aussi.
+- Avec la 1.2.2 : « Relier à Obsidian… », un nouveau coffre ou un coffre existant, un coffre par conversation.
 
-Windows : `ai-hub-1.2.1.zip`, puis `installer.bat`.
-Linux : `ai-hub-1.2.1-linux.tar.gz`, puis `sh installer.sh` et `./lancer.sh`.
+Windows : `ai-hub-1.2.3.zip`, puis `installer.bat`.
+Linux : `ai-hub-1.2.3-linux.tar.gz`, puis `sh installer.sh` et `./lancer.sh`.
 Python 3.12 ou plus est nécessaire. Les espaces isolés nécessitent Docker Sandboxes.
-La base reste au schéma 28 ; conservez `data/` et une sauvegarde avant la mise à jour.
+La base passe au schéma 29 (depuis la 1.2.1) ; conservez `data/` et une sauvegarde avant la mise à jour.
 Les empreintes des paquets sont dans `SHA256SUMS`.

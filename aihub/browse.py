@@ -4,8 +4,10 @@ The app is used from a phone or another PC as well: a path on the server can
 only be chosen in a window the app draws itself. Two views, reading only:
 
 - `folders`: the folders of a folder, to choose a working folder, a vault, a
-  backup folder… Limited to the allowed folders when the settings name some
-  (`roots`), unless the caller is the owner choosing a setting.
+  backup folder… and, when asked (`files`), its files of the kinds wanted, to
+  choose a file to read. Limited by aihub/places.py, the one rule: the allowed
+  folders when the settings name some (`roots`), unless the caller is the owner
+  choosing a setting.
 - `entries`: the files and folders inside a working folder, as paths relative
   to it, to pick what an isolated space receives.
 
@@ -17,35 +19,20 @@ import os
 import re
 from pathlib import Path
 
+from . import places
 from .store import StoreError
 from .vaults import _fixed_drives, is_vault
 
 MAX_ENTRIES = 2000       # shown in one folder, at most
+MAX_SCAN = 10000         # read in one folder, at most (a huge Temp stays quick)
 
 
-def local_path(raw):
-    """Refused before anything is looked at: on Windows, only a local disk's path (C:\\…).
-
-    A network path (\\\\serveur\\partage) is never even resolved: Windows would
-    then connect to that machine, and could hand it the PC's sign-in."""
-    if os.name == "nt" and not re.match(r"^[A-Za-z]:[\\/]", raw):
-        raise StoreError("choisissez un dossier d'un disque local du serveur")
+# A network path is never even resolved (aihub/places.py says why).
+local_path = places.local
 
 
 def _absolute(path):
-    if not isinstance(path, str) or not path.strip() or len(path) > 1000 or "\x00" in path:
-        raise StoreError("indiquez un chemin complet")
-    local_path(path.strip())
-    p = Path(path.strip()).expanduser()
-    if not p.is_absolute() or (os.name == "nt" and not p.drive):
-        raise StoreError("indiquez un chemin complet")
-    try:
-        p = p.resolve()
-    except OSError:
-        raise StoreError(f"dossier introuvable : {path}") from None
-    if not p.is_dir():
-        raise StoreError(f"ce dossier n'existe pas : {p}")
-    return p
+    return places.Places().folder(path)
 
 
 def _inside(path, roots):
@@ -66,28 +53,42 @@ def starts(roots=()):
     return [{"name": name, "path": str(p)} for name, p in places if p.is_dir()]
 
 
-def folders(path=None, roots=()):
-    """The folders in `path` (None: the starting places). `roots`: the limit, if any."""
-    allowed = [Path(r).resolve() for r in roots]
+def folders(path=None, roots=(), files=None):
+    """The folders in `path` (None: the starting places). `roots`: the limit, if any.
+
+    `files`: also its files, of these kinds (".md"…, or "*" for any): to choose a file."""
+    rule = places.Places(roots)
+    allowed = rule.roots
     if not path:
         return {"path": None, "parent": None, "starts": starts(allowed), "entries": [], "complete": True,
                 "vault": False, "limited": bool(allowed)}
-    here = _absolute(path)
-    if allowed and not _inside(here, allowed):
-        raise StoreError("ce dossier est hors des dossiers autorisés")
+    here = rule.folder(path)  # local, allowed, existing: or said why not
     entries, complete = [], True
     try:
         with os.scandir(here) as it:
-            items = sorted((e for e in it if not e.name.startswith((".", "$"))), key=lambda e: e.name.lower())
+            # A folder of tens of thousands of entries (a Temp) is read up to MAX_SCAN of them, then said cut.
+            items = []
+            for e in it:
+                if len(items) >= MAX_SCAN:
+                    complete = False
+                    break
+                if not e.name.startswith((".", "$")):
+                    items.append(e)
+            items.sort(key=lambda e: e.name.lower())
     except PermissionError:
         raise StoreError(f"accès refusé par Windows à ce dossier : {here}") from None
     except OSError as exc:
         raise StoreError(f"lecture impossible de {here} : {exc.strerror or exc}") from None
     for entry in items:
         try:
-            if not entry.is_dir():
+            if entry.is_dir():
+                kind = "dir"
+            elif files is not None and entry.is_file() and (files == "*" or Path(entry.name).suffix.lower() in files):
+                kind = "file"
+            else:
                 continue
             target = Path(entry.path).resolve()
+            size = entry.stat().st_size if kind == "file" else None
         except OSError:
             continue
         if allowed and not _inside(target, allowed):
@@ -95,7 +96,9 @@ def folders(path=None, roots=()):
         if len(entries) >= MAX_ENTRIES:
             complete = False
             break
-        entries.append({"name": entry.name, "path": str(Path(entry.path)), "vault": is_vault(entry.path)})
+        entries.append({"name": entry.name, "path": str(Path(entry.path)), "kind": kind,
+                        **({"size": size} if kind == "file" else {"vault": is_vault(entry.path)})})
+    entries.sort(key=lambda e: (e["kind"] != "dir", e["name"].lower()))  # the folders first
     parent = here.parent if here.parent != here else None
     if parent is not None and allowed and not _inside(parent, allowed):
         parent = None

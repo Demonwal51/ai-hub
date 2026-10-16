@@ -33,7 +33,10 @@ def create_vault(path, *, roots=(), parents=True):
 
 
 def vault_of(conn, conversation, default):
-    """The vault of a conversation's notes: its project's when the project has one, else the settings' (`default`)."""
+    """The vault of a conversation's notes: its own (chosen when it was linked), else its project's
+    when the project has one, else the settings' (`default`)."""
+    if conversation["obsidian_vault"]:
+        return conversation["obsidian_vault"]
     if conversation["project_id"] is not None:
         row = conn.execute("SELECT obsidian_vault FROM projects WHERE id = ?", (conversation["project_id"],)).fetchone()
         if row is not None and row["obsidian_vault"]:
@@ -41,18 +44,17 @@ def vault_of(conn, conversation, default):
     return default
 
 
-def check_project_vault(path):
-    """A project's vault as it is saved: None for "" (the settings' one), else an existing local folder."""
+def check_project_vault(path, roots=()):
+    """A project's or a conversation's vault as it is saved: None for "" (the settings' one), else an
+    existing local folder, inside the allowed folders `roots` when there are some (aihub/places.py)."""
     if path is None or not str(path).strip():
         return None
-    raw = str(path).strip()
-    if len(raw) > 1000 or "\x00" in raw or not Path(raw).is_absolute() \
-            or (os.name == "nt" and not re.match(r"^[A-Za-z]:[\\/]", raw)):
-        raise ObsidianError("indiquez le chemin complet d'un dossier d'un disque local du serveur")
-    folder = Path(raw).resolve()
-    if not folder.is_dir():
-        raise ObsidianError(f"ce coffre n'existe pas : {folder}")
-    return str(folder)
+    from .places import Places
+    from .store import StoreError
+    try:
+        return str(Places(roots).folder(str(path), "coffre"))
+    except StoreError as exc:
+        raise ObsidianError(str(exc)) from None
 
 
 def default_note_path(title):

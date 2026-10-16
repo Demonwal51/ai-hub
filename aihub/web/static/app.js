@@ -7,6 +7,18 @@ function applyAppearance(theme, density) {
 try { applyAppearance(localStorage.getItem("aihub-theme"), localStorage.getItem("aihub-density")); }
 catch { applyAppearance("system", "comfortable"); }
 
+// Simple by default (1.2.1): what is rarely needed (class « adv ») waits behind « Fonctions avancées »,
+// a choice of this device. Nothing is removed: the features are still there, just not on screen.
+function advancedOn() {
+  try { return localStorage.getItem("aihub-avance") === "1"; } catch { return false; }
+}
+function applyAdvanced(on) {
+  document.documentElement.dataset.advanced = on ? "on" : "off";
+}
+applyAdvanced(advancedOn());
+// Shown on screen: neither hidden by the page nor kept for « Fonctions avancées ».
+const shown = (node) => getComputedStyle(node).display !== "none";
+
 // --- state -------------------------------------------------------------------
 
 const SHOWN_FIRST = 80;   // messages loaded when a conversation opens
@@ -38,7 +50,6 @@ const KEYBOARD = window.matchMedia("(pointer: fine)").matches;
 const isOwner = () => !state.me || state.me.is_owner;
 
 const $ = (id) => document.getElementById(id);
-const MODE_LABELS = { manual: "Manuel", plan: "Plan", bypass: "Sans permission" };
 // The local AI's models (« local:qwen3.5:4b ») come from its Ollama: named on the fly.
 const MODEL_LABELS = new Proxy({}, { get: (labels, key) => key in BASE_MODEL_LABELS ? BASE_MODEL_LABELS[key]
   : typeof key === "string" && key.startsWith("local:") ? `Local · ${key.slice(6)}` : undefined });
@@ -224,6 +235,7 @@ const loadConversations = coalesced(async () => {
   markSeen(conversations.filter((c) => !seen[c.id] || c.id === state.currentId));
   if ($("search").value.trim().length >= 3) await runSearch();
   else renderList();
+  renderRecent();
 });
 
 // Folded projects, remembered on this device only.
@@ -269,7 +281,9 @@ function conversationItem(conv) {
     conv.project_id !== null && !conv.shared ? el("span", { class: "unshared", title: "Partage coupé", text: "privée · " }) : null,
     conv.my_role && conv.my_role !== "owner"
       ? el("span", { class: "unshared", text: conv.my_role === "read" ? "lecture seule · " : "partagée · " }) : null,
-    `${conv.mode === "orchestration" ? "Orchestration · " : ""}${MODE_LABELS[conv.permission_mode] || conv.permission_mode} · `,
+    // Short (1.2): what is unusual only; the usual (one AI, it asks first) goes without saying.
+    conv.mode === "orchestration" ? "plusieurs IA · " : null,
+    conv.permission_mode === "bypass" ? el("span", { class: "unshared", title: "L'IA agit sans demander", text: "sans permission · " }) : null,
     el("span", { title: formatDate(conv.updated_at), text: sinceDate(conv.updated_at) })));
 }
 
@@ -313,10 +327,10 @@ function renderList() {
         el("span", { class: "chevron", "aria-hidden": "true", text: open ? "▾" : "▸" }),
         el("span", { text: project.name }),
         el("span", { class: "project-count", text: String(convs.length) })),
-      isOwner() ? el("button", { class: "btn btn-ghost btn-small", type: "button", text: "+",
+      isOwner() ? el("button", { class: "btn btn-ghost btn-small adv", type: "button", text: "+",
         title: "Nouvelle conversation dans ce projet", "aria-label": `Nouvelle conversation dans ${project.name}`,
-        onclick: () => openNewDialog(project.id) }) : null,
-      isOwner() ? el("button", { class: "btn btn-ghost btn-small", type: "button", text: "…",
+        onclick: () => goHome(project.id) }) : null,
+      isOwner() ? el("button", { class: "btn btn-ghost btn-small project-more", type: "button", text: "…",
         title: "Modifier, partager ou supprimer le projet", "aria-label": `Modifier le projet ${project.name}`,
         onclick: () => openProjectDialog(project) }) : null));
     if (open) {
@@ -332,11 +346,17 @@ function renderList() {
   }
   if (!matching.length && state.conversations.length) list.append(el("p", {
     class: "list-empty", text: "Aucune conversation avec ces filtres." }));
+  // The archives, one click away (the filters are for « Fonctions avancées »).
+  const archived = state.conversations.filter((c) => c.archived).length;
+  const scope = $("list-scope").value;
+  if (archived || scope !== "active") list.append(el("button", { class: "list-archives", type: "button",
+    text: scope === "active" ? `Archives (${archived})` : "← Conversations",
+    onclick: () => { $("list-scope").value = scope === "active" ? "archived" : "active"; runSearch(); } }));
 }
 
 function refreshFilterChoices() {
   for (const [id, values, label] of [["filter-project", state.projects.map((p) => [String(p.id), p.name]), "Tous les projets"],
-    ["filter-model", [...new Set(state.conversations.map((c) => c.model).filter(Boolean))].map((m) => [m, MODEL_LABELS[m]]), "Toutes les IA"]]) {
+    ["filter-model", [...new Set(state.conversations.map((c) => c.model).filter(Boolean))].map((m) => [m, aiName(m)]), "Toutes les IA"]]) {
     const previous = $(id).value;
     $(id).replaceChildren(el("option", { value: "", text: label }), ...values.map(([value, text]) => el("option", { value, text })));
     if (values.some(([value]) => value === previous)) $(id).value = previous;
@@ -419,6 +439,7 @@ async function loadQuota(refresh = false) {
     return el("span", { class: "quota-mini-part" + (used !== null && used >= threshold ? " high" : ""), text });
   }));
   mini.classList.toggle("high", high);
+  mini.classList.toggle("quiet", !high);  // simple: said only when a quota is nearly used up
   mini.title = "Ce qui reste de la fenêtre la plus entamée de chaque IA. Cliquez pour le détail.";
 }
 
@@ -461,6 +482,188 @@ function setupMenus() {
   document.addEventListener("click", () => document.querySelectorAll(".menu-wrap.open").forEach(close));
   document.addEventListener("keydown", (event) => {
     if (event.key === "Escape") document.querySelectorAll(".menu-wrap.open").forEach(close);
+  });
+  closeMenus = () => document.querySelectorAll(".menu-wrap.open").forEach(close);
+}
+let closeMenus = () => {};  // set by setupMenus
+
+// A grouped menu (1.2): a heading shows only when something of its group does.
+function tidyMenu(menu) {
+  let heading = null;
+  let seen = false;
+  const done = () => { if (heading) heading.classList.toggle("hidden", !seen); };
+  for (const child of menu.children) {
+    if (child.classList.contains("menu-heading")) { done(); heading = child; seen = false; }
+    else if (shown(child)) seen = true;
+  }
+  done();
+}
+
+const menuHasItems = (menu) => [...menu.children].some((c) => !c.classList.contains("menu-heading") && shown(c));
+
+// --- « Réglages » (1.2): one window for what was a long menu, grouped and explained ----------
+
+function setupHub() {
+  const hub = $("hub-dialog");
+  $("hub-button").addEventListener("click", () => { tidyHub(); hub.showModal(); });
+  $("hub-close").addEventListener("click", () => hub.close());
+  // A choice closes this window first: its own one opens alone (the click goes on to its button).
+  hub.addEventListener("click", (event) => { if (event.target.closest(".hub-item, #logout")) hub.close(); }, true);
+  $("show-keys").addEventListener("click", () => $("keys-dialog").showModal());
+  $("updates").addEventListener("click", openUpdates);
+  $("reload-now").addEventListener("click", () => location.reload());
+  $("quota-open").addEventListener("click", () => $("quota-dialog").showModal());
+  $("advanced-toggle").addEventListener("click", () => {
+    const on = !advancedOn();
+    try { localStorage.setItem("aihub-avance", on ? "1" : "0"); } catch { /* storage off: for this page only */ }
+    applyAdvanced(on);
+    if (state.data) renderConversation(); else renderHome();
+    renderList();
+    toast(on ? "Fonctions avancées affichées sur cet appareil." : "Retour à l'essentiel.");
+  });
+}
+
+function tidyHub() {
+  $("advanced-toggle").querySelector("strong").textContent = `Fonctions avancées : ${advancedOn() ? "oui" : "non"}`;
+  for (const group of document.querySelectorAll("#hub-dialog .hub-group")) {
+    group.classList.remove("hidden");
+    group.classList.toggle("hidden", ![...group.querySelectorAll(".hub-item")].some(shown));
+  }
+  $("hub-who").textContent = state.me ? `${state.me.name} · ${ROLE_NAMES[state.me.is_owner ? "owner" : state.me.role] || ""}` : "";
+}
+
+// --- the home (1.2): write the request at once; the conversation is made when it is sent -----
+
+const NEW_TITLE = "Nouvelle conversation";
+
+// The first line of the request, cut on a word: the title of the conversation it starts.
+function titleFrom(text) {
+  const line = String(text || "").split("\n").map((l) => l.trim()).find(Boolean) || NEW_TITLE;
+  if (line.length <= 60) return line;
+  const cut = line.slice(0, 60);
+  const space = cut.lastIndexOf(" ");
+  return (space > 30 ? cut.slice(0, space) : cut).replace(/[\s,;:.!?…-]+$/, "") + "…";
+}
+
+// « Claude · Sonnet », « ChatGPT · GPT-6 Sol », « IA locale · qwen3.5:4b »: the AI first.
+function aiName(model) {
+  const m = String(model || "default");
+  if (m === "default") return "Claude";
+  if (m === "codex") return "ChatGPT (Codex)";
+  if (m.startsWith("local:")) return `IA locale · ${m.slice(6)}`;
+  return `${modelProvider(m) === "codex" ? "ChatGPT" : "Claude"} · ${MODEL_LABELS[m] || m}`;
+}
+
+function goHome(projectId = null) {
+  if (state.currentId !== null) closeConversation();
+  renderHome(projectId);
+  setView("chat");  // a phone shows the home, not the list
+  if (canCreate()) $("home-prompt").focus();
+}
+
+function renderHome(projectId = null) {
+  const creator = canCreate();
+  $("home-form").classList.toggle("hidden", !creator);
+  $("home-guest").classList.toggle("hidden", creator);
+  for (const id of ["home-template", "home-import"]) $(id).classList.toggle("hidden", !creator);
+  $("home-project").replaceChildren(...projectOptions(projectId, "Aucun projet"),
+    ...(creator ? [el("option", { value: "__new", text: "＋ Nouveau projet…" })] : []));
+  state.homeProject = $("home-project").value;
+  const models = state.options.models || [];
+  const last = rememberedChoices().model;
+  const chosen = models.includes(last) ? last  // the AI of the last conversation started here
+    : models.includes(state.options.default_model) ? state.options.default_model : models[0];
+  $("home-model").replaceChildren(...models.map((m) => el("option", { value: m, text: aiName(m), selected: m === chosen })));
+  $("home-error").textContent = "";
+  renderHomeFolder();
+  renderRecent();
+}
+
+// The folder where the AI works: the project's, one chosen, or one of its own made by the server.
+function renderHomeFolder() {
+  const button = $("home-folder");
+  button.classList.toggle("hidden", !isAdmin());  // a member's conversations always get a folder of their own
+  const project = state.projects.find((p) => String(p.id) === $("home-project").value);
+  if (state.homeFolder) {
+    button.textContent = `Dossier : ${state.homeFolder.replace(/[\\/]+$/, "").split(/[\\/]/).pop() || state.homeFolder}`;
+    button.title = `${state.homeFolder}\nCliquez pour en changer, ou revenir au dossier automatique.`;
+  } else if (project && project.workdir) {
+    button.textContent = "Dossier : celui du projet";
+    button.title = `${project.workdir}\nCliquez pour en choisir un autre.`;
+  } else {
+    button.textContent = "Dossier : automatique";
+    button.title = "Un dossier vide, rien qu'à cette conversation, sur le PC serveur. Cliquez pour choisir un dossier du PC.";
+  }
+}
+
+function renderRecent() {
+  const box = $("home-recent");
+  const recent = state.conversations.filter((c) => !c.archived)
+    .sort((a, b) => (a.updated_at < b.updated_at ? 1 : -1)).slice(0, 4);
+  box.classList.toggle("hidden", !recent.length);
+  box.replaceChildren(el("h2", { text: "Reprendre" }), el("div", { class: "home-recent-list" },
+    ...recent.map((c) => el("button", { type: "button", class: "home-recent-item", onclick: () => openConversation(c.id) },
+      el("strong", { text: c.title }),
+      el("span", { text: [state.projects.find((p) => p.id === c.project_id)?.name, sinceDate(c.updated_at)].filter(Boolean).join(" · ") })))));
+}
+
+function setupHome() {
+  $("home-project").addEventListener("change", () => {
+    if ($("home-project").value === "__new") {  // made here, then chosen (setupProjectDialog)
+      $("home-project").value = state.homeProject;
+      openProjectDialog(null);
+      return;
+    }
+    state.homeProject = $("home-project").value;
+    renderHomeFolder();
+  });
+  $("home-folder").addEventListener("click", async () => {
+    if (state.homeFolder) {
+      const choice = await choiceDialog({ title: "Dossier de travail", text: state.homeFolder,
+        choices: [{ value: "auto", label: "Revenir au dossier automatique" }, { value: "pick", label: "Choisir un autre dossier", primary: true }] });
+      if (choice === "auto") { state.homeFolder = null; renderHomeFolder(); }
+      if (choice !== "pick") return;
+    }
+    openPathPicker({ title: "Dossier où l'IA travaille", start: state.homeFolder || rememberedChoices().workdir || "",
+      onPick: (path) => { state.homeFolder = path; renderHomeFolder(); $("home-prompt").focus(); } });
+  });
+  $("home-back").addEventListener("click", () => setView("list"));
+  $("home-more").addEventListener("click", () => {
+    state.homeCarry = $("home-prompt").value;  // what was written follows into the conversation
+    const project = $("home-project").value ? Number($("home-project").value) : null;
+    openNewDialog(project, null, { model: $("home-model").value, workdir: state.homeFolder });
+  });
+  $("home-template").addEventListener("click", async () => { await openNewDialog(null); $("new-template").focus(); });
+  $("home-import").addEventListener("click", () => $("import").click());
+  $("home-prompt").addEventListener("keydown", (event) => {
+    if (event.key !== "Enter" || event.isComposing) return;
+    if (event.ctrlKey || event.metaKey || (KEYBOARD && !event.shiftKey)) { event.preventDefault(); $("home-form").requestSubmit(); }
+  });
+  $("home-form").addEventListener("submit", async (event) => {
+    event.preventDefault();
+    const prompt = $("home-prompt").value.trim();
+    if (!prompt) { $("home-prompt").focus(); return; }
+    $("home-send").disabled = true;
+    $("home-error").textContent = "";
+    try {
+      const project = $("home-project").value ? Number($("home-project").value) : null;
+      const model = $("home-model").value;
+      const { conversation } = await api("POST", "/api/conversations", { title: titleFrom(prompt), project_id: project,
+        model, workdir: state.homeFolder || "", mode: "single", permission_mode: "manual" });
+      rememberChoices({ model, ...(state.homeFolder && project === null ? { workdir: state.homeFolder } : {}) });
+      $("home-prompt").value = "";
+      if ($("list-scope").value === "archived") $("list-scope").value = "active";
+      await loadConversations();
+      await openConversation(conversation.id);
+      // Sent as from the conversation itself: same checks, same way.
+      $("prompt").value = prompt;
+      fitPrompt();
+      $("composer").requestSubmit($("send"));
+    } catch (err) {
+      $("home-error").textContent = err.message;
+    } finally {
+      $("home-send").disabled = false;
+    }
   });
 }
 
@@ -572,6 +775,7 @@ function closeConversation() {
   $("conversation").classList.add("hidden");
   $("empty").classList.remove("hidden");
   setView("list");
+  renderHome();
 }
 
 function renderConversation() {
@@ -589,17 +793,19 @@ function renderConversation() {
   $("pin-conversation").textContent = conv.pinned ? "Désépingler pour moi" : "Épingler pour moi";
   $("archive-conversation").textContent = conv.archived ? "Sortir de mes archives" : "Archiver pour moi";
   $("save-template").classList.toggle("hidden", !canCreate() || conv.my_role !== "owner");
-  const how = conv.mode === "orchestration"
-    ? `Orchestration · chef : ${MODEL_LABELS[conv.conductor_model] || conv.conductor_model || "?"}`
-    : (MODEL_LABELS[conv.model] || conv.model || "");
-  $("conv-meta").textContent = `${conv.isolation?.isolated ? "Espace isolé · " : ""}${conv.isolation?.isolated && conv.isolation.files === "none" ? "Aucun fichier du PC" : conv.workdir || "sans dossier"} · ${how}`;
+  // Short (1.2): the AI, then the folder by its name; the whole path on hover.
+  const how = conv.mode === "orchestration" ? `Plusieurs IA · chef : ${aiName(conv.conductor_model)}` : aiName(conv.model);
+  const folder = conv.isolation?.isolated && conv.isolation.files === "none" ? "aucun fichier du PC"
+    : conv.workdir ? `dossier « ${conv.workdir.replace(/[\\/]+$/, "").split(/[\\/]/).pop() || conv.workdir} »` : "sans dossier";
+  $("conv-meta").textContent = `${conv.isolation?.isolated ? "Espace isolé · " : ""}${how} · ${folder}`;
+  $("conv-meta").title = conv.workdir || "";
   $("conv-mode").value = conv.permission_mode;
   // The AI of the conversation (the conductor in orchestration); one no longer offered stays shown.
   const current = conv.mode === "orchestration" ? conv.conductor_model : conv.model;
   const allowedModels = (conv.isolation?.isolated ? state.options.isolated_models : state.options.models) || [];
   const offered = allowedModels.includes(current) || !current ? allowedModels : [current, ...allowedModels];
   $("conv-model").replaceChildren(...offered.map((m) => el("option", {
-    value: m, text: (conv.mode === "orchestration" ? "Chef : " : "IA : ") + (MODEL_LABELS[m] || m),
+    value: m, text: (conv.mode === "orchestration" ? "Chef : " : "") + aiName(m),
     selected: m === current })));
   $("conv-assignment-row").classList.toggle("hidden", conv.mode !== "orchestration");
   $("conv-assignment").value = conv.assignment_mode;
@@ -642,9 +848,9 @@ function renderConversation() {
   $("export-md").href = `/api/conversations/${conv.id}/export?format=md`;
   $("export-json").href = `/api/conversations/${conv.id}/export?format=json`;
   $("export-print").href = `/api/conversations/${conv.id}/export?format=html`;
-  // Nothing left in the menu (reading only): no menu button.
-  $("conv-menu-button").classList.toggle("hidden",
-    ![...$("conv-menu").children].some((c) => !c.classList.contains("hidden")));
+  // Nothing left in the menu (reading only): no menu button. A heading goes with its group.
+  tidyMenu($("conv-menu"));
+  $("conv-menu-button").classList.toggle("hidden", !menuHasItems($("conv-menu")));
   renderFresh(conv);
   renderMessages(messages);
   renderRunning();
@@ -724,10 +930,10 @@ function renderMessages(messages) {
     if (!live) {
       // Short under the reply; what it cost, on hover.
       const meta = [formatDuration(m.duration_ms)];
-      if (m.model && m.model !== "default") meta.push(MODEL_LABELS[m.model] || m.model);
+      if (m.model && m.model !== "default") meta.push(aiName(m.model));
       const cost = m.tokens_in !== null ? `${m.tokens_in} tokens envoyés, ${m.tokens_out} reçus` : null;
       node.append(el("div", { class: "msg-meta", title: cost },
-        el("span", { text: meta.filter(Boolean).join(" · ") }),
+        el("span", { class: "adv", text: meta.filter(Boolean).join(" · ") }),
         ...regenerateButtons(m, messages),
         speakButton(m),
         m.content ? el("button", { class: "msg-copy", type: "button", text: "Copier", title: "Copier la réponse",
@@ -778,7 +984,7 @@ function renderMessages(messages) {
 }
 
 function delegationNote(d) {
-  const who = MODEL_LABELS[d.model] || d.model;
+  const who = aiName(d.model);
   const head = d.status === "running" ? `Avis demandé à ${who}…`
     : d.status === "ok" ? `Avis de ${who}` : `Avis de ${who} : échec`;
   return el("details", { class: "round-note delegation" },
@@ -969,16 +1175,16 @@ function updateComposer(running) {
   const discuss = $("discuss");
   const send = $("send");
   discuss.classList.toggle("hidden", !orchestration);
-  send.textContent = orchestration ? "Demander un plan" : "Envoyer";
+  send.textContent = orchestration ? "Demander un plan" : "↑";
   discuss.className = "btn " + (plan ? "btn-primary" : "btn-ghost") + (orchestration ? "" : " hidden");
-  send.className = "btn " + (plan ? "btn-ghost" : "btn-primary");
+  send.className = "btn " + (plan ? "btn-ghost" : "btn-primary") + (orchestration ? "" : " send-button");
   discuss.disabled = running;
   $("autonomous").classList.toggle("hidden", orchestration);
   $("autonomous").disabled = running;
   send.disabled = running || Boolean(plan);
   send.title = plan ? "Un plan attend votre validation : lancez-le ou annulez-le d'abord" : "";
   $("prompt").placeholder = !orchestration
-    ? (KEYBOARD ? "Votre demande… (Entrée pour envoyer, Maj+Entrée pour aller à la ligne)" : "Votre demande…")
+    ? "Votre demande…"
     : plan ? "Une question ou un changement pour le chef ? Ensuite, « Adapter le plan »."
       : "Demande facultative : sans texte, le plan reprend la discussion et le projet.";
 }
@@ -1174,7 +1380,7 @@ function agentOptions(selected, { empty = null } = {}) {
 }
 
 function modelOptions(selected) {
-  return state.options.models.map((m) => el("option", { value: m, text: MODEL_LABELS[m] || m, selected: m === selected }));
+  return state.options.models.map((m) => el("option", { value: m, text: aiName(m), selected: m === selected }));
 }
 
 function planCard(plan) {
@@ -1193,6 +1399,8 @@ function planCard(plan) {
   if (editable) card.append(planTools(plan));
   const quota = quotaBox(plan);
   if (quota) card.append(quota);
+  const switcher = switchBox(plan);
+  if (switcher) card.append(switcher);
   if (plan.resumable && state.data.conversation.my_role !== 'read') card.append(el('button', { type: 'button', class: 'btn btn-primary', text: 'Reprendre le plan',
     disabled: Boolean(state.data.running || state.data.conversation.isolation?.paused), onclick: async () => {
       const remaining = plan.subtasks.filter(task => task.status !== 'ok').length;
@@ -1239,11 +1447,11 @@ function quotaBox(plan) {
     const models = ((isolated ? state.options.isolated_models : state.options.models) || [])
       .filter((m) => !q.providers.includes(modelProvider(m)));
     if (models.length) {
-      const other = el("select", { "aria-label": "IA qui reprend les tâches" }, ...models.map((m) => el("option", { value: m, text: MODEL_LABELS[m] || m })));
+      const other = el("select", { "aria-label": "IA qui reprend les tâches" }, ...models.map((m) => el("option", { value: m, text: aiName(m) })));
       actions.append(el("span", { class: "plan-quota-or", text: "ou" }), other, el("button", { type: "button", class: "btn btn-ghost",
         text: "Confier à cette IA et reprendre", onclick: async () => {
           if (!await confirmDialog({ title: "Confier les tâches à une autre IA ?",
-            text: `Les ${q.waiting.length} tâche(s) restantes prévues sur ${q.providers.map((p) => PROVIDER_NAMES[p] || p).join(", ")} passent à ${MODEL_LABELS[other.value] || other.value}, puis le plan reprend tout de suite. Les tâches terminées ne sont pas rejouées.`,
+            text: `Les ${q.waiting.length} tâche(s) restantes prévues sur ${q.providers.map((p) => PROVIDER_NAMES[p] || p).join(", ")} passent à ${aiName(other.value)}, puis le plan reprend tout de suite. Les tâches terminées ne sont pas rejouées.`,
             okText: "Confier et reprendre" })) return;
           await planAction("POST", `/api/plans/${plan.id}/give`, { model: other.value });
         } }));
@@ -1252,6 +1460,41 @@ function quotaBox(plan) {
   }
   if (plan.auto_resume_error) box.append(el("p", { class: "form-error", text: `Dernière reprise automatique : ${plan.auto_resume_error}` }));
   return box;
+}
+
+// « Passer la suite sur … » (1.1.1): the rest of a validated, running or interrupted plan on one AI,
+// e.g. only Claude when ChatGPT has no quota left. Tasks running or done keep their AI.
+function switchBox(plan) {
+  const conv = state.data.conversation;
+  if (conv.my_role === "read" || !(["validated", "running", "error", "stopped"].includes(plan.status) || plan.resumable)) return null;
+  const left = plan.subtasks.filter((s) => ["pending", "error", "stopped"].includes(s.status));
+  if (!left.length && plan.status === "running") return null;
+  const models = ((conv.isolation?.isolated ? state.options.isolated_models : state.options.models) || []);
+  if (models.length < 2) return null;
+  const used = left.map((s) => modelProvider(s.model || ""));
+  const most = used.sort((a, b) => used.filter((x) => x === b).length - used.filter((x) => x === a).length)[0];
+  // The AI first: « Claude · Par défaut », « Codex · GPT-5.6 Luna ».
+  const named = aiName;
+  const choice = el("select", { "aria-label": "IA pour la suite du plan" },
+    ...models.map((m) => el("option", { value: m, text: named(m) })));
+  choice.value = models.find((m) => modelProvider(m) !== most) || models[0];
+  const conductor = el("input", { type: "checkbox", checked: true });
+  const interrupted = plan.status !== "running" && plan.resumable;
+  const apply = el("button", { type: "button", class: "btn btn-ghost btn-small", text: interrupted ? "Passer et reprendre" : "Appliquer",
+    disabled: Boolean(conv.isolation?.paused), onclick: async () => {
+      const who = named(choice.value);
+      const ok = await confirmDialog({ title: `Passer la suite sur ${who} ?`,
+        text: `${left.length} tâche(s) pas encore faite(s) passent à ${who}` + (conductor.checked ? ", et le chef aussi (c'est lui qui écrit la synthèse)" : "")
+          + ". Les tâches en cours ou terminées gardent leur IA." + (interrupted ? " Le plan reprend ensuite tout de suite." : ""),
+        okText: interrupted ? "Passer et reprendre" : "Passer la suite" });
+      if (!ok) return;
+      await planAction("POST", `/api/plans/${plan.id}/switch`, { model: choice.value, conductor: conductor.checked });
+    } });
+  return el("details", { class: "plan-switch" },
+    el("summary", { text: "Changer d'IA pour la suite…" }),
+    el("p", { class: "quota-note", text: "Par exemple quand une IA n'a plus de quota : la suite du plan, même déjà validé ou en cours, va sur celle que vous choisissez." }),
+    el("div", { class: "plan-quota-actions" }, el("label", {}, "Passer la suite sur", choice),
+      el("label", { class: "check" }, conductor, "le chef aussi"), apply));
 }
 
 function subtaskRow(plan, st, positions, editable) {
@@ -1304,7 +1547,7 @@ function subtaskRow(plan, st, positions, editable) {
   }
 
   const agent = state.agents.find((a) => a.id === st.agent_id);
-  const facts = [agent ? agent.name : null, st.model ? `IA : ${MODEL_LABELS[st.model] || st.model}` : null,
+  const facts = [agent ? agent.name : null, st.model ? `IA : ${aiName(st.model)}` : null,
     st.duration_ms !== null ? formatDuration(st.duration_ms) : null].filter(Boolean);
   row.append(el("div", { class: "plan-line" },
     el("span", { class: `badge ${st.status}`, text: STATUS_LABELS[st.status] || st.status }),
@@ -1860,14 +2103,23 @@ async function openDiagnostics() {
   } catch (err) { body.replaceChildren(el("p", { class: "form-error", text: err.message })); }
 }
 
+// Three steps to begin (1.2), then where the rest is: nothing else is needed to start.
 function openGettingStarted() {
   const steps = el("ol", { class: "getting-started-steps" });
-  const dialog = featureDialog("Votre premier espace, en trois étapes", el("p", { class: "quota-note", text: "Les espaces isolés nécessitent Docker Sandboxes sur le serveur. Le diagnostic vérifie sa disponibilité." }), steps);
+  const more = el("details", { class: "getting-started-more" }, el("summary", { text: "Pour aller plus loin" }),
+    el("ul", {}, ...[
+      "Joindre un fichier : 📎 dans la zone de saisie. Changer d'IA ou ce qu'elle peut faire sans demander : les deux listes à côté.",
+      "Renommer, ranger dans un projet, donner des consignes, archiver, exporter : le menu ⋯ en haut de la conversation.",
+      "Le reste (plusieurs IA, travail autonome, comparer, planifier, espaces isolés, partage, coffres) : Réglages › Fonctions avancées.",
+    ].map((text) => el("li", { text }))));
+  const dialog = featureDialog("Bien démarrer", el("p", { class: "quota-note", text: "Trois pas suffisent pour commencer." }), steps, more);
   try { localStorage.setItem("aihub-guide-seen", "1"); } catch { /* optional device preference */ }
+  const creator = canCreate();
   for (const [title, text, action, label] of [
-    ["Choisir ses accès", "Créez une conversation avec le profil Discussion seule pour commencer sans fichiers du PC.", () => openNewDialog(null, "discussion"), "Créer mon espace"],
-    ["Connecter son IA", "Dans la conversation isolée, cliquez sur Comptes IA de cet espace. Votre connexion reste propre à cet espace.", () => state.data?.conversation?.isolation?.isolated ? openSpaceAccounts() : openNewDialog(), state.data?.conversation?.isolation?.isolated ? "Connecter cette IA" : "Créer une conversation d’abord"],
-    ["Vérifier et essayer", "Lancez le diagnostic, puis envoyez votre première demande. Pour travailler sur des fichiers, sélectionnez-les dans les accès et vérifiez les résultats avant application.", openDiagnostics, "Lancer le diagnostic"]
+    ["Vérifier vos IA", "Le diagnostic regarde si Claude, ChatGPT (Codex) ou l'IA locale répondent, sans rien leur envoyer.", openDiagnostics, "Vérifier"],
+    ...(creator ? [
+      ["Écrire votre demande", "Sur l'accueil, écrivez ce que vous voulez et choisissez l'IA, puis la flèche ↑ : la conversation se crée toute seule, avec son propre dossier si vous n'en choisissez pas.", () => goHome(), "Écrire ma demande"],
+      ["Ranger avec les projets", "Un projet regroupe des conversations, leur dossier de travail et leurs consignes. Facultatif : utile quand le travail s'étale.", () => openProjectDialog(null), "Créer un projet"]] : [])
   ]) steps.append(el("li", {}, el("h3", { text: title }), el("p", { text }), el("button", { class: "btn btn-primary", text: label, onclick: () => { dialog.close(); action(); } })));
 }
 
@@ -2008,6 +2260,7 @@ async function openSpaceResults() {
 function setupProjectDialog() {
   const dialog = $("project-dialog");
   const accessEditor = isolationEditor(false, () => ({ base: $("project-workdir").value.trim() }));
+  accessEditor.node.classList.add("adv");  // isolated spaces: « Fonctions avancées »
   $("project-instructions").closest("label").before(accessEditor.node);
   let editing = null;  // the project being edited, null for a new one
   openProjectDialog = (project = null) => {
@@ -2043,11 +2296,12 @@ function setupProjectDialog() {
       workdir: $("project-workdir").value.trim(), instructions: $("project-instructions").value,
       isolation: accessEditor.value(), ...(isOwner() ? { obsidian_vault: $("project-vault").value.trim() } : {}) };
     try {
+      const made = editing ? null : (await api("POST", "/api/projects", body)).project;
       if (editing) await api("PATCH", `/api/projects/${editing.id}`, body);
-      else await api("POST", "/api/projects", body);
       dialog.close();
       await loadConversations();
       if (state.data) renderConversation();
+      else if (made) renderHome(made.id);  // made from the home: chosen there for the next request
     } catch (err) {
       $("project-error").textContent = err.message;
     }
@@ -2147,7 +2401,7 @@ function setupNewDialog() {
     const models = (isolated ? state.options.isolated_models : state.options.models) || [];
     for (const [id, fallback] of [["new-model", state.options.default_model], ["new-conductor", state.options.default_conductor]]) {
       const chosen = $(id).value;
-      $(id).replaceChildren(...models.map((m) => el("option", { value: m, text: MODEL_LABELS[m] || m })));
+      $(id).replaceChildren(...models.map((m) => el("option", { value: m, text: aiName(m) })));
       $(id).value = models.includes(chosen) ? chosen : models.includes(fallback) ? fallback : models[0] || "";
     }
     $("new-workdir-row").classList.toggle("hidden", !isAdmin() || (isolated && accessEditor.effective()?.files === "none"));
@@ -2179,8 +2433,11 @@ function setupNewDialog() {
       ? `${project.workdir} (dossier du projet)` : "D:\\projets\\mon-projet";
   };
   $("new-project-select").addEventListener("change", showFolder);
-  openNewDialog = async (projectId = null, profile = null) => {
+  // `carry`: the choices made on the home ({ model, workdir }), kept over this device's last ones.
+  openNewDialog = async (projectId = null, profile = null, carry = {}) => {
+    if (carry.model === undefined) state.homeCarry = null;  // not from the home: nothing written to carry
     form.reset();
+    $("new-advanced").open = false;
     accessEditor.set(null);
     $("template-variables").replaceChildren();
     $("template-description").classList.add("hidden");
@@ -2195,11 +2452,14 @@ function setupNewDialog() {
       if (name === "workdir" && projectId !== null) continue;  // the project's folder comes first
       field.value = last[name];
     }
+    if (carry.workdir) form.elements.workdir.value = carry.workdir;
+    else if (carry.model !== undefined) form.elements.workdir.value = "";  // from the home: its folder (automatic)
     $("new-error").textContent = "";
     showWarning();
     showKind();
     showFolder();
-    if (profile === "discussion") accessEditor.setPreset("discussion");
+    if (carry.model && [...$("new-model").options].some((o) => o.value === carry.model)) $("new-model").value = carry.model;
+    if (profile === "discussion") { accessEditor.setPreset("discussion"); $("new-advanced").open = true; }
     // A member: a folder of theirs on the server, chosen by the hub; never without permission.
     showAccessModels();
     const bypass = $("new-mode").querySelector('option[value="bypass"]');
@@ -2207,7 +2467,7 @@ function setupNewDialog() {
     dialog.showModal();
     try {
       state.templates = (await api("GET", "/api/templates")).templates;
-      $("new-template").replaceChildren(el("option", { value: "", text: "Conversation libre" }),
+      $("new-template").replaceChildren(el("option", { value: "", text: "Non : conversation libre" }),
         ...state.templates.map((t) => el("option", { value: t.id, text: t.title })));
     } catch (err) { $("new-error").textContent = err.message; }
   };
@@ -2230,6 +2490,8 @@ function setupNewDialog() {
       $(id).value = [...$(id).options].some((o) => o.value === model) ? model : $(id).options[0]?.value || "";
     }
     if (!form.elements.title.value) form.elements.title.value = item.title;
+    // What the model changes beyond the AI is shown, not left in a closed section.
+    if (item.settings.mode !== "single" || item.settings.permission_mode !== "manual") $("new-advanced").open = true;
     showWarning(); showKind();
   });
   $("delete-template").addEventListener("click", async () => {
@@ -2242,14 +2504,13 @@ function setupNewDialog() {
       $("new-template").dispatchEvent(new Event("change"));
     } catch (err) { $("new-error").textContent = err.message; }
   });
-  $("new-conversation").addEventListener("click", () => openNewDialog(null));
-  $("empty-new").addEventListener("click", () => openNewDialog(null));
+  $("new-conversation").addEventListener("click", () => goHome());
   form.addEventListener("submit", async (event) => {
     if (event.submitter && event.submitter.value === "cancel") return;
     event.preventDefault();
     const data = new FormData(form);
     const body = {
-      title: data.get("title").trim(),
+      title: data.get("title").trim() || NEW_TITLE,  // named by its first request
       workdir: data.get("workdir").trim(),
       project_id: data.get("project_id") ? Number(data.get("project_id")) : null,
       model: data.get("model"),
@@ -2276,7 +2537,13 @@ function setupNewDialog() {
       if ($("list-scope").value === "archived") $("list-scope").value = "active";
       await loadConversations();
       await openConversation(conversation.id);
-      if (initialPrompt) { $("prompt").value = initialPrompt; saveDraft(conversation.id, initialPrompt); fitPrompt(); }
+      // The model's request, else what was written on the home: in the composer, to read before sending.
+      const carried = initialPrompt || state.homeCarry || "";
+      state.homeCarry = null;
+      if (carried) {
+        $("prompt").value = carried; saveDraft(conversation.id, carried); fitPrompt();
+        if (!initialPrompt) $("home-prompt").value = "";
+      }
       $("prompt").focus();
     } catch (err) {
       $("new-error").textContent = err.message;
@@ -2429,11 +2696,17 @@ function setupActions() {
     $("send").disabled = true;
     $("discuss").disabled = true;
     const sentTo = state.currentId;  // another conversation may be open when the answer comes
+    // Made without a title (« Plus d'options… »): its first request names it.
+    const untitled = state.data && state.data.conversation.title === NEW_TITLE && !state.data.messages.length
+      && (state.data.conversation.my_role || "owner") === "owner" && prompt;
     try {
-      const compareWith = $("compare-with").classList.contains("hidden") ? null : $("compare-with").value || null;
+      const compareWith = $("compare-row").classList.contains("hidden") ? null : $("compare-with").value || null;
       await api("POST", `/api/conversations/${sentTo}/messages`, { prompt, kind, attachments: files.map((f) => f.id),
         compare_with: compareWith });
       $("compare-with").value = "";  // one comparison at a time: chosen again for the next
+      renderCompareChip();
+      if (untitled) api("PATCH", `/api/conversations/${sentTo}`, { title: titleFrom(prompt) })
+        .then(() => loadConversations()).catch(() => { /* the title stays « Nouvelle conversation » */ });
       saveDraft(sentTo, "");
       if (state.currentId === sentTo) { $("prompt").value = ""; fitPrompt(); state.pendingFiles = []; renderPending(); }
       if ("Notification" in window && Notification.permission === "default") Notification.requestPermission();
@@ -2454,6 +2727,7 @@ function setupActions() {
     }
   });
   $("prompt").addEventListener("input", () => { fitPrompt(); saveDraft(state.currentId, $("prompt").value); });
+  $("compare-with").addEventListener("change", () => { renderCompareChip(); closeMenus(); $("prompt").focus(); });
   $("stop").addEventListener("click", async () => {
     try {
       await api("POST", `/api/conversations/${state.currentId}/stop`);
@@ -2912,7 +3186,7 @@ function setupSettingsDialog() {
     for (const name of SETTING_BOOLS) $(`set-${name}`).checked = s[name];
     $("set-models").replaceChildren(...data.all_models.map((m) => el("label", { class: "check" },
       el("input", { type: "checkbox", value: m, checked: s.models.includes(m), onchange: syncDefaults }),
-      ` ${MODEL_LABELS[m] || m}`)));
+      ` ${aiName(m)}`)));
     syncDefaults();
     $("set-default_model").value = s.default_model;
     $("set-default_conductor").value = s.default_conductor;
@@ -2937,7 +3211,7 @@ function setupSettingsDialog() {
     const models = chosenModels();
     for (const id of ["set-default_model", "set-default_conductor"]) {
       const keep = $(id).value;
-      $(id).replaceChildren(...models.map((m) => el("option", { value: m, text: MODEL_LABELS[m] || m })));
+      $(id).replaceChildren(...models.map((m) => el("option", { value: m, text: aiName(m) })));
       if (models.includes(keep)) $(id).value = keep;
     }
   }
@@ -3008,12 +3282,13 @@ function setupSettingsDialog() {
 // The model lists and defaults of the creation window follow the settings.
 function applyOptions() {
   const models = state.options.models;
-  $("new-model").replaceChildren(...models.map((m) => el("option", { value: m, text: MODEL_LABELS[m] || m,
+  $("new-model").replaceChildren(...models.map((m) => el("option", { value: m, text: aiName(m),
     selected: m === state.options.default_model })));
-  $("new-conductor").replaceChildren(...models.map((m) => el("option", { value: m, text: MODEL_LABELS[m] || m,
+  $("new-conductor").replaceChildren(...models.map((m) => el("option", { value: m, text: aiName(m),
     selected: m === state.options.default_conductor })));
   $("settings").classList.toggle("hidden", !state.options.settings_editable || !isOwner());
   $("version").textContent = state.options.version ? `v${state.options.version}` : "";
+  if (state.currentId === null) renderHome();  // the AIs offered on the home follow the settings
 }
 
 // A readable name for a browser's user agent: enough to tell the phone from the PC.
@@ -3134,7 +3409,7 @@ async function ensureLoggedIn() {
     $("my-password").classList.remove("hidden");
   }
   // What a guest may not do: hidden (the server refuses it anyway).
-  for (const id of ["new-conversation", "new-project", "empty-new", "import"]) $(id).classList.toggle("hidden", !canCreate());
+  for (const id of ["new-conversation", "new-project", "import"]) $(id).classList.toggle("hidden", !canCreate());
   $("import-local").classList.toggle("hidden", !isOwner());  // the sessions of the owner's PC
   $("consumption").classList.toggle("hidden", !isAdmin());  // also on a server without accounts
   $("server").classList.toggle("hidden", !isOwner());
@@ -3230,7 +3505,7 @@ function setOffline(on) {
 
 function setupOffline() {
   const button = $("offline-toggle");
-  const show = () => { button.textContent = `Hors connexion : ${offlineChosen() ? "oui" : "non"}`; };
+  const show = () => { button.querySelector("strong").textContent = `Hors connexion : ${offlineChosen() ? "oui" : "non"}`; };
   if (!("serviceWorker" in navigator) || !window.isSecureContext) { button.classList.add("hidden"); return; }
   if (offlineChosen()) tellWorker("offline-on");
   show();
@@ -3772,7 +4047,7 @@ function setupShortcuts() {
     if ((event.ctrlKey || event.metaKey) && event.shiftKey && event.key.toLowerCase() === "n") {
       if (open || !canCreate()) return;
       event.preventDefault();
-      openNewDialog(null);
+      goHome();
       return;
     }
     if (event.key === "Escape" && !open && state.data && state.data.running) {
@@ -3810,7 +4085,7 @@ function speakable(text) {
 
 function speakButton(m) {
   if (!SPEECH || !m.content) return null;
-  return el("button", { class: "msg-copy", type: "button", text: speaking === m.id ? "⏹ Arrêter" : "🔊 Écouter",
+  return el("button", { class: "msg-copy adv", type: "button", text: speaking === m.id ? "⏹ Arrêter" : "🔊 Écouter",
     title: "Lire la réponse à voix haute (la voix du navigateur)",
     onclick: (e) => {
       window.speechSynthesis.cancel();
@@ -3835,7 +4110,7 @@ function variantCard(v) {
   const body = el("div", { class: "msg-body" });
   body.innerHTML = v.status === "running" ? "<p><em>Elle répond…</em></p>" : renderMarkdown(v.content || "");
   const card = el("div", { class: "msg assistant variant" + (v.status === "running" ? " cursor" : "") },
-    el("div", { class: "variant-head", text: `Comparaison · ${MODEL_LABELS[v.model] || v.model}` }), body);
+    el("div", { class: "variant-head", text: `Comparaison · ${aiName(v.model)}` }), body);
   if (v.status === "error") card.append(el("div", { class: "msg-error", text: v.error || "erreur" }));
   const meta = [formatDuration(v.duration_ms)].filter(Boolean).join(" · ");
   card.append(el("div", { class: "msg-meta", title: v.tokens_in !== null ? `${v.tokens_in} tokens envoyés, ${v.tokens_out} reçus` : null },
@@ -3853,13 +4128,26 @@ function fillCompareChoices() {
   const select = $("compare-with");
   const conv = state.data && state.data.conversation;
   const show = canWrite() && conv && conv.mode === "single";
-  select.classList.toggle("hidden", !show);
-  if (!show) return;
+  $("compare-row").classList.toggle("hidden", !show);
+  if (!show) { select.value = ""; renderCompareChip(); return; }
   const keep = select.value;
   const others = state.options.models.filter((x) => x !== conv.model && x !== "default");
-  select.replaceChildren(el("option", { value: "", text: "Comparer avec…" }),
-    ...others.map((x) => el("option", { value: x, text: `Comparer avec ${MODEL_LABELS[x] || x}` })));
+  select.replaceChildren(el("option", { value: "", text: "personne" }),
+    ...others.map((x) => el("option", { value: x, text: aiName(x) })));
   select.value = others.includes(keep) ? keep : "";
+  renderCompareChip();
+}
+
+// Chosen in the « ＋ » menu: said above the composer until the request goes (or ✕).
+function renderCompareChip() {
+  const select = $("compare-with");
+  const chip = $("compare-chip");
+  const on = !$("compare-row").classList.contains("hidden") && Boolean(select.value);
+  chip.classList.toggle("hidden", !on);
+  if (!on) { chip.replaceChildren(); return; }
+  chip.replaceChildren(el("span", { text: `⇄ La prochaine demande est aussi posée à ${aiName(select.value)}, pour comparer.` }),
+    el("button", { type: "button", class: "fav-remove", text: "✕", title: "Ne pas comparer", "aria-label": "Ne pas comparer",
+      onclick: () => { select.value = ""; renderCompareChip(); } }));
 }
 
 // --- regenerate the last reply, edit a request (a branch) --------------------------------
@@ -3884,10 +4172,10 @@ function regenerateButtons(m, messages) {
     title: "Renvoyer la même demande : la réponse actuelle est remplacée", onclick: () => go(null) })];
   if ((state.data.conversation.my_role || "owner") === "owner") {
     const others = state.options.models.filter((x) => x !== state.data.conversation.model);
-    const select = el("select", { class: "msg-regen-select", "aria-label": "Régénérer avec une autre IA",
+    const select = el("select", { class: "msg-regen-select adv", "aria-label": "Régénérer avec une autre IA",
       title: "Régénérer avec une autre IA (elle devient l'IA de la conversation)" },
       el("option", { value: "", text: "Avec une autre IA…" }),
-      ...others.map((x) => el("option", { value: x, text: MODEL_LABELS[x] || x })));
+      ...others.map((x) => el("option", { value: x, text: aiName(x) })));
     select.addEventListener("change", () => { if (select.value) go(select.value); });
     buttons.push(select);
   }
@@ -3897,7 +4185,7 @@ function regenerateButtons(m, messages) {
 // On a request: correct it in a new conversation that starts from there (the original stays).
 function editButton(m) {
   if (!canWrite() || !canCreate()) return null;
-  return el("button", { class: "msg-edit", type: "button", text: "Modifier",
+  return el("button", { class: "msg-edit adv", type: "button", text: "Modifier",
     title: "Corriger cette demande : une nouvelle conversation repart de là, l'originale ne change pas",
     onclick: async () => {
       const prompt = await askText("Modifier la demande", "Une nouvelle conversation (une branche) reprend tout ce qui précède, puis envoie la demande corrigée.", m.content);
@@ -3927,38 +4215,156 @@ function askText(title, help, value = "") {
   });
 }
 
-// --- one-click update (the owner's) ----------------------------------------------------
+// --- updates (the owner's; 1.2): a newer version on GitHub, or new code on this PC --------------
+//
+// Two kinds of « mise à jour à faire »: a release newer than this one (an install from the
+// .zip installs it in a click), or the code of this PC changed since the server started (a
+// development copy: Codex or « git pull » brought commits) and a restart puts it in service.
 
-async function checkUpdate() {
-  if (!isOwner()) return;
+const UPDATE_EVERY = 30 * 60 * 1000;  // the server asks GitHub at most every 6 hours anyway
+
+function updateTodo(data) {
+  const code = (data && data.code) || {};
+  if (code.restart_needed) {
+    const to = code.disk && code.disk !== code.running ? code.disk : null;
+    return { kind: "restart", short: to ? `Mise à jour à faire : ${to}` : "Mise à jour à faire : code nouveau",
+      long: "Le code d'AI Hub a changé sur ce PC depuis le démarrage du serveur : un redémarrage le met en service." };
+  }
+  if (data && data.latest) {
+    return { kind: "release", short: `Mise à jour à faire : ${data.latest.version}`,
+      long: `AI Hub ${data.latest.version} est publiée (celle-ci : ${data.current}).` };
+  }
+  return null;
+}
+
+async function checkUpdate(refresh = false) {
+  if (!isOwner()) return null;
   let data;
-  try { data = await api("GET", "/api/update"); } catch { return; }
+  try { data = await api("GET", `/api/update${refresh ? "?refresh=true" : ""}`); } catch { return null; }
+  state.update = data;
+  const todo = updateTodo(data);
+  $("updates").classList.remove("hidden");
+  for (const id of ["update-banner", "hub-badge", "updates-badge"]) $(id).classList.toggle("hidden", !todo);
+  $("updates-sub").textContent = todo ? todo.short : `À jour : version ${data.current}`;
   const banner = $("update-banner");
-  if (!data.latest) { banner.classList.add("hidden"); return; }
+  if (todo) { banner.textContent = `⬆ ${todo.short}`; banner.title = `${todo.long} Cliquez pour voir.`; }
+  banner.onclick = openUpdates;
+  tidyHub();
+  return data;
+}
+
+// Back when the server answers on the new code: the page reloads (it is the new one too).
+function waitForRestart(done, said) {
+  toast(said);
+  const banner = $("update-banner");
+  banner.disabled = true;
+  banner.textContent = "Redémarrage en cours…";
   banner.classList.remove("hidden");
-  banner.textContent = `Nouvelle version ${data.latest.name} — mettre à jour`;
-  banner.title = data.can_apply ? "Télécharger et installer la nouvelle version" : data.reason;
-  banner.onclick = async () => {
-    if (!data.can_apply) { toast(`Mise à jour impossible ici : ${data.reason}.`); return; }
-    const ok = await confirmDialog({ title: `Mettre à jour vers ${data.latest.name} ?`,
-      text: `${(data.latest.notes || "").slice(0, 600)}\n\nL'appli s'arrête une minute le temps d'installer, puis revient `
-        + "toute seule. L'ancienne version est gardée dans data\\mise-a-jour.", okText: "Mettre à jour" });
-    if (!ok) return;
-    try {
-      await api("POST", "/api/update/apply");
-      toast("Mise à jour en cours : l'appli revient dans une minute.");
-      banner.disabled = true;
-      banner.textContent = "Mise à jour en cours…";
-      // Back when the server answers again: the new page.
-      const was = state.options.version;
-      const poll = setInterval(async () => {
-        try {
-          const options = await api("GET", "/api/options");
-          if (options.version !== was) { clearInterval(poll); location.reload(); }
-        } catch { /* still restarting */ }
-      }, 5000);
-    } catch (err) { toast(err.message); }
+  let tries = 0;
+  const poll = setInterval(async () => {
+    tries++;
+    try { if (await done()) { clearInterval(poll); location.reload(); return; } } catch { /* still restarting */ }
+    if (tries >= 60) {
+      clearInterval(poll);
+      banner.disabled = false;
+      banner.textContent = "Le serveur ne répond pas encore : rechargez la page dans un moment";
+      banner.onclick = () => location.reload();
+    }
+  }, 3000);
+}
+
+async function openUpdates() {
+  const body = el("div", { class: "updates-body" }, el("p", { text: "Vérification…" }));
+  const actions = el("div", { class: "dialog-actions" });
+  const error = el("p", { class: "form-error", role: "alert" });
+  const dialog = el("dialog", { class: "dialog dialog-wide dialog-content" }, el("h2", { text: "Mises à jour" }), body, error, actions);
+  const close = el("button", { type: "button", class: "btn btn-ghost", text: "Fermer", onclick: () => dialog.close() });
+  dialog.addEventListener("close", () => dialog.remove(), { once: true });
+  document.body.append(dialog);
+  dialog.showModal();
+  const render = (data) => {
+    const code = data.code || {};
+    const todo = updateTodo(data);
+    const facts = el("dl", { class: "access-facts" });
+    const fact = (label, value) => facts.append(el("dt", { text: label }), el("dd", { text: value }));
+    fact("En service", `AI Hub ${code.running || data.current}`);
+    if (code.git) fact("Sur ce PC", `copie de développement (git) · version ${code.disk || "?"} · ${String(code.commit || "").slice(0, 7)}`);
+    fact("Publiée sur GitHub", data.latest ? `${data.latest.version} (plus récente)` : data.error ? "inconnue : GitHub ne répond pas" : "rien de plus récent");
+    body.replaceChildren(el("p", { class: "updates-state " + (todo ? "todo" : "ok"),
+      text: todo ? todo.long : "AI Hub est à jour ✓" }), facts);
+    actions.replaceChildren();
+    if (todo && todo.kind === "restart") {
+      if (code.changes && code.changes.length) {
+        body.append(el("h3", { text: "Ce qui a changé" }), el("ul", { class: "updates-changes" }, ...code.changes.map((c) => el("li", { text: c }))));
+      }
+      if (code.dirty && code.dirty.length) {
+        body.append(el("p", { class: "warning", text: `Des fichiers du code sont en train de changer (pas encore enregistrés dans git) : ${code.dirty.slice(0, 6).join(", ")}${code.dirty.length > 6 ? "…" : ""}. Attendez la fin du travail en cours, puis revenez ici.` }));
+      }
+      body.append(el("p", { class: "quota-note", text: "Avant de redémarrer, le nouveau code est essayé à part (il se charge, il ouvre une copie de la base) : s'il ne démarre pas, rien ne s'arrête. Si la base doit changer de forme, elle est d'abord copiée à côté. L'appli revient toute seule en moins d'une minute." }));
+      const go = el("button", { type: "button", class: "btn btn-primary", text: "Redémarrer sur le nouveau code",
+        disabled: Boolean(code.dirty && code.dirty.length), onclick: async () => {
+          go.disabled = true; error.textContent = "";
+          go.textContent = "Essai du nouveau code…";
+          try {
+            await api("POST", "/api/update/restart");
+            dialog.close();
+            waitForRestart(async () => { const now = await api("GET", "/api/update"); return !(now.code || {}).restart_needed; },
+              "Redémarrage : l'appli revient dans un instant.");
+          } catch (err) { error.textContent = err.message; go.disabled = false; go.textContent = "Redémarrer sur le nouveau code"; }
+        } });
+      actions.append(go);
+    } else if (todo && todo.kind === "release") {
+      if (data.latest.notes) {
+        const notes = el("div", { class: "msg-body updates-notes" });
+        notes.innerHTML = renderMarkdown(data.latest.notes.slice(0, 4000));
+        body.append(el("h3", { text: `Nouveautés de la ${data.latest.version}` }), notes);
+      }
+      if (data.can_apply) {
+        body.append(el("p", { class: "quota-note", text: "L'appli télécharge la version, la vérifie, puis s'arrête une minute le temps de l'installer et revient toute seule. L'ancienne version et la base sont gardées dans data\\mise-a-jour." }));
+        const install = el("button", { type: "button", class: "btn btn-primary", text: `Installer la ${data.latest.version}`, onclick: async () => {
+          install.disabled = true; error.textContent = "";
+          try {
+            await api("POST", "/api/update/apply");
+            dialog.close();
+            const was = state.options.version;
+            waitForRestart(async () => (await api("GET", "/api/options")).version !== was, "Mise à jour en cours : l'appli revient dans une minute.");
+          } catch (err) { error.textContent = err.message; install.disabled = false; }
+        } });
+        actions.append(install);
+      } else {
+        body.append(el("p", { class: "quota-note", text: code.git
+          ? "Cette copie se met à jour avec git (« git pull ») ; ensuite, cette fenêtre propose de redémarrer sur le nouveau code."
+          : `Installation automatique impossible ici : ${data.reason}.` }));
+        if (data.latest.page) actions.append(el("a", { class: "btn btn-ghost", href: data.latest.page, target: "_blank", rel: "noopener noreferrer", text: "Voir sur GitHub" }));
+      }
+    }
+    const last = data.last_restart;
+    if (last) body.append(el("p", { class: "quota-note", text: `Dernier redémarrage sur nouveau code (${formatDate(last.at)}) : `
+      + (last.status === "ok" ? `réussi, version ${last.version}.` : `en échec — ${last.error || "?"}`) }));
+    const again = el("button", { type: "button", class: "btn btn-ghost", text: "Vérifier maintenant", onclick: async () => {
+      again.disabled = true;
+      const fresh = await checkUpdate(true);
+      if (fresh) render(fresh); else again.disabled = false;
+    } });
+    actions.prepend(again);
+    actions.append(close);
   };
+  const data = await checkUpdate(false);
+  if (!dialog.open) return;
+  if (data) render(data);
+  else { body.replaceChildren(); error.textContent = "État des mises à jour illisible pour l'instant."; actions.replaceChildren(close); }
+}
+
+// For everyone: the server now runs another version than this page. Said once, with a reload.
+async function checkPageVersion() {
+  try {
+    const options = await api("GET", "/api/options");
+    if (!state.pageBuild || !options.build || options.build === state.pageBuild) return;
+    $("reload-text").textContent = options.version !== state.options.version
+      ? `AI Hub est passé en ${options.version} : rechargez la page pour en profiter.`
+      : "AI Hub a été mis à jour : rechargez la page pour en profiter.";
+    $("reload-banner").classList.remove("hidden");
+  } catch { /* offline: nothing to say */ }
 }
 
 // --- files and images sent with a request ------------------------------------------------
@@ -4069,17 +4475,26 @@ function setupConsumption() {
 
 // --- favorite requests: kept on the server, for each person -------------------------------
 
+// A window of their own (1.2): the « ＋ » menu opens it.
 function setupFavorites() {
-  const menu = $("favorites-menu");
+  const box = $("prompt");
+  const rows = el("div", { class: "favorites-list" });
+  const keep = el("button", { class: "btn btn-ghost", type: "button", text: "★ Garder la demande écrite" });
+  const dialog = el("dialog", { class: "dialog favorites-dialog", "aria-label": "Demandes favorites" },
+    el("h2", { text: "Demandes favorites" }),
+    el("p", { class: "quota-note", text: "Un clic remet la demande dans la zone de saisie : relisez-la, changez-la si besoin, puis envoyez." }),
+    rows, el("div", { class: "dialog-actions" }, keep,
+      el("button", { class: "btn btn-ghost", type: "button", text: "Fermer", onclick: () => dialog.close() })));
+  document.body.append(dialog);
   let list = [];
   const render = () => {
-    const box = $("prompt");
-    const rows = list.map((f) => el("div", { class: "fav-row" },
+    rows.replaceChildren(...(list.length ? list.map((f) => el("div", { class: "fav-row" },
       el("button", { class: "menu-item", type: "button", title: f.text,
         onclick: () => {
           // Inserted where the cursor is: read, change it if needed, then send.
           const at = box.selectionStart ?? box.value.length;
           box.value = box.value.slice(0, at) + f.text + box.value.slice(box.selectionEnd ?? at);
+          dialog.close();
           box.focus();
           box.selectionStart = box.selectionEnd = at + f.text.length;
           fitPrompt();
@@ -4087,25 +4502,23 @@ function setupFavorites() {
         } }, f.title, f.title !== f.text ? el("small", { text: f.text }) : null),
       el("button", { class: "fav-remove", type: "button", text: "✕", title: "Retirer des favoris",
         "aria-label": `Retirer « ${f.title} » des favoris`,
-        onclick: async (event) => {
-          event.stopPropagation();
-          try { list = (await api("DELETE", `/api/favorites/${f.id}`)).favorites; render(); } catch (err) { toast(err.message); }
-        } })));
-    menu.replaceChildren(
-      ...(rows.length ? rows : [el("p", { class: "quota-note", text: "Aucune demande favorite pour l'instant." })]),
-      el("button", { class: "menu-item", type: "button", text: "★ Garder la demande écrite en favori",
         onclick: async () => {
-          const text = box.value.trim();
-          if (!text) { toast("Écrivez d'abord la demande à garder."); return; }
-          const title = prompt("Nom de cette demande favorite :", text.split("\n")[0].slice(0, 60));
-          if (title === null) return;
-          try { list = (await api("POST", "/api/favorites", { title, text })).favorites; toast("Demande gardée en favori."); }
-          catch (err) { toast(err.message); }
-        } }));
+          try { list = (await api("DELETE", `/api/favorites/${f.id}`)).favorites; render(); } catch (err) { toast(err.message); }
+        } })))
+      : [el("p", { class: "quota-note", text: "Aucune demande favorite pour l'instant. Écrivez une demande, puis « Garder la demande écrite »." })]));
   };
+  keep.addEventListener("click", async () => {
+    const text = box.value.trim();
+    if (!text) { toast("Écrivez d'abord la demande à garder."); return; }
+    const title = await askText("Nom de cette demande favorite", "Il apparaîtra dans la liste des favorites.", text.split("\n")[0].slice(0, 60));
+    if (title === null) return;
+    try { list = (await api("POST", "/api/favorites", { title: title.trim() || text.slice(0, 60), text })).favorites; render(); toast("Demande gardée en favori."); }
+    catch (err) { toast(err.message); }
+  });
   $("favorites-button").addEventListener("click", async () => {
     try { list = (await api("GET", "/api/favorites")).favorites; } catch (err) { toast(err.message); }
     render();
+    dialog.showModal();
   });
 }
 
@@ -4633,6 +5046,7 @@ async function main() {
   setupLogin();
   setupOffline();
   setupMenus();
+  setupHub();
   setupQuotaDialog();
   setupDevicesDialog();
   setupSettingsDialog();
@@ -4667,17 +5081,21 @@ async function main() {
   setupActions();
   setupOrganisation();
   setupObsidianDialog();
+  setupHome();
   try {
     state.options = await api("GET", "/api/options");
+    state.pageBuild = state.options.build;  // what this page was loaded with
   } catch (err) {
     toast(err.message);
   }
   applyOptions();
   await Promise.all([loadConversations(), loadStatus(), loadQuota(true), loadAgents()]);
+  if (state.currentId === null) renderHome();
   let guideSeen = false;
   try { guideSeen = localStorage.getItem("aihub-guide-seen") === "1"; } catch { /* optional storage */ }
   if (!state.conversations.length && !initialParams.get("conversation") && canCreate() && !guideSeen) openGettingStarted();
-  checkUpdate();  // a newer version on GitHub: said to the owner
+  checkUpdate();  // a newer version on GitHub, or new code on this PC: said to the owner
+  setInterval(() => { if (document.visibilityState === "visible") checkUpdate(); }, UPDATE_EVERY);
   // Opened from an alert: straight to its conversation.
   const asked = Number(initialParams.get("conversation"));
   if (asked && state.conversations.some((c) => c.id === asked)) {
@@ -4686,12 +5104,13 @@ async function main() {
     if (initialParams.get('comptes') === '1' && state.data?.conversation?.isolation?.isolated
         && state.data.conversation.my_role !== 'read') await openSpaceAccounts(initialParams.get('fournisseur'));
   }
-  // Fresh figures every 5 minutes while the page is displayed (reading them costs no quota).
-  setInterval(() => { if (document.visibilityState === "visible") loadQuota(true); }, 5 * 60 * 1000);
+  // Fresh figures every 5 minutes while the page is displayed (reading them costs no quota),
+  // and whether the server now runs another page than this one.
+  setInterval(() => { if (document.visibilityState === "visible") { loadQuota(true); checkPageVersion(); } }, 5 * 60 * 1000);
   // The list follows the other conversations (« en cours », « nouveau ») while the page is displayed.
   setInterval(() => { if (document.visibilityState === "visible") loadConversations().catch(() => {}); }, 20 * 1000);
   document.addEventListener("visibilitychange", () => {
-    if (document.visibilityState === "visible") loadConversations().catch(() => {});
+    if (document.visibilityState === "visible") { loadConversations().catch(() => {}); checkPageVersion(); }
   });
 }
 

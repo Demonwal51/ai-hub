@@ -32,7 +32,7 @@ from .. import (auth, autonomous, backup, browse, config, db, eveil, memory, not
                 schedule, semantic, store, tools)
 from .. import access, accounts, attachments, compare, filesystem, importer, isolation, library, rag, resumption, sandbox_results, updater, usage, vaults
 from .. import restore as restoring
-from .. import project_export, trials
+from .. import project_export, relaunch, trials
 from ..providers import claude_code, codex, ollama
 from ..providers.claude_code import ProviderError
 from ..store import BypassConfirmationRequired, Busy, NotFound, StoreError
@@ -204,6 +204,11 @@ class LinkedNote(BaseModel):
 class AutoResume(BaseModel):
     at: str | None = None    # ISO time; none: when the quota comes back (and a small margin)
     cancel: bool = False
+
+
+class SwitchPlan(BaseModel):
+    model: str               # the AI that does the rest of the plan
+    conductor: bool = True   # the conductor too: it writes the synthesis
 
 
 class GiveTo(BaseModel):
@@ -696,6 +701,10 @@ def create_app(db_path, *, command=None, env=None, allowed_roots=(), permission_
                                              resume=resume_planned, on_resume_error=resume_refused)
     app.state.indexer = semantic.Indexer(db_path)  # the vectors of the search by meaning, in the background
     app.mount("/static", FreshStatic(directory=STATIC), name="static")
+    # The page this server started with (1.2): an open page that differs is told to reload.
+    import hashlib
+    page_build = hashlib.sha256(b"".join((STATIC / name).read_bytes() for name in ("index.html", "app.js", "style.css"))
+                                ).hexdigest()[:12]
 
     def apply(new):
         """Put new settings in force at once, the helpers started or stopped as needed."""
@@ -1161,6 +1170,17 @@ def create_app(db_path, *, command=None, env=None, allowed_roots=(), permission_
         threading.Timer(1.0, signal.raise_signal, args=(signal.SIGINT,)).start()
         threading.Timer(20.0, os._exit, args=(0,)).start()  # had it not stopped by then
 
+    # What this server runs (1.2): the code on disk is compared to it, a change there asks for a restart.
+    started = relaunch.started_state(updater.install_root())
+
+    def code_root():
+        return Path(app.state.update_hooks.get("root") or updater.install_root())
+
+    def code_state():
+        hooks = app.state.update_hooks  # tests give the start, the folder and git
+        return relaunch.code_state(hooks.get("started", started), code_root(),
+                                   **({"git": hooks["git"]} if "git" in hooks else {}))
+
     @app.get("/api/update")
     def update_state(refresh: bool = False):
         access.require_owner(me())
@@ -1169,7 +1189,46 @@ def create_app(db_path, *, command=None, env=None, allowed_roots=(), permission_
         hooks = app.state.update_hooks
         found = updater.check(**({"get": hooks["get"]} if "get" in hooks else {}))
         reason = hooks["why_not"]() if "why_not" in hooks else updater.why_not_here()
-        return {**found, "can_apply": reason is None, "reason": reason}
+        return {**found, "can_apply": reason is None, "reason": reason, "code": code_state(),
+                "last_restart": relaunch.last_report(db_path)}
+
+    @app.post("/api/update/restart", status_code=202)
+    def restart_on_disk_code():
+        """The code on disk changed since the start (a development copy): the server restarts on it.
+
+        Tried first in a process of its own (it imports, it migrates a copy of the base): a code
+        that does not start is refused while this server still runs."""
+        access.require_owner(me())
+        if jobs.busy():
+            raise Busy("une IA travaille : attendez qu'elle ait fini avant de redémarrer")
+        state = code_state()
+        if not state["restart_needed"]:
+            raise StoreError("le serveur tourne déjà sur le code du disque : rien à redémarrer")
+        if state["dirty"]:
+            raise StoreError("des fichiers du code sont en train de changer (pas encore enregistrés dans git) : "
+                             "attendez la fin du travail en cours, puis redémarrez")
+        hooks, root = app.state.update_hooks, code_root()
+        restart = [sys.executable, "-m", "aihub"] + sys.argv[1:] if "restart" not in hooks else hooks["restart"]
+        if updater.restart_details(restart, root) is None:
+            raise StoreError("ce serveur ne sait pas se relancer seul : arrêtez-le, puis relancez-le")
+        trial = (hooks.get("preflight") or relaunch.preflight)(db_path, root)
+        if not trial.get("ok"):
+            raise StoreError(f"le nouveau code ne démarre pas, le serveur continue sur l'ancien : {trial.get('error')}")
+        with database() as conn:
+            schema = conn.execute("PRAGMA user_version").fetchone()[0]
+        version = trial.get("version") or state["disk"]
+        # A schema change: the base from before is kept beside it (the helper puts it back on a failure).
+        keep = relaunch.keep_copy(db_path, version) if trial.get("schema", schema) != schema else None
+        command = [sys.executable, "-m", "aihub.relaunch", "--db", str(Path(db_path).resolve()), "--version", version,
+                   "--root", str(root), "--pid", str(os.getpid()), "--restart", json.dumps(restart)]
+        if keep:
+            command += ["--keep", str(keep)]
+        spawn = hooks.get("spawn") or (lambda cmd: subprocess.Popen(
+            cmd, cwd=str(root), **updater.detached_options(), stdin=subprocess.DEVNULL,
+            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, close_fds=True))
+        spawn(command)
+        (hooks.get("stop") or stop_server)()
+        return {"restarting": version, "backup": keep.name if keep else None}
 
     @app.post("/api/update/apply", status_code=202)
     def apply_update():
@@ -1637,7 +1696,7 @@ def create_app(db_path, *, command=None, env=None, allowed_roots=(), permission_
                 "bypass_warning": store.BYPASS_WARNING, "check_warning": autonomous.CHECK_WARNING,
                 "kinds": routing.KIND_LABELS,
                 "obsidian": {"enabled": bool(vault), "vault": str(Path(vault).resolve()) if vault else None},
-                "settings_editable": config_path is not None, "version": VERSION_LABEL}
+                "settings_editable": config_path is not None, "version": VERSION_LABEL, "build": page_build}
 
     # --- settings (the Réglages window) ----------------------------------------
 
@@ -1884,7 +1943,7 @@ def create_app(db_path, *, command=None, env=None, allowed_roots=(), permission_
                 if not access.trusted(user) and set(template_tools) - set(MEMBER_TOOLS):
                     raise access.Forbidden("ce modèle utilise des outils réservés au propriétaire")
             with db.transaction(conn):
-                cid = new_conversation(conn, body, user)
+                cid = new_conversation(conn, body, user, auto_folder=True)
                 if body.isolation is not None:
                     isolation.save(conn, body.isolation, conversation_id=cid)
                 if item:
@@ -2206,22 +2265,25 @@ def create_app(db_path, *, command=None, env=None, allowed_roots=(), permission_
 
     spaces = side_folder(db_path, "espaces")
 
-    def own_space(user_id, title):
-        """A member's conversation works in a folder of theirs: data/espaces/<id>/<title>."""
+    def own_space(user_id, title, fresh=False):
+        """A member's conversation works in a folder of theirs: data/espaces/<id>/<title>.
+
+        `fresh`: never one that exists, even empty (another conversation may already use it)."""
         safe = "".join(c if c.isalnum() or c in " -_" else "-" for c in title).strip()[:60] or "conversation"
         folder = spaces / str(int(user_id)) / safe
         n = 1
-        while folder.exists() and any(folder.iterdir()):
+        while folder.exists() and (fresh or any(folder.iterdir())):
             n += 1
             folder = spaces / str(int(user_id)) / f"{safe} ({n})"
         folder.mkdir(parents=True, exist_ok=True)
         return str(folder)
 
-    def new_conversation(conn, body, user=None):
+    def new_conversation(conn, body, user=None, auto_folder=False):
         """Create a conversation from the « Nouvelle conversation » choices (also used by an import).
 
         A member's: in their own space on the server, never without permission,
-        and only in a project of theirs."""
+        and only in a project of theirs. `auto_folder`: without a folder (none
+        given, none in its project), the owner's gets one of its own too."""
         if body.mode not in store.MODES:
             raise StoreError(f"mode inconnu : {body.mode!r}")
         if body.project_id is not None and access.project_role(conn, user, body.project_id) != "owner":
@@ -2232,14 +2294,17 @@ def create_app(db_path, *, command=None, env=None, allowed_roots=(), permission_
             workdir = body.workdir
             if not workdir.strip() and body.project_id is not None:
                 workdir = store.get_project(conn, body.project_id)["workdir"] or ""
+            made = False  # a folder the app makes for the conversation: inside its data, never checked
             if not workdir.strip():
                 parent = isolation.get(conn, project_id=body.project_id) or isolation.DEFAULT
                 profile = isolation.check(body.isolation) if body.isolation is not None else parent
-                if profile['isolated'] and profile['files'] == 'none':
-                    workdir = own_space((user or {}).get('id') or 0, body.title)
+                if (profile['isolated'] and profile['files'] == 'none') or auto_folder:
+                    # « Nouvelle conversation » without a folder (1.2): an empty one of its own, like a member's.
+                    workdir, made = own_space((user or {}).get('id') or 0, body.title, fresh=auto_folder), True
                 else:
                     raise StoreError("indiquez le dossier de travail (ou donnez-en un au projet)")
-            workdir = check_workdir(workdir)
+            if not made:
+                workdir = check_workdir(workdir)
         else:
             if not profile['isolated']:
                 if body.isolation is not None:
@@ -2644,6 +2709,33 @@ def create_app(db_path, *, command=None, env=None, allowed_roots=(), permission_
             plan = store.get_plan(conn, pid)
         jobs.hub.publish(plan["conversation_id"], {"type": "plan_updated", "plan_id": pid})
         return {"plan": plan}
+
+    @app.post('/api/plans/{pid}/switch')
+    def switch_plan(pid: int, body: SwitchPlan):
+        """The rest of a validated, running or interrupted plan on one AI (« Passer la suite sur … »).
+
+        Tasks running or done keep their AI; an interrupted plan resumes at once."""
+        user = me()
+        with database() as conn:
+            try:
+                plan = store.get_plan(conn, pid)
+            except NotFound:
+                raise NotFound("plan introuvable") from None
+            conv = access.require(conn, user, plan["conversation_id"], "write")
+            agent = agent_for(conn, body.model, isolated=isolation.effective(conn, conv)["isolated"])
+            moved = store.switch_plan(conn, pid, agent)
+            if body.conductor:
+                store.set_conductor(conn, conv["id"], agent)
+            interrupted = plan["status"] != "running" and store.can_resume_plan(conn, store.get_plan(conn, pid))
+            if interrupted:
+                check_workdir(conv["workdir"])
+                isolation.for_run(conn, conv, account_id=(user or {}).get("id"), settings=current())
+        resume_now = interrupted and not jobs.running(plan["conversation_id"])
+        if resume_now:
+            jobs.resume_execution(plan["conversation_id"], pid, user=user)
+        jobs.hub.publish(plan["conversation_id"], {"type": "plan_updated", "plan_id": pid})
+        with database() as conn:
+            return {"plan": store.get_plan(conn, pid), "moved": moved, "resumed": resume_now}
 
     @app.post('/api/plans/{pid}/give', status_code=202)
     def give_plan(pid: int, body: GiveTo):

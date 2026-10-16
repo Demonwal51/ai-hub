@@ -662,6 +662,8 @@ class PlanExecution:
 
     def _synthesize(self, conn, conversation, request_text):
         plan = store.get_plan(conn, self.plan_id)
+        # Read again: « Passer la suite sur … » may have changed the conductor while the tasks ran.
+        conversation = store.get_conversation(conn, conversation["id"])
         conductor = _conductor(conn, conversation)
 
         def on_start(message_id):

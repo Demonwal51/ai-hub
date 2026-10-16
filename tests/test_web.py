@@ -2,6 +2,7 @@ import json
 import threading
 import time
 import unittest
+from pathlib import Path
 from unittest import mock
 
 try:
@@ -412,6 +413,10 @@ class AllowedRootsTests(WebTestCase):
             self.assertIn("non autorisé", r.json()["detail"])
             r = client.post("/api/conversations", json={"title": "t", "workdir": str(inside)})
             self.assertEqual(r.status_code, 201)
+            # 1.2: no folder given, the app makes one of its own: outside the allowed ones, still fine.
+            r = client.post("/api/conversations", json={"title": "sans dossier"})
+            self.assertEqual(r.status_code, 201, r.text)
+            self.assertFalse(Path(r.json()["conversation"]["workdir"]).is_relative_to(root))
 
 
 class RequestTests(WebTestCase):

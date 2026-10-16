@@ -1,5 +1,69 @@
 # Journal des versions
 
+## 1.2.1 — 16 octobre 2026 : l’essentiel seulement, comme Claude Code
+
+- **À gauche** : « Nouvelle conversation », la recherche, la liste, « Réglages ».
+  Les archives sont au bout de la liste. L’état des IA et le quota n’apparaissent
+  que s’il y a un problème (une IA absente, un quota presque épuisé).
+- **L’accueil** : la demande, le projet (« ＋ Nouveau projet… » dans la liste),
+  l’IA, la flèche ↑.
+- **Une conversation** : le titre et ⋯ en haut ; en bas une seule zone de saisie
+  avec 📎, l’IA, ce qu’elle peut faire sans demander, et ↑. Le menu ⋯ : Renommer,
+  Archiver, Projet, Consignes, Exporter, Supprimer. Sous une réponse : Copier,
+  Régénérer.
+- **Réglages** : Quota des IA, Apparence, Notifications, Mises à jour, IA proposées
+  et sauvegardes, Bien démarrer. La fenêtre d’un projet : nom, dossier, consignes.
+- **« Fonctions avancées »** (Réglages, sur chaque appareil, éteint d’office) remet
+  tout le reste à l’écran : plusieurs IA, travail autonome, comparer, favoris,
+  citer, planifier, espaces isolés, outils, mémoire, partage, coffres, personnes,
+  sauvegardes, import… Rien n’est supprimé : les conversations qui s’en servent
+  marchent comme avant.
+
+## 1.2.0 — 16 octobre 2026 : plus simple à utiliser, et les mises à jour détectées
+
+- **L’accueil, c’est la demande** : on écrit ce qu’on veut, on choisit l’IA (et
+  un projet si on veut), puis Envoyer. La conversation se crée toute seule, nommée
+  par le début de la demande. « Reprendre » montre les quatre dernières
+  conversations ; « Plus d’options… » ouvre tous les choix.
+- **Un dossier automatique** : sans dossier choisi (ni dossier du projet), la
+  conversation reçoit un dossier vide rien qu’à elle sur le PC serveur, au lieu
+  d’un refus. Un dossier choisi reste vérifié comme avant.
+- **« Réglages » remplace le long menu** : trois groupes (Pour vous, Le serveur,
+  Aide), chaque entrée avec une phrase qui dit à quoi elle sert.
+- **Le menu ⋯ d’une conversation est rangé** : Conversation, L’IA, Espace et
+  fichiers, Plus. « Accès de cette IA » y entre.
+- **La zone de saisie s’allège** : un bouton ＋ pour joindre un fichier, les
+  demandes favorites, citer une conversation, le travail autonome et comparer
+  avec une autre IA (dite au-dessus de la saisie tant qu’elle vaut).
+- **La fenêtre « Nouvelle conversation »** garde l’essentiel (modèle de travail,
+  titre facultatif, projet, IA) ; dossier, plusieurs IA, espace isolé et
+  permissions passent dans « Options avancées ». Les réglages de l’appli font de
+  même avec leurs « Réglages avancés ».
+- **Des noms clairs** : « Claude · Sonnet », « ChatGPT · GPT-6 Sol » ;
+  « Demande avant d’agir », « Propose un plan d’abord », « Agit sans demander ».
+- **« Bien démarrer » en trois pas** : vérifier ses IA, écrire sa demande, ranger
+  avec les projets ; le reste est dit dans « Pour aller plus loin ».
+- **Mises à jour détectées** : « ⬆ Mise à jour à faire » dans la barre de gauche,
+  et la fenêtre « Mises à jour » (Réglages). Elle voit une version plus récente
+  publiée sur GitHub (installée en un clic depuis une installation .zip), et aussi
+  le code changé sur ce PC depuis le démarrage du serveur (une copie git) :
+  « Redémarrer sur le nouveau code » l’essaie d’abord à part (il se charge, il
+  ouvre une copie de la base), refuse si l’essai échoue, si une IA travaille ou
+  si des fichiers sont encore en train de changer, copie la base si son schéma
+  change, puis redémarre et vérifie le retour.
+- **Une page à jour** : une page ouverte (le téléphone, par exemple) dit quand le
+  serveur tourne sur une autre version, avec « Recharger la page ».
+
+## 1.1.1 — 16 octobre 2026 : passer la suite d’un plan sur une autre IA
+
+- **« Changer d’IA pour la suite… »** sous un plan validé, en cours ou
+  interrompu : quand une IA n’a plus de quota (ChatGPT par exemple), toutes les
+  tâches pas encore faites passent à celle que vous choisissez (Claude), et le
+  chef aussi si vous le cochez, puisqu’il écrit la synthèse.
+- Les tâches en cours ou terminées gardent leur IA ; un plan interrompu reprend
+  aussitôt. Le contenu du plan reste celui validé : seule l’IA de la suite change.
+- Schéma 28 : le gel d’un plan s’ouvre pour ce seul changement.
+
 ## 1.1.0 — 16 octobre 2026 : sept fonctions
 
 - **Un coffre par projet** : « Coffre des notes de ce projet » dans la fenêtre d’un

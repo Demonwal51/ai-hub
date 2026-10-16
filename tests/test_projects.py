@@ -536,10 +536,14 @@ if WebTestCase is not None:
             pid = self.project()
             cid = self.in_project(pid, "x")
             self.assertEqual(self.conversation(cid)["conversation"]["workdir"], str(self.workdir.resolve()))
+            # 1.2: a project without a folder, no folder given: one of its own, empty, on the server.
             bare = self.client.post("/api/projects", json={"name": "Sans dossier"}).json()["project"]["id"]
             r = self.client.post("/api/conversations", json={"title": "y", "project_id": bare})
-            self.assertEqual(r.status_code, 400)
-            self.assertIn("dossier de travail", r.json()["detail"])
+            self.assertEqual(r.status_code, 201, r.text)
+            folder = Path(r.json()["conversation"]["workdir"])
+            self.assertTrue(folder.parent.parent.name.endswith("espaces"), folder)
+            self.assertEqual(folder.name, "y")
+            self.assertEqual(list(folder.iterdir()), [])
             r = self.client.post("/api/projects", json={"name": "Mauvais", "workdir": "relatif"})
             self.assertEqual(r.status_code, 400)
 

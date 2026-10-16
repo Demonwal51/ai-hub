@@ -44,11 +44,11 @@ MUTATIONS = [
      "         AND NOT (NEW.agent_id IS NULL\n                  AND NEW.description IS OLD.description\n"
      "                  AND NEW.provider IS OLD.provider\n                  AND NEW.model IS OLD.model\n"
      "                  AND NEW.position IS OLD.position\n                  AND NEW.title IS OLD.title\n"
-     "                  AND NEW.files_json IS OLD.files_json\n                  AND NEW.kind IS OLD.kind\n                  AND NEW.assignment_reason IS OLD.assignment_reason)\n         AND NOT ((SELECT status FROM plans WHERE id = OLD.plan_id) IN (\'error\', \'stopped\')",
+     "                  AND NEW.files_json IS OLD.files_json\n                  AND NEW.kind IS OLD.kind\n                  AND NEW.assignment_reason IS OLD.assignment_reason)\n         AND NOT ((SELECT status FROM plans WHERE id = OLD.plan_id) IN (\'validated\', \'running\', \'error\', \'stopped\')",
      "         AND NOT (0\n                  AND NEW.description IS OLD.description\n"
      "                  AND NEW.provider IS OLD.provider\n                  AND NEW.model IS OLD.model\n"
      "                  AND NEW.position IS OLD.position\n                  AND NEW.title IS OLD.title\n"
-     "                  AND NEW.files_json IS OLD.files_json\n                  AND NEW.kind IS OLD.kind\n                  AND NEW.assignment_reason IS OLD.assignment_reason)\n         AND NOT ((SELECT status FROM plans WHERE id = OLD.plan_id) IN (\'error\', \'stopped\')"),
+     "                  AND NEW.files_json IS OLD.files_json\n                  AND NEW.kind IS OLD.kind\n                  AND NEW.assignment_reason IS OLD.assignment_reason)\n         AND NOT ((SELECT status FROM plans WHERE id = OLD.plan_id) IN (\'validated\', \'running\', \'error\', \'stopped\')"),
     ("trigger gel insert", "aihub/db.py",
      "WHEN (SELECT status FROM plans WHERE id = NEW.plan_id) <> 'proposed'",
      "WHEN 0"),
@@ -280,10 +280,10 @@ MUTATIONS = [
     ("route: genre inconnu garde tel quel", "aihub/orchestrator.py",
      'kind = item.get("kind") if item.get("kind") in KINDS else "autre"', 'kind = item.get("kind")'),
     ("route: genre et raison modifiables apres validation", "aihub/db.py",
-     "    # columns it covers, kind and assignment_reason included).\n    \"DROP TRIGGER subtasks_frozen_update\",\n    \"\"\"\n    CREATE TRIGGER subtasks_frozen_update\n"
+     "# one in force), every column and exception kept.\n_SCHEMA_V28 = [\n    \"DROP TRIGGER subtasks_frozen_update\",\n    \"\"\"\n    CREATE TRIGGER subtasks_frozen_update\n"
      "    BEFORE UPDATE OF description, agent_id, provider, model, position, title, files_json,\n"
      "                     kind, assignment_reason ON subtasks\n",
-     "    # columns it covers, kind and assignment_reason included).\n    \"DROP TRIGGER subtasks_frozen_update\",\n    \"\"\"\n    CREATE TRIGGER subtasks_frozen_update\n"
+     "# one in force), every column and exception kept.\n_SCHEMA_V28 = [\n    \"DROP TRIGGER subtasks_frozen_update\",\n    \"\"\"\n    CREATE TRIGGER subtasks_frozen_update\n"
      "    BEFORE UPDATE OF description, agent_id, provider, model, position, title, files_json ON subtasks\n"),
     # --- quota read without a request ---
     ("quota: pourcents pris pour des fractions", "aihub/providers/claude_code.py",
@@ -1201,7 +1201,8 @@ MUTATIONS = [
      "        if jobs.busy():\n            raise Busy(\"une IA travaille : attendez qu'elle ait fini avant de mettre",
      "        if False:\n            raise Busy(\"une IA travaille : attendez qu'elle ait fini avant de mettre"),
     ("maj: lancee par un invite", "aihub/web/app.py",
-     "        access.require_owner(me())\n        if jobs.busy():", "        if jobs.busy():"),
+     "        access.require_owner(me())\n        if jobs.busy():\n            raise Busy(\"une IA travaille : attendez qu'elle ait fini avant de mettre à jour\")",
+     "        if jobs.busy():\n            raise Busy(\"une IA travaille : attendez qu'elle ait fini avant de mettre à jour\")"),
     ('refresh-v10: maj: echec sans retour en arriere', 'aihub/updater.py', '            shutil.move(str(backup / name), str(root / name))\n', '            pass\n'),
     ('refresh-v10: maj: serveur pas relance', 'aihub/updater.py', '            process = launch(probe)\n', '            process = None\n'),
     ("maj: version egale prise pour plus recente", "aihub/updater.py",
@@ -1541,10 +1542,8 @@ MUTATIONS.append(('v111: a planned resume skips the folder check', 'aihub/web/ap
                  '                raise StoreError("ce plan ne peut plus être repris")\n            check_workdir(conv["workdir"])\n', '                raise StoreError("ce plan ne peut plus être repris")\n'))
 MUTATIONS.append(('v111: a refused resume not said', 'aihub/schedule.py',
                  '                        store.resume_failed(conn, plan["id"], str(exc))\n', '                        pass\n'))
-MUTATIONS.append(('v111: the frozen plan opened to any change', 'aihub/db.py',
-                 '                  AND NEW.agent_id IS NOT OLD.agent_id   -- given to another agent, never a model changed alone\n', ''))
-MUTATIONS.append(('v111: the frozen plan opened to finished tasks', 'aihub/db.py',
-                 "                  AND OLD.status <> 'ok'\n                  AND NEW.agent_id IS NOT NULL\n", '                  AND NEW.agent_id IS NOT NULL\n'))
+# v111: the frozen plan opened to any change: retired with the v27 rule it aimed at (v28 replaces it; see the v112 ones).
+# v111: the frozen plan opened to finished tasks: retired with the v27 rule it aimed at (v28 replaces it; see the v112 ones).
 
 MUTATIONS.append(('v111: one word found is enough', 'aihub/vaults.py',
                  '        if not all(w in low or w in name for w in words):\n', '        if not any(w in low or w in name for w in words):\n'))
@@ -1651,6 +1650,88 @@ MUTATIONS.append(('v111: a trial said once only', 'aihub/trials.py',
 
 MUTATIONS.append(('v111: a restore that cannot come back', 'aihub/web/app.py',
                  '        if updater.restart_details(restart, updater.install_root()) is None:\n', '        if False:\n'))
+
+MUTATIONS.append(('v112: a running task given away', 'aihub/db.py',
+                 "                  AND OLD.status IN ('pending', 'error', 'stopped')\n", "                  AND OLD.status <> 'ok'\n"))
+MUTATIONS.append(('v112: a finished task given away', 'aihub/db.py',
+                 "                  AND OLD.status IN ('pending', 'error', 'stopped')\n", "                  AND OLD.status IN ('pending', 'error', 'stopped', 'ok')\n"))
+MUTATIONS.append(('v112: a model changed alone', 'aihub/db.py',
+                 "         AND NOT ((SELECT status FROM plans WHERE id = OLD.plan_id) IN ('validated', 'running', 'error', 'stopped')\n                  AND OLD.status IN ('pending', 'error', 'stopped')\n                  AND NEW.agent_id IS NOT NULL\n                  AND NEW.agent_id IS NOT OLD.agent_id   -- given to another agent, never a model changed alone\n", "         AND NOT ((SELECT status FROM plans WHERE id = OLD.plan_id) IN ('validated', 'running', 'error', 'stopped')\n                  AND OLD.status IN ('pending', 'error', 'stopped')\n                  AND NEW.agent_id IS NOT NULL\n"))
+MUTATIONS.append(("v112: a task's content changed after validation", 'aihub/db.py',
+                 '                  AND NEW.agent_id IS NOT OLD.agent_id   -- given to another agent, never a model changed alone\n                  AND NEW.description IS OLD.description\n                  AND NEW.position IS OLD.position\n                  AND NEW.title IS OLD.title\n                  AND NEW.files_json IS OLD.files_json\n                  AND NEW.kind IS OLD.kind)\n    BEGIN\n        SELECT RAISE(ABORT, \'plan is frozen\');\n    END\n    """,\n]\n\n\nclass SchemaError', '                  AND NEW.agent_id IS NOT OLD.agent_id   -- given to another agent, never a model changed alone\n                  AND NEW.position IS OLD.position\n                  AND NEW.title IS OLD.title\n                  AND NEW.files_json IS OLD.files_json\n                  AND NEW.kind IS OLD.kind)\n    BEGIN\n        SELECT RAISE(ABORT, \'plan is frozen\');\n    END\n    """,\n]\n\n\nclass SchemaError'))
+MUTATIONS.append(('v112: a proposed or finished plan switched', 'aihub/store.py',
+                 '    if plan["status"] not in SWITCHABLE and not can_resume_plan(conn, plan):\n', '    if False:\n'))
+MUTATIONS.append(('v112: running tasks switched too', 'aihub/store.py',
+                 '    moved = [st for st in plan["subtasks"] if st["status"] in ("pending", "error", "stopped") and st["agent_id"] != agent_id]\n', '    moved = [st for st in plan["subtasks"] if st["status"] != "ok" and st["agent_id"] != agent_id]\n'))
+MUTATIONS.append(('v112: the conductor not changed', 'aihub/web/app.py',
+                 '            if body.conductor:\n                store.set_conductor(conn, conv["id"], agent)\n', ''))
+MUTATIONS.append(('v112: the conductor changed when asked not to', 'aihub/web/app.py',
+                 '            if body.conductor:\n                store.set_conductor(conn, conv["id"], agent)\n', '            if True:\n                store.set_conductor(conn, conv["id"], agent)\n'))
+MUTATIONS.append(('v112: the synthesis by the former conductor', 'aihub/orchestrator.py',
+                 '        conversation = store.get_conversation(conn, conversation["id"])\n        conductor = _conductor(conn, conversation)\n', '        conductor = _conductor(conn, conversation)\n'))
+MUTATIONS.append(('v112: an interrupted plan not resumed', 'aihub/web/app.py',
+                 '        if resume_now:\n            jobs.resume_execution(plan["conversation_id"], pid, user=user)\n', '        if False:\n            pass\n'))
+MUTATIONS.append(('v112: a reader switches the plan', 'aihub/web/app.py',
+                 '            conv = access.require(conn, user, plan["conversation_id"], "write")\n            agent = agent_for(conn, body.model, isolated=isolation.effective(conn, conv)["isolated"])\n            moved = store.switch_plan(', '            conv = access.require(conn, user, plan["conversation_id"], "read")\n            agent = agent_for(conn, body.model, isolated=isolation.effective(conn, conv)["isolated"])\n            moved = store.switch_plan('))
+
+# v113 (1.2): the code on disk seen, tried, restarted on; a conversation without a folder gets its own.
+MUTATIONS.append(('v113: a restart without a new commit', 'aihub/relaunch.py',
+                 '    moved = is_git and started.get("commit") is not None and commit != started["commit"]\n',
+                 '    moved = is_git and started.get("commit") is not None\n'))
+MUTATIONS.append(('v113: the version change not seen', 'aihub/relaunch.py',
+                 '"restart_needed": bool(moved or (disk is not None and disk != started["version"]))}', '"restart_needed": bool(moved)}'))
+MUTATIONS.append(('v113: work in progress counted as none', 'aihub/relaunch.py',
+                 '        dirty = None if status is None else sorted({line[3:].strip() for line in status.splitlines() if line.strip()})\n',
+                 '        dirty = []\n'))
+MUTATIONS.append(('v113: files outside the code count', 'aihub/relaunch.py',
+                 '        status = git(root, "status", "--porcelain", "--untracked-files=no", "--", *CODE_PATHS)\n',
+                 '        status = git(root, "status", "--porcelain", "--untracked-files=no")\n'))
+MUTATIONS.append(('v113: the trial migrates the base itself', 'aihub/relaunch.py',
+                 '            updater.copy_database(db_path, copy)\n            conn = db.connect(str(copy))\n',
+                 '            conn = db.connect(str(db_path))\n'))
+MUTATIONS.append(('v113: a dead trial taken as passed', 'aihub/relaunch.py',
+                 '            return {"ok": False, "error": "le nouveau code s\'est arrêté avant de répondre (erreur au chargement)"}\n',
+                 '            return {"ok": True}\n'))
+MUTATIONS.append(('v113: a failed restart keeps the migrated base', 'aihub/relaunch.py',
+                 '                updater.copy_database(keep, db_path)  # the base from before the schema change\n', '                pass\n'))
+MUTATIONS.append(('v113: no second start after a failure', 'aihub/relaunch.py',
+                 '            launch()\n            report = {"status": "echec", "version": version, "keep": str(keep) if keep else None,\n',
+                 '            report = {"status": "echec", "version": version, "keep": str(keep) if keep else None,\n'))
+MUTATIONS.append(('v113: the new server not checked', 'aihub/relaunch.py',
+                 '        if details and not (health or updater.wait_health)(process, details[1], version, probe):\n', '        if False:\n'))
+MUTATIONS.append(('v113: a server that did not stop started again', 'aihub/relaunch.py',
+                 '    if pid and alive(pid):\n        report = {"status": "echec", "version": version,\n',
+                 '    if False:\n        report = {"status": "echec", "version": version,\n'))
+MUTATIONS.append(('v113: a guest restarts the server', 'aihub/web/app.py',
+                 '        access.require_owner(me())\n        if jobs.busy():\n            raise Busy("une IA travaille : attendez qu\'elle ait fini avant de redémarrer")\n',
+                 '        if jobs.busy():\n            raise Busy("une IA travaille : attendez qu\'elle ait fini avant de redémarrer")\n'))
+MUTATIONS.append(('v113: a restart while an AI works', 'aihub/web/app.py',
+                 '        if jobs.busy():\n            raise Busy("une IA travaille : attendez qu\'elle ait fini avant de redémarrer")\n', ''))
+MUTATIONS.append(('v113: a restart with nothing new', 'aihub/web/app.py',
+                 '        if not state["restart_needed"]:\n', '        if False:\n'))
+MUTATIONS.append(('v113: a restart over work in progress', 'aihub/web/app.py',
+                 '        if state["dirty"]:\n', '        if False:\n'))
+MUTATIONS.append(('v113: a server that cannot come back stopped', 'aihub/web/app.py',
+                 '        if updater.restart_details(restart, root) is None:\n', '        if False:\n'))
+MUTATIONS.append(('v113: a broken new code restarted', 'aihub/web/app.py',
+                 '        if not trial.get("ok"):\n', '        if False:\n'))
+MUTATIONS.append(('v113: no copy before a schema change', 'aihub/web/app.py',
+                 '        keep = relaunch.keep_copy(db_path, version) if trial.get("schema", schema) != schema else None\n',
+                 '        keep = None\n'))
+MUTATIONS.append(('v113: a copy at every restart', 'aihub/web/app.py',
+                 '        keep = relaunch.keep_copy(db_path, version) if trial.get("schema", schema) != schema else None\n',
+                 '        keep = relaunch.keep_copy(db_path, version)\n'))
+MUTATIONS.append(('v113: no folder, refused as before', 'aihub/web/app.py',
+                 "                if (profile['isolated'] and profile['files'] == 'none') or auto_folder:\n",
+                 "                if profile['isolated'] and profile['files'] == 'none':\n"))
+MUTATIONS.append(('v113: an import gets a folder of its own', 'aihub/web/app.py',
+                 '    def new_conversation(conn, body, user=None, auto_folder=False):\n',
+                 '    def new_conversation(conn, body, user=None, auto_folder=True):\n'))
+MUTATIONS.append(("v113: the app's own folder checked against the allowed ones", 'aihub/web/app.py',
+                 '            if not made:\n                workdir = check_workdir(workdir)\n', '            workdir = check_workdir(workdir)\n'))
+MUTATIONS.append(('v113: two conversations in one folder', 'aihub/web/app.py',
+                 '        while folder.exists() and (fresh or any(folder.iterdir())):\n',
+                 '        while folder.exists() and any(folder.iterdir()):\n'))
 
 TEST_MODULES = []
 

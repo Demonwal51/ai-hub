@@ -7,7 +7,7 @@ une interface en français. Discutez avec une IA, comparez leurs réponses ou
 faites travailler plusieurs agents ensemble. Retrouvez vos conversations et
 vos projets depuis votre ordinateur ou votre téléphone.
 
-**Version 1.0.8 · Windows et Linux · Licence GPL-3.0**
+**Version 1.2.1 · Windows et Linux · Licence GPL-3.0**
 
 [Télécharger la dernière version](https://github.com/Demonwal51/ai-hub/releases/latest)
 · [Voir les changements](CHANGELOG.md) · [Licence](LICENSE)
@@ -31,11 +31,48 @@ vos projets depuis votre ordinateur ou votre téléphone.
 - **Utiliser votre téléphone** : interface adaptée, accès privé par Tailscale,
   notifications et lecture hors connexion si vous l’activez sur l’appareil.
 
-## Un premier espace en trois étapes
+## Commencer
 
-Le bouton **Bien démarrer** vous guide pour créer un espace, connecter votre
-IA et vérifier le fonctionnement. Trois profils préparent les accès ; vous
-pouvez ensuite les personnaliser.
+L’accueil est la demande : écrivez ce que vous voulez, choisissez l’IA (et un
+projet si vous voulez), puis **Envoyer**. La conversation se crée toute seule et
+prend le début de la demande pour titre. Sans dossier choisi, elle reçoit un
+dossier vide rien qu’à elle sur le PC serveur. **Plus d’options…** ouvre les
+autres choix : modèle de travail, dossier, plusieurs IA, espace isolé,
+permissions.
+
+L’écran ressemble à Claude Code : la liste à gauche, la conversation au
+centre, une seule zone de saisie en bas avec 📎, l’IA, ce qu’elle peut faire
+sans demander, et la flèche ↑. Le menu **⋯** d’une conversation la renomme,
+l’archive, la range dans un projet, lui donne des consignes, l’exporte ou la
+supprime. **Réglages** (en bas à gauche) donne le quota, l’apparence, les
+notifications, les mises à jour et les IA proposées.
+
+Le reste est derrière **Réglages → Fonctions avancées** (sur chaque appareil) :
+plusieurs IA avec un chef, travail autonome, comparer deux IA, favoris,
+planifier, espaces isolés, outils, mémoire, partage, coffres Obsidian,
+personnes, sauvegardes, import.
+
+## Mises à jour
+
+**⬆ Mise à jour à faire** apparaît en bas à gauche quand il y en a une, et
+**Réglages → Mises à jour** dit où en est l’appli :
+
+- une version plus récente publiée sur GitHub : depuis une installation `.zip`,
+  **Installer** la télécharge, la vérifie, l’installe et redémarre (l’ancienne
+  version et la base sont gardées dans `data\mise-a-jour`) ;
+- le code changé sur ce PC depuis le démarrage du serveur (une copie git, après
+  un `git pull` ou un commit) : **Redémarrer sur le nouveau code** l’essaie
+  d’abord à part (il se charge et ouvre une copie de la base) et ne redémarre que
+  si l’essai passe, qu’aucune IA ne travaille et qu’aucun fichier du code n’est
+  en train de changer. Si la base change de forme, elle est copiée à côté avant.
+
+Une page déjà ouverte, sur un téléphone par exemple, propose **Recharger la
+page** quand le serveur tourne sur une autre version.
+
+## Un espace isolé
+
+Trois profils préparent les accès d’un espace isolé (**Plus d’options…** ou
+**⋯ → Espace et accès**) ; vous pouvez ensuite les personnaliser.
 
 | Profil | Accès aux fichiers du PC | Usage |
 | --- | --- | --- |
@@ -115,6 +152,9 @@ de l’IA restent celles choisies pour l’espace.
 - **Quota atteint pendant un plan** : le plan propose de reprendre tout seul à
   l’heure du retour du quota, ou de confier ses tâches restantes à une autre IA.
   Rien ne se fait sans votre clic ; les tâches terminées ne sont pas rejouées.
+- **Changer d’IA pour la suite…** (sous un plan validé, en cours ou interrompu) : les tâches pas
+  encore faites, et le chef si vous le cochez, passent sur l’IA choisie, par exemple Claude seul
+  quand ChatGPT n’a plus de quota. Les tâches en cours ou terminées gardent la leur.
 - **Exporter le projet (.zip)** puis **Importer → Un projet AI Hub (.zip)** :
   conversations, consignes, accès, documents et notes, sur ce serveur ou un autre.
   Les fichiers du dossier de travail ne sont pas dedans.
@@ -161,7 +201,7 @@ système. Tout se fait en lecture seule ; rien d’un coffre n’est envoyé à 
 
 ## Installation Windows
 
-1. Téléchargez `ai-hub-1.0.8.zip` dans les
+1. Téléchargez `ai-hub-1.2.1.zip` dans les
    [versions publiées](https://github.com/Demonwal51/ai-hub/releases/latest), puis extrayez-le.
 2. Installez Python **3.12 ou plus** si nécessaire.
 3. Lancez `installer.bat`. Il prépare l’environnement Python, installe les
@@ -178,7 +218,7 @@ L’installation et le démarrage de l’application ont été vérifiés sur
 
 1. Installez Python **3.12 ou plus**, ainsi que le support `venv` et `pip` de
    votre distribution.
-2. Téléchargez et extrayez `ai-hub-1.0.8-linux.tar.gz`.
+2. Téléchargez et extrayez `ai-hub-1.2.1-linux.tar.gz`.
 3. Depuis le dossier extrait, lancez :
 
 ```sh
@@ -255,7 +295,7 @@ avec l’authentification d’AI Hub. Le PC doit rester disponible pour de nouve
 réponses. La lecture hors connexion concerne seulement les copies que vous
 avez choisi de conserver sur cet appareil.
 
-Le menu **Diagnostic** vérifie la base, le disque, le moteur d’isolation et le
+**Réglages → Vérifier le fonctionnement** vérifie la base, le disque, le moteur d’isolation et le
 compte de l’espace choisi, sans envoyer de demande à une IA. Une action précise
 est proposée lorsqu’un composant manque. Les thèmes clair, sombre et système
 ainsi que la densité d’affichage se règlent par appareil.

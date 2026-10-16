@@ -148,7 +148,9 @@ if WebTestCase is not None:
                             conn.execute(sql, (other, pid))
                 with conn:
                     conn.execute("UPDATE plans SET status = 'running' WHERE id = ?", (pid,))
-                with self.assertRaisesRegex(sqlite3.IntegrityError, "frozen"):  # a running plan
+                    conn.execute("UPDATE subtasks SET status = 'running' WHERE plan_id = ? AND position = 2", (pid,))
+                # A running plan may move its tasks not started (1.1.1), never the one that runs.
+                with self.assertRaisesRegex(sqlite3.IntegrityError, "frozen"):
                     with conn:
                         conn.execute("UPDATE subtasks SET agent_id = ? WHERE plan_id = ? AND position = 2", (other, pid))
             finally:

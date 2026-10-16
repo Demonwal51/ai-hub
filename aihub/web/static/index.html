@@ -68,6 +68,10 @@
 
   <div class="offline-banner hidden" id="offline-banner" role="status">Hors connexion : le PC ne répond pas.
     Lecture seule de ce qui est gardé sur cet appareil ; l'appli repasse en ligne toute seule.</div>
+  <div class="reload-banner hidden" id="reload-banner" role="status">
+    <span id="reload-text">AI Hub a été mis à jour.</span>
+    <button class="btn btn-primary btn-small" id="reload-now" type="button">Recharger la page</button>
+  </div>
 
   <div class="app" id="app" data-view="list">
     <aside class="sidebar">
@@ -76,14 +80,12 @@
         <span class="pill" id="status-pill" title="État de Claude Code">…</span>
       </header>
       <div class="sidebar-actions">
-        <button class="btn btn-primary" id="new-conversation">Nouvelle conversation</button>
-        <button class="btn btn-ghost" id="new-project" title="Nouveau projet : il regroupe plusieurs conversations" aria-label="Nouveau projet">+ Projet</button>
+        <button class="btn btn-primary" id="new-conversation" title="Écrire une nouvelle demande (Ctrl+Maj+N)">Nouvelle conversation</button>
+        <button class="btn btn-ghost adv" id="new-project" title="Nouveau projet : il regroupe plusieurs conversations" aria-label="Nouveau projet">+ Projet</button>
       </div>
-      <button class="btn btn-ghost btn-block" id="import" type="button"
-              title="Importer des conversations de ChatGPT, de Claude, de Claude Code ou de Codex, séparées ou fusionnées">Importer…</button>
-      <input type="search" id="search" class="search" placeholder="Chercher dans les conversations…"
+      <input type="search" id="search" class="search" placeholder="Chercher…"
              aria-label="Chercher dans les conversations" autocomplete="off">
-      <details class="list-filters">
+      <details class="list-filters adv">
         <summary>Ranger et filtrer</summary>
         <label>Afficher <select id="list-scope"><option value="active">Conversations actives</option>
           <option value="archived">Archives</option><option value="all">Toutes</option></select></label>
@@ -98,44 +100,36 @@
       <button class="quota-mini" id="quota-mini" type="button" title="Quota de vos IA : le détail">Quota…</button>
       <div class="sidebar-foot">
         <span class="me-name" id="me-name"></span>
-        <div class="menu-wrap">
-          <button class="btn btn-ghost" id="app-menu-button" type="button" aria-haspopup="menu" aria-expanded="false">Menu ▴</button>
-          <div class="menu menu-up" id="app-menu" role="menu">
-            <button class="menu-item" id="notifications" type="button" title="Alertes sur cet appareil">Notifications</button>
-            <button class="menu-item" id="offline-toggle" type="button"
-                    title="Garder les conversations lisibles sur cet appareil quand le PC ne répond pas">Hors connexion : non</button>
-            <button class="menu-item hidden" id="settings" type="button" title="Réglages de l'appli">Réglages</button>
-            <button class="menu-item" id="appearance" type="button">Apparence…</button>
-            <button class="menu-item" id="getting-started" type="button">Bien démarrer…</button>
-            <button class="menu-item" id="diagnostics" type="button">Diagnostic…</button>
-            <button class="menu-item hidden" id="people" type="button" title="Inviter des personnes, gérer leurs accès">Personnes</button>
-            <button class="menu-item hidden" id="consumption" type="button" title="Qui a utilisé combien d'IA">Consommation</button>
-            <button class="menu-item hidden" id="server" type="button" title="État du serveur : disque, sauvegardes, journal">Serveur</button>
-            <button class="menu-item hidden" id="vaults" type="button" title="Les coffres Obsidian de ce PC : les ouvrir, en choisir un">Coffres Obsidian</button>
-            <button class="menu-item hidden" id="trials" type="button" title="Ce qui n'a jamais été essayé en vrai, et comment ça s'est passé">Essais à faire</button>
-            <button class="menu-item hidden" id="my-accounts" type="button" title="Vos comptes Claude et ChatGPT : vos demandes les utilisent">Mes comptes IA</button>
-            <button class="menu-item hidden" id="my-password" type="button" title="Changer votre mot de passe">Mot de passe</button>
-            <button class="menu-item hidden" id="devices" type="button" title="Les appareils où une session est ouverte">Appareils</button>
-            <button class="menu-item hidden" id="logout" type="button">Se déconnecter</button>
-          </div>
-        </div>
+        <button class="btn btn-ghost hub-button" id="hub-button" type="button" title="Vos comptes, cet appareil, le serveur, l'aide">
+          <span aria-hidden="true">⚙</span> Réglages <span class="hub-badge hidden" id="hub-badge">1</span></button>
       </div>
     </aside>
 
     <main class="main" id="main">
-      <div class="empty" id="empty">
-        <div class="welcome-mark" aria-hidden="true">✦</div>
-        <p class="welcome-eyebrow">VOTRE ESPACE DE TRAVAIL AVEC LES IA</p>
-        <h1>Une idée. Plusieurs façons d’avancer.</h1>
-        <p class="welcome-lead">Retrouvez vos conversations, organisez vos projets et choisissez les accès de vos IA.</p>
-        <button class="btn btn-primary" id="empty-new" type="button">Nouvelle conversation</button>
-        <button class="btn btn-ghost" id="welcome-guide" type="button">Me guider pour commencer</button>
-        <div class="welcome-features">
-          <div><span aria-hidden="true">↗</span><strong>Commencer simplement</strong><p>Une demande, un document ou un modèle de travail.</p></div>
-          <div><span aria-hidden="true">◎</span><strong>Travailler ensemble</strong><p>Comparez les réponses ou répartissez le travail entre plusieurs IA.</p></div>
-          <div><span aria-hidden="true">◇</span><strong>Choisir les accès</strong><p>Créez un espace isolé et vérifiez ses fichiers avant de les appliquer.</p></div>
+      <div class="home" id="empty">
+        <button class="btn btn-ghost back home-back" id="home-back" type="button" aria-label="Retour à la liste">← Conversations</button>
+        <h1 class="home-title" id="home-title">Que voulez-vous faire ?</h1>
+        <form class="home-composer" id="home-form">
+          <textarea id="home-prompt" rows="3" aria-label="Votre demande" placeholder="Écrivez votre demande…"></textarea>
+          <div class="home-bar">
+            <select id="home-project" class="bar-select" aria-label="Projet" title="Le projet : son dossier et ses consignes. Aucun : un dossier rien qu'à cette conversation."></select>
+            <select id="home-model" class="bar-select" aria-label="IA" title="L'IA qui répond ; vous pourrez en changer ensuite"></select>
+            <button class="btn btn-ghost btn-small home-folder adv" id="home-folder" type="button"
+                    title="Le dossier du PC où l'IA travaille">Dossier : automatique</button>
+            <span class="grow"></span>
+            <button class="btn btn-ghost adv" id="home-more" type="button"
+                    title="Modèle de travail, plusieurs IA, espace isolé, permissions…">Plus d'options…</button>
+            <button class="btn btn-primary send-button" id="home-send" type="submit" aria-label="Envoyer" title="Envoyer (Entrée)">↑</button>
+          </div>
+          <p class="form-error" id="home-error" role="alert"></p>
+        </form>
+        <p class="home-guest hidden" id="home-guest">Les conversations partagées avec vous sont dans la liste.</p>
+        <section class="home-recent hidden adv" id="home-recent" aria-label="Reprendre une conversation"></section>
+        <div class="home-links adv">
+          <button class="btn btn-ghost btn-small" id="welcome-guide" type="button">Me guider pour commencer</button>
+          <button class="btn btn-ghost btn-small" id="home-template" type="button">Partir d'un modèle de travail…</button>
+          <button class="btn btn-ghost btn-small" id="home-import" type="button">Importer des conversations…</button>
         </div>
-        <p class="quota-note">La recherche retrouve les passages de vos conversations.</p>
       </div>
 
       <section class="conversation hidden" id="conversation">
@@ -145,54 +139,51 @@
             <h1 class="conv-title" id="conv-title"></h1>
             <div class="conv-meta" id="conv-meta"></div>
             <button class="btn btn-ghost btn-small hidden" id="isolation-accounts-quick" type="button">Comptes IA de cet espace</button>
-            <button class="btn btn-ghost btn-small" id="access-overview" type="button">Accès de cette IA</button>
             <button class="btn btn-ghost btn-small hidden" id="results-quick" type="button">Vérifier les fichiers produits</button>
           </div>
           <div class="conv-actions">
-            <select id="conv-model" aria-label="IA de la conversation"
-                    title="Changer d'IA : la suivante repart de la mémoire de la conversation (résumé, derniers échanges)"></select>
-            <select id="conv-mode" aria-label="Mode de permission" title="Ce que l'IA peut faire sans vous demander">
-              <option value="manual">Manuel</option>
-              <option value="plan">Plan</option>
-              <option value="bypass">Sans permission</option>
-            </select>
             <div class="menu-wrap">
               <button class="btn btn-ghost" id="conv-menu-button" type="button" aria-haspopup="menu" aria-expanded="false"
                       aria-label="Autres actions" title="Autres actions">⋯</button>
-              <div class="menu" id="conv-menu" role="menu">
-                <button class="menu-item" id="pin-conversation" type="button">Épingler pour moi</button>
+              <div class="menu menu-grouped" id="conv-menu" role="menu">
+                <p class="menu-heading adv">Conversation</p>
+                <button class="menu-item" id="rename" type="button">Renommer</button>
+                <button class="menu-item adv" id="pin-conversation" type="button">Épingler pour moi</button>
                 <button class="menu-item" id="archive-conversation" type="button">Archiver pour moi</button>
-                <button class="menu-item" id="save-template" type="button">Garder comme modèle de travail…</button>
-                <button class="menu-item" id="isolation-access" type="button">Espace et accès…</button>
-                <button class="menu-item hidden" id="create-path" type="button">Créer un fichier ou un dossier…</button>
-                <button class="menu-item hidden" id="isolation-accounts" type="button">Comptes de cet espace…</button>
-                <button class="menu-item hidden" id="isolation-results" type="button">Fichiers produits dans l’espace…</button>
                 <label class="menu-field">Projet
                   <select id="conv-project" aria-label="Projet de la conversation"></select>
                 </label>
-                <label class="menu-field hidden" id="conv-assignment-row">IA des sous-tâches
+                <button class="menu-item hidden adv" id="share" type="button" title="Partager avec des personnes de ce serveur">Partager</button>
+                <button class="menu-item hidden adv" id="conv-shared" type="button"
+                        title="Partagée : elle peut lire les autres conversations partagées du projet, et elles peuvent la lire">Partagée</button>
+                <button class="menu-item adv" id="save-template" type="button">Garder comme modèle de travail…</button>
+                <p class="menu-heading adv">L'IA</p>
+                <button class="menu-item" id="instructions" type="button"
+                        title="Un texte que l'IA reçoit à chaque demande de cette conversation">Consignes…</button>
+                <button class="menu-item adv" id="access-overview" type="button" title="Ce que l'IA peut lire, modifier, joindre">Accès de cette IA</button>
+                <button class="menu-item adv" id="tools" type="button" title="Les outils de l'IA dans cette conversation">Outils</button>
+                <label class="menu-field hidden adv" id="conv-assignment-row">IA des sous-tâches
                   <select id="conv-assignment" aria-label="Choix des IA pour les sous-tâches">
                     <option value="auto">automatique</option>
                     <option value="manual">manuel</option>
                   </select>
                 </label>
-                <button class="menu-item hidden" id="conv-shared" type="button"
-                        title="Partagée : elle peut lire les autres conversations partagées du projet, et elles peuvent la lire">Partagée</button>
-                <button class="menu-item hidden" id="share" type="button" title="Partager avec des personnes de ce serveur">Partager</button>
-                <button class="menu-item" id="fresh" type="button"
+                <button class="menu-item adv" id="fresh" type="button"
                         title="La prochaine demande ouvre une nouvelle session : un résumé et les passages utiles au lieu de tout l'historique">Repartir de zéro</button>
-                <button class="menu-item" id="instructions" type="button"
-                        title="Un texte que l'IA reçoit à chaque demande de cette conversation">Consignes…</button>
-                <button class="menu-item" id="tools" type="button" title="Les outils de l'IA dans cette conversation">Outils</button>
-                <button class="menu-item" id="schedules" type="button" title="Demandes qui se relancent seules (chaque jour, chaque heure…)">Planifier</button>
-                <button class="menu-item hidden" id="obsidian" type="button" title="Note de projet dans Obsidian">Obsidian</button>
-                <button class="menu-item" id="memory-rag" type="button">Mémoire RAG…</button>
-                <a class="menu-item" id="export-md" download title="Le texte de la conversation, lisible partout">Exporter (Markdown)</a>
-                <a class="menu-item" id="export-json" download
+                <button class="menu-item adv" id="memory-rag" type="button" title="Chercher dans la mémoire, ajouter des documents au projet">Mémoire…</button>
+                <p class="menu-heading adv">Espace et fichiers</p>
+                <button class="menu-item adv" id="isolation-access" type="button">Espace et accès…</button>
+                <button class="menu-item hidden adv" id="isolation-accounts" type="button">Comptes de cet espace…</button>
+                <button class="menu-item hidden adv" id="isolation-results" type="button">Fichiers produits dans l’espace…</button>
+                <button class="menu-item hidden adv" id="create-path" type="button">Créer un fichier ou un dossier…</button>
+                <p class="menu-heading adv">Plus</p>
+                <button class="menu-item adv" id="schedules" type="button" title="Demandes qui se relancent seules (chaque jour, chaque heure…)">Planifier…</button>
+                <button class="menu-item hidden adv" id="obsidian" type="button" title="Note de projet dans Obsidian">Obsidian</button>
+                <a class="menu-item" id="export-md" download title="Le texte de la conversation, lisible partout">Exporter</a>
+                <a class="menu-item adv" id="export-json" download
                    title="Pour la recharger, ici ou sur un autre serveur (« Importer… »)">Exporter (JSON, réimportable)</a>
-                <a class="menu-item" id="export-print" target="_blank" rel="noopener"
+                <a class="menu-item adv" id="export-print" target="_blank" rel="noopener"
                    title="Une page à imprimer, ou à enregistrer en PDF">Imprimer ou PDF</a>
-                <button class="menu-item" id="rename" type="button">Renommer</button>
                 <button class="menu-item menu-danger" id="delete" type="button" title="Supprimer définitivement">Supprimer</button>
               </div>
             </div>
@@ -218,82 +209,161 @@
         <p class="readonly-note hidden" id="readonly-note">Lecture seule : cette conversation vous est partagée
           pour la lire, pas pour y écrire.</p>
         <div class="pending-files hidden" id="pending-files" aria-label="Pièces jointes à envoyer"></div>
+        <div class="compare-chip hidden" id="compare-chip" role="status"></div>
         <form class="composer" id="composer">
-          <div class="composer-tools">
-            <button class="btn btn-ghost tool-icon" id="attach" type="button" aria-label="Joindre un fichier ou une image"
-                    title="Joindre un fichier, une image ou une photo (20 Mo au plus)">📎</button>
-            <input type="file" id="attach-input" multiple hidden>
-            <button class="btn btn-ghost tool-icon hidden" id="dictate" type="button" aria-label="Dicter"
-                    title="Dicter au lieu de taper (la reconnaissance vocale du navigateur ; Chrome l'envoie à Google)">🎤</button>
-            <div class="menu-wrap">
-              <button class="btn btn-ghost tool-icon" id="favorites-button" type="button" aria-haspopup="menu"
-                      aria-expanded="false" aria-label="Demandes favorites" title="Vos demandes favorites">★</button>
-              <div class="menu menu-up menu-left" id="favorites-menu" role="menu"></div>
+          <div class="composer-box">
+            <textarea id="prompt" rows="2" placeholder="Votre demande…" aria-label="Votre demande"></textarea>
+            <div class="composer-bar">
+              <button class="btn btn-ghost tool-icon" id="attach" type="button" aria-label="Joindre un fichier ou une image"
+                      title="Joindre un fichier, une image ou une photo (20 Mo au plus)">📎</button>
+              <input type="file" id="attach-input" multiple hidden>
+              <button class="btn btn-ghost tool-icon hidden adv" id="dictate" type="button" aria-label="Dicter"
+                      title="Dicter au lieu de taper (la reconnaissance vocale du navigateur ; Chrome l'envoie à Google)">🎤</button>
+              <div class="menu-wrap adv">
+                <button class="btn btn-ghost tool-icon" id="composer-plus" type="button" aria-haspopup="menu" aria-expanded="false"
+                        aria-label="Plus : favoris, citer, travail autonome, comparer" title="Demandes favorites, travail autonome, comparer…">＋</button>
+                <div class="menu menu-up menu-left" id="composer-menu" role="menu">
+                  <button class="menu-item" id="favorites-button" type="button" title="Vos demandes gardées, à réutiliser">★ Demandes favorites…</button>
+                  <button class="menu-item hidden" id="cite" type="button"
+                          title="Citer une autre conversation du projet : l'IA ira la lire">❝ Citer une conversation du projet…</button>
+                  <button class="menu-item" id="autonomous" type="button"
+                          title="L'IA travaille seule vers un objectif, tour après tour, jusqu'à ce que ce soit fini">⟳ Travail autonome…</button>
+                  <label class="menu-field hidden" id="compare-row"
+                         title="Une autre IA répond aussi, en lecture seule, à côté de la réponse">⇄ Comparer avec
+                    <select id="compare-with" aria-label="Comparer avec une autre IA"></select></label>
+                </div>
+              </div>
+              <select id="conv-model" class="bar-select" aria-label="IA de la conversation"
+                      title="Changer d'IA : la suivante repart de la mémoire de la conversation (résumé, derniers échanges)"></select>
+              <select id="conv-mode" class="bar-select" aria-label="Ce que l'IA peut faire sans vous demander" title="Ce que l'IA peut faire sans vous demander">
+                <option value="manual">Demande avant d'agir</option>
+                <option value="plan">Propose un plan d'abord</option>
+                <option value="bypass">Agit sans demander</option>
+              </select>
+              <span class="grow"></span>
+              <button class="btn btn-ghost hidden" id="discuss" type="submit" value="discuss"
+                      title="Parler au chef d'orchestre : il répond et ne modifie rien">Discuter avec le chef</button>
+              <button class="btn btn-primary send-button" id="send" type="submit" value="plan" aria-label="Envoyer" title="Envoyer (Entrée)">↑</button>
             </div>
-          </div>
-          <textarea id="prompt" rows="2" placeholder="Votre demande…" aria-label="Votre demande"></textarea>
-          <div class="composer-buttons">
-            <button class="btn btn-ghost hidden" id="cite" type="button"
-                    title="Citer une autre conversation du projet : l'IA ira la lire">Citer…</button>
-            <button class="btn btn-ghost hidden" id="discuss" type="submit" value="discuss"
-                    title="Parler au chef d'orchestre : il répond et ne modifie rien">Discuter avec le chef</button>
-            <button class="btn btn-ghost" id="autonomous" type="button"
-                    title="L'IA travaille seule vers un objectif, tour après tour, jusqu'à ce que ce soit fini">Autonome…</button>
-            <select id="compare-with" class="hidden" aria-label="Comparer avec une autre IA"
-                    title="Une autre IA répond aussi, en lecture seule, à côté de la réponse"></select>
-            <button class="btn btn-primary" id="send" type="submit" value="plan">Envoyer</button>
           </div>
         </form>
       </section>
     </main>
   </div>
 
+  <dialog id="hub-dialog" class="dialog dialog-wide hub-dialog" aria-labelledby="hub-title">
+    <div class="hub-head">
+      <h2 id="hub-title">Réglages</h2>
+      <span class="quota-note" id="hub-who"></span>
+    </div>
+    <section class="hub-group" aria-labelledby="hub-me-title">
+      <h3 id="hub-me-title">Pour vous</h3>
+      <div class="hub-grid">
+        <button class="hub-item hidden" id="my-accounts" type="button"><strong>Mes comptes IA</strong>
+          <span>Claude et ChatGPT : vos demandes utilisent vos abonnements</span></button>
+        <button class="hub-item" id="quota-open" type="button"><strong>Quota des IA</strong>
+          <span>Ce qui reste à Claude et à ChatGPT, et quand ça revient</span></button>
+        <button class="hub-item" id="appearance" type="button"><strong>Apparence</strong>
+          <span>Clair ou sombre</span></button>
+        <button class="hub-item" id="notifications" type="button"><strong>Notifications</strong>
+          <span>Être prévenu sur cet appareil quand une réponse est prête</span></button>
+        <button class="hub-item adv" id="offline-toggle" type="button"><strong>Hors connexion : non</strong>
+          <span>Garder les conversations lisibles ici quand le PC ne répond pas</span></button>
+        <button class="hub-item hidden adv" id="my-password" type="button"><strong>Mot de passe</strong>
+          <span>Changer le vôtre</span></button>
+        <button class="hub-item hidden adv" id="devices" type="button"><strong>Appareils</strong>
+          <span>Où vous êtes connecté ; connecter un téléphone par QR code</span></button>
+      </div>
+    </section>
+    <section class="hub-group" aria-labelledby="hub-server-title">
+      <h3 id="hub-server-title">L'appli</h3>
+      <div class="hub-grid">
+        <button class="hub-item hidden" id="updates" type="button"><strong>Mises à jour <span class="hub-badge hidden" id="updates-badge">à faire</span></strong>
+          <span id="updates-sub">Vérifier s'il y a une nouvelle version</span></button>
+        <button class="hub-item hidden" id="settings" type="button"><strong>IA proposées et sauvegardes</strong>
+          <span>Les IA de la liste, celle par défaut, la sauvegarde de chaque jour</span></button>
+        <button class="hub-item" id="advanced-toggle" type="button"><strong>Fonctions avancées : non</strong>
+          <span>Plusieurs IA, travail autonome, comparer, planifier, espaces isolés, partage, coffres… (sur cet appareil)</span></button>
+        <button class="hub-item hidden adv" id="people" type="button"><strong>Personnes</strong>
+          <span>Inviter quelqu'un, gérer les accès</span></button>
+        <button class="hub-item hidden adv" id="server" type="button"><strong>État et sauvegardes</strong>
+          <span>Disque, base, journal ; restaurer une sauvegarde</span></button>
+        <button class="hub-item hidden adv" id="consumption" type="button"><strong>Consommation</strong>
+          <span>Qui a utilisé combien d'IA</span></button>
+        <button class="hub-item hidden adv" id="vaults" type="button"><strong>Coffres Obsidian</strong>
+          <span>Les coffres de ce PC : les lire, en choisir un</span></button>
+        <button class="hub-item hidden adv" id="trials" type="button"><strong>Essais à faire</strong>
+          <span>Ce qui n'a jamais été essayé en vrai</span></button>
+      </div>
+    </section>
+    <section class="hub-group" aria-labelledby="hub-help-title">
+      <h3 id="hub-help-title">Aide</h3>
+      <div class="hub-grid">
+        <button class="hub-item" id="getting-started" type="button"><strong>Bien démarrer</strong>
+          <span>Comment s'en servir, en trois pas</span></button>
+        <button class="hub-item adv" id="diagnostics" type="button"><strong>Vérifier le fonctionnement</strong>
+          <span>Les IA, le moteur des espaces isolés, sans rien envoyer</span></button>
+        <button class="hub-item adv" id="import" type="button"><strong>Importer des conversations</strong>
+          <span>De ChatGPT, de Claude, de Claude Code, de Codex ou d'un projet AI Hub</span></button>
+        <button class="hub-item adv" id="show-keys" type="button"><strong>Raccourcis clavier</strong>
+          <span>Ctrl+K pour aller à une conversation…</span></button>
+      </div>
+    </section>
+    <div class="dialog-actions">
+      <button class="btn btn-danger-ghost hidden" id="logout" type="button">Se déconnecter</button>
+      <button class="btn btn-ghost" id="hub-close" type="button">Fermer</button>
+    </div>
+  </dialog>
+
   <dialog id="new-dialog" class="dialog">
     <form method="dialog" id="new-form">
       <h2>Nouvelle conversation</h2>
-      <label>Modèle de travail <select id="new-template"><option value="">Conversation libre</option></select></label>
+      <label>Partir d'un modèle de travail <select id="new-template"><option value="">Non : conversation libre</option></select></label>
       <div id="template-variables"></div>
       <p class="quota-note hidden" id="template-description"></p>
       <button class="btn btn-ghost btn-small hidden" id="delete-template" type="button">Supprimer ce modèle personnel</button>
-      <label>Titre
-        <input name="title" required maxlength="120" placeholder="ex. Refonte du site">
+      <label>Titre (facultatif)
+        <input name="title" maxlength="120" placeholder="Vide : le début de votre première demande">
       </label>
       <label>Projet
         <select name="project_id" id="new-project-select"></select>
       </label>
-      <label id="new-workdir-row">Dossier de travail (chemin complet)
-        <input name="workdir" id="new-workdir" placeholder="D:\projets\mon-projet">
-        <button class="btn btn-ghost btn-small" id="new-create-folder" type="button">Créer ce dossier sur le serveur</button>
-      </label>
-      <label>Fonctionnement
-        <select name="mode" id="new-kind">
-          <option value="single">Une IA : un agent répond</option>
-          <option value="orchestration">Orchestration : un chef découpe le travail entre plusieurs agents</option>
-        </select>
-      </label>
-      <label id="new-model-wrap">Modèle
+      <label id="new-model-wrap">IA
         <select name="model" id="new-model"></select>
       </label>
-      <label id="new-conductor-wrap" class="hidden">Modèle du chef d'orchestre
-        <select name="conductor_model" id="new-conductor"></select>
-      </label>
-      <label id="new-assignment-wrap" class="hidden">Choix des IA pour les sous-tâches
-        <select name="assignment_mode" id="new-assignment">
-          <option value="auto">Automatique : la meilleure IA selon les benchmarks</option>
-          <option value="manual">Manuel : je choisis moi-même</option>
-        </select>
-      </label>
-      <label>Mode de permission
-        <select name="permission_mode" id="new-mode">
-          <option value="manual">Manuel : chaque action demande votre accord</option>
-          <option value="plan">Plan : l'agent propose un plan avant d'agir</option>
-          <option value="bypass">Sans permission : l'agent agit sans demander</option>
-        </select>
-      </label>
-      <div class="warning hidden" id="new-bypass-warning">
-        <p id="new-bypass-text"></p>
-        <label class="check"><input type="checkbox" name="confirm_bypass"> J'ai compris, j'active ce mode</label>
-      </div>
+      <details class="new-advanced" id="new-advanced">
+        <summary>Options avancées : dossier, plusieurs IA, espace isolé, permissions</summary>
+        <label id="new-workdir-row">Dossier de travail (chemin complet ; vide : celui du projet, sinon un dossier rien qu'à elle)
+          <input name="workdir" id="new-workdir" placeholder="D:\projets\mon-projet">
+          <button class="btn btn-ghost btn-small" id="new-create-folder" type="button">Créer ce dossier sur le serveur</button>
+        </label>
+        <label>Fonctionnement
+          <select name="mode" id="new-kind">
+            <option value="single">Une IA : elle répond</option>
+            <option value="orchestration">Plusieurs IA : un chef découpe le travail entre elles</option>
+          </select>
+        </label>
+        <label id="new-conductor-wrap" class="hidden">IA du chef d'orchestre
+          <select name="conductor_model" id="new-conductor"></select>
+        </label>
+        <label id="new-assignment-wrap" class="hidden">Choix des IA pour les sous-tâches
+          <select name="assignment_mode" id="new-assignment">
+            <option value="auto">Automatique : la meilleure IA selon les benchmarks</option>
+            <option value="manual">Manuel : je choisis moi-même</option>
+          </select>
+        </label>
+        <label>Ce que l'IA peut faire sans vous demander
+          <select name="permission_mode" id="new-mode">
+            <option value="manual">Rien : chaque action demande votre accord</option>
+            <option value="plan">Elle propose un plan avant d'agir</option>
+            <option value="bypass">Tout : elle agit sans demander</option>
+          </select>
+        </label>
+        <div class="warning hidden" id="new-bypass-warning">
+          <p id="new-bypass-text"></p>
+          <label class="check"><input type="checkbox" name="confirm_bypass"> J'ai compris, j'active ce mode</label>
+        </div>
+      </details>
       <p class="form-error" id="new-error" role="alert"></p>
       <div class="dialog-actions">
         <button class="btn btn-ghost" value="cancel" formnovalidate>Annuler</button>
@@ -331,22 +401,22 @@
       <label>Nom
         <input name="name" id="project-name" required maxlength="120" placeholder="ex. Site de la boutique">
       </label>
-      <label>Description (facultative)
+      <label class="adv">Description (facultative)
         <textarea name="description" id="project-description" rows="3" maxlength="2000"
                   placeholder="De quoi parle ce projet"></textarea>
       </label>
-      <label>Dossier de travail par défaut (facultatif)
+      <label>Dossier de travail (facultatif : sans dossier, chaque conversation a le sien)
         <input name="workdir" id="project-workdir" placeholder="D:\projets\boutique">
-        <button class="btn btn-ghost btn-small" id="project-create-folder" type="button">Créer ce dossier sur le serveur</button>
+        <button class="btn btn-ghost btn-small adv" id="project-create-folder" type="button">Créer ce dossier sur le serveur</button>
       </label>
-      <label id="project-vault-row">Coffre des notes de ce projet (vide : celui des réglages)
+      <label id="project-vault-row" class="adv">Coffre des notes de ce projet (vide : celui des réglages)
         <input id="project-vault" placeholder="D:\notes\mon-projet">
       </label>
-      <label>Consignes pour l'IA (facultatives, pour toutes les conversations du projet)
+      <label>Consignes pour l'IA (facultatives, pour toutes ses conversations)
         <textarea id="project-instructions" rows="3" maxlength="4000"
                   placeholder="ex. Réponds en français, sois bref, le code est en Python 3.12"></textarea>
       </label>
-      <p class="quota-note">Les conversations d'un même projet peuvent se consulter entre elles : l'IA d'une
+      <p class="quota-note adv">Les conversations d'un même projet peuvent se consulter entre elles : l'IA d'une
         conversation peut lister, chercher et lire les autres (en lecture seule). Une conversation dont le
         partage est coupé ne lit pas les autres et n'est pas lue.</p>
       <p class="form-error" id="project-error" role="alert"></p>
@@ -355,9 +425,9 @@
                 title="Ses conversations restent, sans projet">Supprimer le projet</button>
         <button class="btn btn-danger-ghost hidden" type="button" id="project-delete-all"
                 title="Le projet et toutes ses conversations, définitivement">Supprimer avec ses conversations</button>
-        <button class="btn btn-ghost hidden" type="button" id="project-share"
+        <button class="btn btn-ghost hidden adv" type="button" id="project-share"
                 title="Partager tout le projet avec des personnes de ce serveur">Partager…</button>
-        <a class="btn btn-ghost hidden" id="project-export" download
+        <a class="btn btn-ghost hidden adv" id="project-export" download
            title="Le projet, ses conversations, ses consignes, ses documents et ses notes, dans un seul .zip">Exporter le projet (.zip)</a>
         <button class="btn btn-ghost" type="button" id="project-cancel">Annuler</button>
         <button class="btn btn-primary" type="submit" id="project-save">Enregistrer</button>
@@ -367,9 +437,9 @@
 
   <dialog id="settings-dialog" class="dialog dialog-wide">
     <form id="settings-form">
-      <h2>Réglages</h2>
-      <p class="quota-note" id="settings-file"></p>
-      <fieldset>
+      <h2>IA proposées et sauvegardes</h2>
+      <p class="quota-note adv" id="settings-file"></p>
+      <fieldset class="adv">
         <legend>Dossiers</legend>
         <label>Dossiers de travail autorisés, un par ligne (vide : tous)
           <textarea id="set-allowed_roots" rows="3" placeholder="D:\projets"></textarea>
@@ -386,10 +456,10 @@
         <legend>IA</legend>
         <div class="check-row" id="set-models"></div>
         <div class="field-row">
-          <label>Modèle par défaut <select id="set-default_model"></select></label>
-          <label>Chef d'orchestre par défaut <select id="set-default_conductor"></select></label>
+          <label>IA par défaut <select id="set-default_model"></select></label>
+          <label class="adv">Chef d'orchestre par défaut <select id="set-default_conductor"></select></label>
         </div>
-        <label>Seuil d'alerte du quota (%)
+        <label class="adv">Seuil d'alerte du quota (%)
           <input id="set-quota_warning" type="number" min="50" max="99" step="1">
         </label>
       </fieldset>
@@ -397,10 +467,12 @@
         <legend>Sauvegardes</legend>
         <label class="check"><input type="checkbox" id="set-backup_enabled"> Sauvegarde quotidienne de la base</label>
         <div class="field-row">
-          <label>Dossier (vide : data/sauvegardes) <input id="set-backup_dir"></label>
+          <label class="adv">Dossier (vide : data/sauvegardes) <input id="set-backup_dir"></label>
           <label>Gardées <input id="set-backup_keep" type="number" min="1" max="365" step="1"></label>
         </div>
       </fieldset>
+      <details class="settings-more adv" id="settings-more">
+      <summary>Réglages avancés : espaces isolés, sessions, mémoire, outils, alertes ntfy</summary>
       <fieldset>
         <legend>Espaces isolés</legend>
         <p class="quota-note">Utilisez un moteur Docker Sandboxes dédié, sans comptes IA globaux ni outils du PC. Les comptes se connectent depuis chaque conversation isolée. Aucun téléchargement automatique.</p>
@@ -461,6 +533,7 @@
           </select>
         </label>
       </fieldset>
+      </details>
       <p class="warning hidden" id="settings-overridden"></p>
       <label id="settings-password-wrap" class="hidden">Mot de passe, pour confirmer
         <input type="password" id="settings-password" autocomplete="current-password">

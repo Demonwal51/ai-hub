@@ -936,6 +936,35 @@ def give_to(conn, plan_id, agent_id):
     return [st["position"] for st in moved]
 
 
+SWITCHABLE = ("validated", "running", "error", "stopped")
+
+
+def switch_plan(conn, plan_id, agent_id):
+    """« Passer la suite sur … » (1.1.1): every task not started yet, stopped or failed goes to `agent_id`.
+
+    A task running or done keeps its own. The plan may be validated, running or
+    interrupted: its content stays as validated, only who does the rest changes.
+    Returns the positions moved (none: nothing was left on another AI)."""
+    plan = get_plan(conn, plan_id)
+    if plan["status"] not in SWITCHABLE and not can_resume_plan(conn, plan):
+        raise StoreError("seul un plan validé, en cours ou interrompu change d'IA pour la suite")
+    provider, model = _agent_snapshot(conn, agent_id, None)
+    moved = [st for st in plan["subtasks"] if st["status"] in ("pending", "error", "stopped") and st["agent_id"] != agent_id]
+    with transaction(conn):
+        for st in moved:
+            conn.execute("UPDATE subtasks SET agent_id = ?, provider = ?, model = ?, assignment_reason = ? WHERE id = ?",
+                         (agent_id, provider, model, "suite passée sur une autre IA", st["id"]))
+    return [st["position"] for st in moved]
+
+
+def set_conductor(conn, conversation_id, agent_id):
+    """The conductor changed by « Passer la suite sur … », even while its plan runs: its synthesis is the next thing it writes."""
+    get_conversation(conn, conversation_id)
+    get_agent(conn, agent_id)
+    conn.execute("UPDATE conversations SET conductor_agent_id = ?, updated_at = ? WHERE id = ?",
+                 (agent_id, utc_now(), conversation_id))
+
+
 def open_plan(conn, conversation_id):
     return _one(
         conn,

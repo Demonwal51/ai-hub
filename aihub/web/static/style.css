@@ -89,7 +89,6 @@ button, input, select, textarea { font: inherit; color: inherit; }
 
 /* --- main --- */
 .main { min-width: 0; min-height: 0; display: flex; flex-direction: column; }
-.empty { margin: auto; color: var(--muted); padding: 24px; text-align: center; }
 .conversation { display: flex; flex-direction: column; height: 100%; min-height: 0; position: relative; }
 
 .conv-header {
@@ -359,9 +358,6 @@ select { padding: 6px 8px; border: 1px solid var(--border); border-radius: 8px; 
 .msg-copy { margin-left: auto; background: none; border: 0; padding: 0 2px; color: var(--muted); font-size: 12px; cursor: pointer; opacity: .7; }
 .msg-copy:hover, .msg-copy:focus-visible { color: var(--accent); opacity: 1; }
 .composer textarea { min-height: 44px; overflow-y: auto; }
-.empty { display: flex; flex-direction: column; align-items: center; gap: 12px; }
-.empty img { border-radius: 12px; opacity: .9; }
-.empty p { margin: 0; }
 .conv-running { color: var(--accent); font-weight: 600; }
 .older { align-self: center; }
 
@@ -560,16 +556,6 @@ body.offline .composer, body.offline #fresh-banner { opacity: .55; pointer-event
 .dialog select { width: 100%; }
 .isolation-editor label, .isolation-fields { min-width: 0; grid-template-columns: minmax(0, 1fr); }
 .dialog label { line-height: 1.5; }
-.welcome-mark { width: 68px; height: 68px; display: grid; place-items: center; color: var(--accent); font-size: 44px; border-radius: 22px; background: var(--user-bg); }
-.empty { width: min(940px, 100%); padding: 40px; gap: 20px; }
-.empty h1 { color: var(--text); font-size: clamp(28px, 3.5vw, 44px); line-height: 1.15; letter-spacing: -1.5px; margin: 0; max-width: 650px; }
-.welcome-eyebrow { color: var(--accent); letter-spacing: .12em; font-weight: 650; font-size: 11px; }
-.welcome-lead { max-width: 560px; font-size: 17px; line-height: 1.65; }
-.welcome-features { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 14px; margin: 30px 0 10px; width: 100%; text-align: left; }
-.welcome-features > div { background: var(--panel); border: 1px solid var(--border); border-radius: 18px; padding: 22px; }
-.welcome-features span { display: block; font-size: 25px; color: var(--accent); margin-bottom: 15px; }
-.welcome-features strong { display: block; color: var(--text); font-size: 14px; margin-bottom: 8px; }
-.welcome-features p { font-size: 13px; line-height: 1.6; }
 :root[data-density="compact"] .conv-item { padding-top: 6px; padding-bottom: 6px; }
 :root[data-density="compact"] .messages { gap: 12px; padding-top: 16px; padding-bottom: 16px; }
 :root[data-density="compact"] .msg.assistant { padding: 12px 16px; }
@@ -579,7 +565,6 @@ body.offline .composer, body.offline #fresh-banner { opacity: .55; pointer-event
   .messages { padding: 16px 12px; gap: 16px; }
   .composer { padding: 12px 12px calc(12px + env(safe-area-inset-bottom)); }
   .dialog form, .dialog-content { padding: 20px; }
-  .welcome-features { grid-template-columns: 1fr; }
 }
 @media (prefers-reduced-motion: reduce) {
   *, *::before, *::after { scroll-behavior: auto !important; transition: none !important; animation: none !important; }
@@ -674,3 +659,138 @@ body.offline .composer, body.offline #fresh-banner { opacity: .55; pointer-event
 .trial textarea { width: 100%; box-sizing: border-box; }
 .trial-actions { display: flex; gap: 6px; flex-wrap: wrap; margin-top: 6px; }
 .trial-badge-ok { color: var(--ok); }
+
+/* « Changer d'IA pour la suite… » (1.1.1). */
+.plan-switch { margin: 8px 0; padding: 6px 10px; border: 1px dashed var(--border); border-radius: 10px; }
+.plan-switch summary { cursor: pointer; color: var(--accent); }
+
+/* --- 1.2: simpler to use --------------------------------------------------------------- */
+
+/* The home: write the request at once. */
+.home { width: min(780px, 100%); margin: auto; padding: 32px 24px; display: flex; flex-direction: column; gap: 18px; }
+.home-title { margin: 0; font-size: clamp(24px, 3vw, 34px); line-height: 1.2; letter-spacing: -.8px; color: var(--text); }
+.home-composer { display: flex; flex-direction: column; gap: 10px; padding: 14px; background: var(--panel); border: 1px solid var(--border); border-radius: 18px; box-shadow: var(--shadow); }
+.home-composer:focus-within { border-color: var(--accent); }
+.home-composer textarea { width: 100%; box-sizing: border-box; resize: vertical; min-height: 92px; max-height: 45vh; padding: 10px 12px; border: 0; background: none; font-size: 16px; line-height: 1.5; outline: none; }
+.home-bar { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
+.home-bar .grow { flex: 1; }
+.home-chip { display: inline-flex; align-items: center; gap: 6px; font-size: 13px; color: var(--muted); }
+.home-chip select { max-width: 220px; padding: 5px 8px; border: 1px solid var(--border); border-radius: 9px; background: var(--bg); font-size: 13px; }
+.home-folder { max-width: 260px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.home-composer .form-error:empty { display: none; }
+.home-guest { color: var(--muted); margin: 0; }
+.home-recent h2 { font-size: 13px; text-transform: uppercase; letter-spacing: .08em; color: var(--muted); margin: 6px 0 8px; font-weight: 650; }
+.home-recent-list { display: grid; grid-template-columns: repeat(auto-fill, minmax(200px, 1fr)); gap: 8px; }
+.home-recent-item { display: flex; flex-direction: column; gap: 4px; text-align: left; padding: 10px 12px; border: 1px solid var(--border); border-radius: 12px; background: var(--panel); color: inherit; font: inherit; cursor: pointer; min-width: 0; }
+.home-recent-item:hover, .home-recent-item:focus-visible { border-color: var(--accent); }
+.home-recent-item strong { font-weight: 550; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.home-recent-item span { font-size: 12px; color: var(--muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.home-links { display: flex; flex-wrap: wrap; gap: 8px; }
+.home-back { align-self: flex-start; }
+
+/* « Réglages »: one window, grouped and explained. */
+.sidebar-foot .hub-button { display: inline-flex; align-items: center; gap: 6px; }
+.hub-badge { display: inline-block; font-size: 11px; line-height: 1.4; padding: 0 7px; border-radius: 999px; background: var(--accent); color: var(--accent-text); font-weight: 650; }
+.hub-dialog { width: min(880px, calc(100vw - 32px)); padding: 26px; }
+.hub-dialog[open] { display: flex; flex-direction: column; gap: 14px; }
+.hub-head { display: flex; align-items: baseline; justify-content: space-between; gap: 10px; flex-wrap: wrap; }
+.hub-head h2 { margin: 0; }
+.hub-group h3 { margin: 4px 0 8px; font-size: 13px; text-transform: uppercase; letter-spacing: .08em; color: var(--muted); font-weight: 650; }
+.hub-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(240px, 1fr)); gap: 8px; }
+.hub-item { display: flex; flex-direction: column; gap: 3px; text-align: left; padding: 11px 13px; border: 1px solid var(--border); border-radius: 12px; background: var(--panel); color: inherit; font: inherit; cursor: pointer; }
+.hub-item:hover, .hub-item:focus-visible { border-color: var(--accent); background: var(--panel-2); }
+.hub-item strong { font-weight: 600; display: flex; align-items: center; gap: 6px; }
+.hub-item span { font-size: 12.5px; color: var(--muted); line-height: 1.45; }
+.hub-item .hub-badge { color: var(--accent-text); font-size: 11px; }
+
+/* Grouped menus: a heading per group, the menu scrolls when it is long. */
+.menu-grouped { max-height: min(72dvh, 640px); overflow-y: auto; }
+.menu-heading { margin: 8px 10px 2px; font-size: 11px; text-transform: uppercase; letter-spacing: .08em; color: var(--muted); font-weight: 650; }
+.menu-heading:first-child { margin-top: 4px; }
+#composer-menu { min-width: 300px; }
+#composer-menu .menu-field { white-space: nowrap; }
+#composer-menu .menu-field select { max-width: 170px; }
+
+/* The comparison chosen in « ＋ », said above the composer. */
+.compare-chip { display: flex; align-items: center; justify-content: space-between; gap: 8px; padding: 8px 24px 0; background: var(--panel); border-top: 1px solid var(--border); font-size: 13px; color: var(--accent); }
+
+/* The server runs another page than this one. */
+.reload-banner { position: fixed; top: calc(10px + env(safe-area-inset-top)); left: 50%; transform: translateX(-50%); z-index: 40; display: flex; align-items: center; gap: 10px; padding: 8px 10px 8px 14px; border: 1px solid var(--accent); border-radius: 12px; background: var(--panel); box-shadow: var(--shadow); font-size: 14px; max-width: calc(100vw - 24px); }
+
+/* What is rarely needed waits behind a summary. */
+.new-advanced, .settings-more, .getting-started-more { border: 1px solid var(--border); border-radius: 12px; padding: 8px 12px; }
+.new-advanced > summary, .settings-more > summary, .getting-started-more > summary { cursor: pointer; color: var(--accent); font-weight: 550; padding: 2px 0; }
+.new-advanced[open], .settings-more[open] { display: flex; flex-direction: column; gap: 12px; padding-bottom: 12px; }
+.new-advanced[open] > summary, .settings-more[open] > summary { margin-bottom: 4px; }
+.getting-started-more ul { margin: 8px 0 4px; padding-left: 1.2rem; display: flex; flex-direction: column; gap: 6px; }
+
+/* Favorites, in a window of their own. */
+.favorites-dialog { padding: 26px; }
+.favorites-dialog[open] { display: flex; flex-direction: column; gap: 12px; }
+.favorites-list { display: flex; flex-direction: column; gap: 2px; max-height: 50dvh; overflow: auto; }
+
+/* « Mises à jour ». */
+.updates-state { margin: 0; font-weight: 600; padding: 10px 12px; border-radius: 10px; }
+.updates-state.ok { color: var(--ok); background: var(--panel-2); }
+.updates-state.todo { color: var(--accent); background: var(--user-bg); }
+.updates-changes { margin: 0; padding-left: 1.2rem; display: flex; flex-direction: column; gap: 4px; max-height: 30dvh; overflow: auto; }
+.updates-notes { max-height: 34dvh; overflow: auto; border: 1px solid var(--border); border-radius: 10px; padding: 10px 14px; }
+.updates-body h3 { margin: 6px 0 0; font-size: 15px; }
+.updates-body .warning { margin: 0; }
+
+@media (max-width: 760px) {
+  .home { padding: 16px 12px; gap: 14px; }
+  .home-bar .grow { display: none; }
+  .home-bar #home-send { margin-left: auto; }
+  .home-chip select { max-width: 160px; }
+  .hub-dialog { padding: 18px; }
+  .hub-grid { grid-template-columns: minmax(0, 1fr); }
+  .compare-chip { padding: 8px 12px 0; }
+}
+
+/* --- 1.2.1: the essentials only, as in Claude Code ------------------------------------- */
+
+/* What is rarely needed waits behind « Fonctions avancées » (Réglages), on each device. */
+:root[data-advanced="off"] .adv { display: none !important; }
+:root[data-advanced="off"] #status-pill.ok { display: none; }        /* said only when an AI is missing */
+:root[data-advanced="off"] .quota-mini.quiet { display: none; }      /* said only when a quota runs out */
+
+/* One input box: the request, then a bar with the file, the AI, the mode and the arrow. */
+.composer { display: block; border-top: 0; background: none; padding: 6px max(24px, calc((100% - 960px) / 2)) calc(16px + env(safe-area-inset-bottom)); }
+.composer-box { display: flex; flex-direction: column; gap: 4px; padding: 8px 10px; border: 1px solid var(--border); border-radius: 18px; background: var(--panel); box-shadow: var(--shadow); }
+.composer-box:focus-within { border-color: var(--accent); }
+.composer .composer-box textarea { width: 100%; box-sizing: border-box; min-height: 44px; max-height: 40vh; padding: 8px 6px 2px; border: 0; border-radius: 0; background: none; outline: none; resize: none; }
+.composer-bar { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
+.composer-bar .grow, .home-bar .grow { flex: 1; }
+.composer-bar .tool-icon { min-width: 0; padding: 4px 8px; border-color: transparent; }
+.composer-bar .tool-icon:hover { border-color: var(--border); }
+.bar-select { max-width: 220px; padding: 5px 8px; border: 1px solid var(--border); border-radius: 9px; background: var(--bg); font-size: 13px; color: var(--muted); }
+.bar-select:hover, .bar-select:focus { color: var(--text); }
+.send-button { width: 36px; height: 36px; min-height: 36px; padding: 0; border-radius: 50%; font-size: 18px; font-weight: 700; line-height: 1; }
+.pending-files, .compare-chip { background: none; border-top: 0; padding: 8px max(24px, calc((100% - 960px) / 2)) 0; }
+
+/* The home: the same box, bigger. */
+.home-composer { border-radius: 20px; }
+.home-composer textarea { min-height: 110px; }
+
+/* The list: a project's « … » when the pointer is on it; the archives at the end. */
+@media (hover: hover) {
+  .project-head .project-more { opacity: 0; transition: opacity .15s; }
+  .project-head:hover .project-more, .project-head .project-more:focus-visible { opacity: 1; }
+}
+.list-archives { margin: 10px 8px 4px; padding: 4px 0; background: none; border: 0; color: var(--muted); font-size: 12px; cursor: pointer; text-align: left; }
+.list-archives:hover { color: var(--accent); }
+
+/* « Réglages »: a short list. */
+.hub-dialog { width: min(620px, calc(100vw - 32px)); }
+.hub-grid { grid-template-columns: minmax(0, 1fr); gap: 4px; }
+.hub-item { padding: 9px 12px; }
+
+@media (max-width: 760px) {
+  .composer { padding: 6px 10px calc(10px + env(safe-area-inset-bottom)); }
+  .bar-select { max-width: 140px; }
+  /* One line on a phone: the old header rules (#conv-model…) gave them the whole width. */
+  .composer-bar #conv-model { max-width: 112px; }
+  .composer-bar #conv-mode { max-width: 104px; }
+  .pending-files, .compare-chip { padding: 8px 12px 0; }
+}

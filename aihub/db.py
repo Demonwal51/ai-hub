@@ -10,7 +10,7 @@ import sqlite3
 from contextlib import contextmanager
 from datetime import datetime, timezone
 
-SCHEMA_VERSION = 27
+SCHEMA_VERSION = 28
 
 # One statement per string: triggers contain semicolons, so the schema
 # cannot be split on ";" and executescript() would commit mid-migration.
@@ -895,6 +895,42 @@ _SCHEMA_V27 = [
 ]
 
 
+# 1.1.1: « Passer la suite sur … » — a plan validated, running or interrupted may
+# give its tasks not started yet (or stopped, or failed) to another agent, on the
+# user's click; a task running or done keeps its own. Built on the v27 rule (the
+# one in force), every column and exception kept.
+_SCHEMA_V28 = [
+    "DROP TRIGGER subtasks_frozen_update",
+    """
+    CREATE TRIGGER subtasks_frozen_update
+    BEFORE UPDATE OF description, agent_id, provider, model, position, title, files_json,
+                     kind, assignment_reason ON subtasks
+    WHEN (SELECT status FROM plans WHERE id = OLD.plan_id) <> 'proposed'
+         AND NOT (NEW.agent_id IS NULL
+                  AND NEW.description IS OLD.description
+                  AND NEW.provider IS OLD.provider
+                  AND NEW.model IS OLD.model
+                  AND NEW.position IS OLD.position
+                  AND NEW.title IS OLD.title
+                  AND NEW.files_json IS OLD.files_json
+                  AND NEW.kind IS OLD.kind
+                  AND NEW.assignment_reason IS OLD.assignment_reason)
+         AND NOT ((SELECT status FROM plans WHERE id = OLD.plan_id) IN ('validated', 'running', 'error', 'stopped')
+                  AND OLD.status IN ('pending', 'error', 'stopped')
+                  AND NEW.agent_id IS NOT NULL
+                  AND NEW.agent_id IS NOT OLD.agent_id   -- given to another agent, never a model changed alone
+                  AND NEW.description IS OLD.description
+                  AND NEW.position IS OLD.position
+                  AND NEW.title IS OLD.title
+                  AND NEW.files_json IS OLD.files_json
+                  AND NEW.kind IS OLD.kind)
+    BEGIN
+        SELECT RAISE(ABORT, 'plan is frozen');
+    END
+    """,
+]
+
+
 class SchemaError(Exception):
     """The database file cannot be used by this version of the code."""
 
@@ -1031,6 +1067,9 @@ def migrate(conn: sqlite3.Connection) -> None:
                 conn.execute(statement)
         if version < 27:
             for statement in _SCHEMA_V27:
+                conn.execute(statement)
+        if version < 28:
+            for statement in _SCHEMA_V28:
                 conn.execute(statement)
         # PRAGMA does not accept bound parameters; SCHEMA_VERSION is an int constant.
         conn.execute(f"PRAGMA user_version = {SCHEMA_VERSION}")

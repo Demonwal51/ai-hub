@@ -1795,6 +1795,81 @@ MUTATIONS.append(('v115: a network folder in the settings resolved', 'aihub/conf
 MUTATIONS.append(('v115: a huge folder read whole', 'aihub/browse.py',
                  '                if len(items) >= MAX_SCAN:\n', '                if False:\n'))
 
+# v116 (1.2.4): the update checked against the release's SHA256SUMS, undone without the new code
+# (old dependencies back), its failure explained in the journal; the server stops without waiting 20 s.
+MUTATIONS.append(('v116: a stopped server held by its last resort', 'aihub/web/app.py',
+                 '        last_resort.daemon = True\n', ''))
+MUTATIONS.append(("v116: the update probe left to the AIs' processes", 'aihub/web/app.py',
+                 "    update_probe = os.environ.pop('AIHUB_UPDATE_PROBE', None)\n",
+                 "    update_probe = os.environ.get('AIHUB_UPDATE_PROBE')\n"))
+MUTATIONS.append(('v116: the health asks the environment again', 'aihub/web/app.py',
+                 "        return {'ready': True, 'version': __version__, 'probe': update_probe}\n",
+                 "        return {'ready': True, 'version': __version__, 'probe': os.environ.get('AIHUB_UPDATE_PROBE')}\n"))
+MUTATIONS.append(('v116: the undoing runs the new code', 'aihub/updater.py',
+                 '        if process is not None:\n            _kill_tree(process)\n',
+                 '        if process is not None:\n            from .providers.claude_code import _kill_tree as late\n'
+                 '            late(process)\n'))
+MUTATIONS.append(('v116: SHA256SUMS of another release', 'aihub/updater.py',
+                 '"page": release.get("html_url"), "sums": sums})', '"page": release.get("html_url"), "sums": None})'))
+MUTATIONS.append(('v116: a release without SHA256SUMS not said', 'aihub/updater.py',
+                 '    if not sums:\n        raise UpdateError(', '    if False:\n        raise UpdateError('))
+MUTATIONS.append(('v116: SHA256SUMS from anywhere', 'aihub/updater.py',
+                 '    if not sums.startswith(f"https://github.com/{REPO}/releases/download/"):\n', '    if False:\n'))
+MUTATIONS.append(('v116: the SHA256 not compared', 'aihub/updater.py',
+                 '        if hashlib.sha256(data).hexdigest() != published_sha256(sums, target.name, get):\n',
+                 '        if published_sha256(sums, target.name, get) is None:\n'))
+MUTATIONS.append(('v116: SHA256SUMS of any size', 'aihub/updater.py',
+                 '    if len(data) > MAX_SUMS:\n', '    if False:\n'))
+MUTATIONS.append(('v116: SHA256SUMS out of reach not refused', 'aihub/updater.py',
+                 '        raise UpdateError(f"liste d\'empreintes SHA256SUMS impossible à lire : {exc}"[:300]) from None\n',
+                 '        raise\n'))
+MUTATIONS.append(('v116: a malformed SHA256SUMS line read', 'aihub/updater.py',
+                 '    if not entries or None in entries:\n', '    if not entries:\n'))
+MUTATIONS.append(('v116: an empty SHA256SUMS read', 'aihub/updater.py',
+                 '    if not entries or None in entries:\n', '    if None in entries:\n'))
+MUTATIONS.append(('v116: no SHA256SUMS line for the file', 'aihub/updater.py',
+                 '    if len(found) != 1:\n', '    if len(found) > 1:\n'))
+MUTATIONS.append(('v116: two SHA256SUMS lines for the file', 'aihub/updater.py',
+                 '    if len(found) != 1:\n', '    if not found:\n'))
+MUTATIONS.append(('v116: the saved base keeps its write-ahead log', 'aihub/updater.py',
+                 '            copy_database(database, saved_db, standalone=True)\n', '            copy_database(database, saved_db)\n'))
+MUTATIONS.append(('v116: a standalone copy in write-ahead mode', 'aihub/updater.py',
+                 "                target.execute('PRAGMA journal_mode = DELETE')\n", '                pass\n'))
+MUTATIONS.append(('v116: a failed pip not undone', 'aihub/updater.py',
+                 '            pip_ran = True  # even a pip that fails may have changed the venv\n            install_requirements()\n',
+                 '            install_requirements()\n            pip_ran = True\n'))
+MUTATIONS.append(('v116: the old dependencies not put back', 'aihub/updater.py',
+                 '        if pip_ran and requirements_changed:\n', '        if False:\n'))
+MUTATIONS.append(('v116: the same dependencies installed again', 'aihub/updater.py',
+                 '        if pip_ran and requirements_changed:\n', '        if pip_ran:\n'))
+MUTATIONS.append(('v116: requirements compared with their line ends', 'aihub/updater.py',
+                 '    return path.read_bytes().splitlines() if path.is_file() else None\n',
+                 '    return path.read_bytes() if path.is_file() else None\n'))
+MUTATIONS.append(('v116: a failed reinstall stops the undoing', 'aihub/updater.py',
+                 '            except Exception as exc:  # the old server is started all the same\n',
+                 '            except OSError as exc:  # the old server is started all the same\n'))
+MUTATIONS.append(('v116: the exit code of the new server not said', 'aihub/updater.py',
+                 '            cause = f"le nouveau serveur s\'est arrêté (code de sortie {code})"\n', '            cause = None\n'))
+MUTATIONS.append(('v116: the last answer of the new server not said', 'aihub/updater.py',
+                 '        why.append(cause or f"délai de {timeout} s dépassé ; dernier essai : {seen}")\n',
+                 '        why.append(cause or f"délai de {timeout} s dépassé")\n'))
+MUTATIONS.append(('v116: the cause not in the journal', 'aihub/updater.py',
+                 "                raise UpdateError(f'la nouvelle version ne répond pas correctement ({cause}) ; ancienne version rétablie')\n",
+                 "                raise UpdateError('la nouvelle version ne répond pas correctement ; ancienne version rétablie')\n"))
+MUTATIONS.append(('v116: the server log not shown', 'aihub/updater.py',
+                 '                if end:\n', '                if False:\n'))
+MUTATIONS.append(('v116: the server log read from before the restart', 'aihub/updater.py',
+                 '            written = log.stat().st_size if log is not None and log.is_file() else 0\n', '            written = 0\n'))
+MUTATIONS.append(('v116: the whole server log shown', 'aihub/updater.py',
+                 "    return [line.rstrip()[:300] for line in text.splitlines() if line.strip()][-lines:]\n",
+                 "    return [line.rstrip()[:300] for line in text.splitlines() if line.strip()]\n"))
+MUTATIONS.append(('v116: blank lines of the server log shown', 'aihub/updater.py',
+                 "    return [line.rstrip()[:300] for line in text.splitlines() if line.strip()][-lines:]\n",
+                 "    return [line.rstrip()[:300] for line in text.splitlines()][-lines:]\n"))
+MUTATIONS.append(('v116: a server log begun again not read', 'aihub/updater.py',
+                 '            fh.seek(max(start if start <= size else 0, size - 64 * 1024))',
+                 '            fh.seek(max(start, size - 64 * 1024))'))
+
 TEST_MODULES = []
 
 

@@ -7,7 +7,7 @@ une interface en français. Discutez avec une IA, comparez leurs réponses ou
 faites travailler plusieurs agents ensemble. Retrouvez vos conversations et
 vos projets depuis votre ordinateur ou votre téléphone.
 
-**Version 1.2.3 · Windows et Linux · Licence GPL-3.0**
+**Version 1.2.4 · Windows et Linux · Licence GPL-3.0**
 
 [Télécharger la dernière version](https://github.com/Demonwal51/ai-hub/releases/latest)
 · [Voir les changements](CHANGELOG.md) · [Licence](LICENSE)
@@ -58,8 +58,10 @@ personnes, sauvegardes, import.
 **Réglages → Mises à jour** dit où en est l’appli :
 
 - une version plus récente publiée sur GitHub : depuis une installation `.zip`,
-  **Installer** la télécharge, la vérifie, l’installe et redémarre (l’ancienne
-  version et la base sont gardées dans `data\mise-a-jour`) ;
+  **Installer** la télécharge, vérifie son empreinte (celle publiée dans
+  `SHA256SUMS`), l’installe et redémarre (l’ancienne version et la base sont
+  gardées dans `data\mise-a-jour`). Si la nouvelle version ne répond pas,
+  l’ancienne revient et `data\mise-a-jour\journal.txt` dit pourquoi ;
 - le code changé sur ce PC depuis le démarrage du serveur (une copie git, après
   un `git pull` ou un commit) : **Redémarrer sur le nouveau code** l’essaie
   d’abord à part (il se charge et ouvre une copie de la base) et ne redémarre que
@@ -212,7 +214,7 @@ système. Tout se fait en lecture seule ; rien d’un coffre n’est envoyé à 
 
 ## Installation Windows
 
-1. Téléchargez `ai-hub-1.2.3.zip` dans les
+1. Téléchargez `ai-hub-1.2.4.zip` dans les
    [versions publiées](https://github.com/Demonwal51/ai-hub/releases/latest), puis extrayez-le.
 2. Installez Python **3.12 ou plus** si nécessaire.
 3. Lancez `installer.bat`. Il prépare l’environnement Python, installe les
@@ -229,7 +231,7 @@ L’installation et le démarrage de l’application ont été vérifiés sur
 
 1. Installez Python **3.12 ou plus**, ainsi que le support `venv` et `pip` de
    votre distribution.
-2. Téléchargez et extrayez `ai-hub-1.2.3-linux.tar.gz`.
+2. Téléchargez et extrayez `ai-hub-1.2.4-linux.tar.gz`.
 3. Depuis le dossier extrait, lancez :
 
 ```sh

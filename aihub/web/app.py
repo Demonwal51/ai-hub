@@ -583,6 +583,9 @@ def create_app(db_path, *, command=None, env=None, allowed_roots=(), permission_
     `backup_dir`: daily backups go there (None: no backup).
     `keep_awake`: hold the PC's sleep back while an agent works (aihub/eveil.py).
     """
+    # The update helper's probe (aihub/updater.py): kept for /api/health, out of the
+    # environment that every process started from here (the AIs' CLIs) inherits.
+    update_probe = os.environ.pop('AIHUB_UPDATE_PROBE', None)
     Path(db_path).parent.mkdir(parents=True, exist_ok=True)
     if settings is None:
         policy = auth_policy or auth.Policy()
@@ -764,7 +767,7 @@ def create_app(db_path, *, command=None, env=None, allowed_roots=(), permission_
     def health():
         with database() as conn:
             conn.execute('SELECT 1').fetchone()
-        return {'ready': True, 'version': __version__, 'probe': os.environ.get('AIHUB_UPDATE_PROBE')}
+        return {'ready': True, 'version': __version__, 'probe': update_probe}
 
     @app.exception_handler(auth.Locked)
     def _locked(request: HttpRequest, exc):
@@ -1181,7 +1184,10 @@ def create_app(db_path, *, command=None, env=None, allowed_roots=(), permission_
         """After the answer is sent: the server stops like on Ctrl+C (the helper waits for it)."""
         import signal
         threading.Timer(1.0, signal.raise_signal, args=(signal.SIGINT,)).start()
-        threading.Timer(20.0, os._exit, args=(0,)).start()  # had it not stopped by then
+        # Had it not stopped by then. A daemon: a server stopped sooner is not held 20 s by it (the helper waits).
+        last_resort = threading.Timer(20.0, os._exit, args=(0,))
+        last_resort.daemon = True
+        last_resort.start()
 
     # What this server runs (1.2): the code on disk is compared to it, a change there asks for a restart.
     started = relaunch.started_state(updater.install_root())

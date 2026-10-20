@@ -1,5 +1,21 @@
 # Journal des versions
 
+## 1.2.4 — 20 octobre 2026 : une mise à jour en un clic plus sûre et plus rapide
+
+- **L’empreinte vérifiée** : le paquet téléchargé doit avoir l’empreinte SHA256 publiée avec
+  la version (`SHA256SUMS`). Sinon la mise à jour est refusée et le fichier effacé.
+- **20 secondes de moins** : avant une mise à jour, le serveur s’arrête dès qu’il le peut au
+  lieu d’attendre toujours 20 s.
+- **Un retour en arrière plus solide** : il n’utilise plus rien du code qu’il défait, et remet
+  les dépendances de l’ancienne version quand elles diffèrent.
+- **Le journal dit pourquoi** : `data\mise-a-jour\journal.txt` donne la cause d’un échec
+  (délai dépassé, mauvaise version, serveur arrêté avec son code) et la fin du journal du
+  serveur relancé.
+- Plus de fichiers `-wal` ni `-shm` à côté de la base sauvegardée ; la sonde de la mise à jour
+  n’est plus transmise aux IA lancées par le serveur.
+- Ces protections valent pour les mises à jour faites **depuis** la 1.2.4 : le passage à la
+  1.2.4 se fait encore avec le programme de la version installée.
+
 ## 1.2.3 — 16 octobre 2026 : l’explorateur partout, une seule règle pour les fichiers du PC
 
 - **L’explorateur de l’appli pour tout ce qui touche aux fichiers** : plus aucun chemin à

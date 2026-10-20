@@ -7,7 +7,7 @@ une interface en français. Discutez avec une IA, comparez leurs réponses ou
 faites travailler plusieurs agents ensemble. Retrouvez vos conversations et
 vos projets depuis votre ordinateur ou votre téléphone.
 
-**Version 1.2.4 · Windows et Linux · Licence GPL-3.0**
+**Version 1.3.0 · Windows et Linux · Licence GPL-3.0**
 
 [Télécharger la dernière version](https://github.com/Demonwal51/ai-hub/releases/latest)
 · [Voir les changements](CHANGELOG.md) · [Licence](LICENSE)
@@ -214,7 +214,7 @@ système. Tout se fait en lecture seule ; rien d’un coffre n’est envoyé à 
 
 ## Installation Windows
 
-1. Téléchargez `ai-hub-1.2.4.zip` dans les
+1. Téléchargez `ai-hub-1.3.0.zip` dans les
    [versions publiées](https://github.com/Demonwal51/ai-hub/releases/latest), puis extrayez-le.
 2. Installez Python **3.12 ou plus** si nécessaire.
 3. Lancez `installer.bat`. Il prépare l’environnement Python, installe les
@@ -231,7 +231,7 @@ L’installation et le démarrage de l’application ont été vérifiés sur
 
 1. Installez Python **3.12 ou plus**, ainsi que le support `venv` et `pip` de
    votre distribution.
-2. Téléchargez et extrayez `ai-hub-1.2.4-linux.tar.gz`.
+2. Téléchargez et extrayez `ai-hub-1.3.0-linux.tar.gz`.
 3. Depuis le dossier extrait, lancez :
 
 ```sh
@@ -253,6 +253,15 @@ prend en charge son moteur local sur ces distributions.
   AI Hub peut détecter la copie installée par l’application Claude.
 - **Codex** : CLI officielle et protocole `app-server`, avec votre compte
   ChatGPT. Les modèles proposés dépendent de la CLI installée et de votre accès.
+
+AI Hub cherche Claude Code, Codex et Docker Sandboxes à chaque lancement, et
+non une fois pour toutes au démarrage : le PATH, puis les emplacements de leurs
+installeurs (applications Claude et Codex, installeur officiel, npm, winget,
+extensions d’éditeur ; `~/.local/bin`, `/usr/local/bin`… sous Linux), la copie
+la plus récente d’abord. Une mise à jour qui déplace la CLI ne casse donc plus
+rien. Un programme installé ailleurs se trouve avec **Réglages → IA proposées
+et sauvegardes → Chercher sur ce PC** (une minute au plus, disques locaux
+seulement), qui permet de **Retenir** une copie.
 - **Ollama** : utilise votre installation locale existante. AI Hub n’en
   installe pas une autre. Dans un espace isolé, l’inférence reste sur le
   service local en boucle locale et les outils de fichiers sont en lecture seule.
@@ -308,8 +317,8 @@ avec l’authentification d’AI Hub. Le PC doit rester disponible pour de nouve
 réponses. La lecture hors connexion concerne seulement les copies que vous
 avez choisi de conserver sur cet appareil.
 
-**Réglages → Vérifier le fonctionnement** vérifie la base, le disque, le moteur d’isolation et le
-compte de l’espace choisi, sans envoyer de demande à une IA. Une action précise
+**Réglages → Vérifier le fonctionnement** vérifie la base, le disque, la présence de Claude Code
+et de Codex, le moteur d’isolation et le compte de l’espace choisi, sans envoyer de demande à une IA. Une action précise
 est proposée lorsqu’un composant manque. Les thèmes clair, sombre et système
 ainsi que la densité d’affichage se règlent par appareil.
 

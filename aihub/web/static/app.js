@@ -382,13 +382,15 @@ async function loadStatus() {
   try {
     const status = await api("GET", "/api/status");
     const gpt = status.codex || {};
-    const parts = [status.logged_in ? "Claude Code connecté"
-      : (status.error ? "Claude Code introuvable" : "Claude Code non connecté")];
+    // Found or not, signed in or not; the server words the rest (never an exception's text).
+    const said = (name, s) => s.logged_in ? `${name} connecté` : s.found === false ? `${name} introuvable`
+      : s.error ? `${name} ne répond pas` : `${name} non connecté`;
+    const parts = [said("Claude Code", status)];
     const hints = [];
-    if (!status.logged_in) hints.push(status.error || "Claude Code : lancez « claude auth login » dans un terminal.");
+    if (status.hint) hints.push(status.hint);
     if (gpt.offered !== false) {
-      parts.push(gpt.logged_in ? "Codex connecté" : (gpt.error ? "Codex introuvable" : "Codex non connecté"));
-      if (!gpt.logged_in) hints.push(gpt.error || "Codex : ouvrez l'application Codex et connectez-vous.");
+      parts.push(said("Codex", gpt));
+      if (gpt.hint) hints.push(gpt.hint);
     }
     const local = status.local || {};
     if (local.offered !== false) {
@@ -3288,6 +3290,42 @@ const SETTING_NUMBERS = ["backup_keep", "quota_warning", "idle_days", "max_failu
 const SETTING_BOOLS = ["backup_enabled", "keep_awake"];
 let openSettingsDialog = null;
 
+// Réglages › Programmes: the copy of each program in use, and where it comes from (aihub/locate.py).
+const PROGRAM_FIELDS = { claude: "set-claude_cli", codex: "set-codex_cli", sbx: "set-sandbox_cli" };
+
+function renderPrograms(programs) {
+  $("set-programs").replaceChildren(...programs.filter((p) => p.offered !== false).map((p) => el("li", {},
+    el("strong", { text: `${p.label} : ` }),
+    p.found ? `${p.where}${p.version ? ` · version ${p.version}` : ""}` : "introuvable",
+    p.found ? el("div", { class: "program-path", text: p.path }) : el("div", { class: "quota-note", text: p.error }),
+    p.note ? el("div", { class: "quota-note", text: p.note }) : null)));
+}
+
+// « Chercher sur ce PC »: every copy found; « Retenir » puts its path in its field, saved with the settings.
+function renderProgramScan(data, offered) {
+  const keep = (program, path) => {
+    if (program === "sbx") $("settings-more").open = true;  // its field is with the isolated spaces
+    $(PROGRAM_FIELDS[program]).value = path || "";
+    toast(path ? "Copie retenue : enregistrez les réglages pour l’utiliser."
+      : "Recherche automatique : enregistrez les réglages pour y revenir.");
+  };
+  const seconds = Math.round(data.seconds);
+  $("settings-scan-result").replaceChildren(
+    el("p", { class: "quota-note", text: data.complete ? `Recherche terminée en ${seconds} s.`
+      : `Recherche arrêtée au bout de ${seconds} s : une partie du PC n’a pas été regardée.` }),
+    ...data.programs.filter((p) => offered.has(p.program)).map((p) => el("div", { class: "program-group" },
+      el("strong", { text: p.label }),
+      ...(p.copies.length ? p.copies.map((c) => el("div", { class: "program-copy" },
+        el("span", {}, el("span", { class: "program-path", text: c.path }), el("br"),
+          [c.where, c.version ? `version ${c.version}` : null, c.in_use ? "utilisée maintenant" : null].filter(Boolean).join(" · ")),
+        // Several « Retenir » in a row: each says which copy it keeps (a screen reader reads its name only).
+        el("button", { type: "button", class: "btn btn-ghost", text: "Retenir", "aria-label": `Retenir ${c.path}`,
+          onclick: () => keep(p.program, c.path) })))
+        : [el("p", { class: "quota-note", text: "Aucune copie trouvée." })]),
+      el("button", { type: "button", class: "btn btn-ghost", text: "Revenir à la recherche automatique",
+        "aria-label": `${p.label} : revenir à la recherche automatique`, onclick: () => keep(p.program, null) }))));
+}
+
 function setupSettingsDialog() {
   const dialog = $("settings-dialog");
   let loaded = null;  // the settings as the server sent them
@@ -3302,6 +3340,10 @@ function setupSettingsDialog() {
     $("set-backup_dir").value = s.backup_dir || "";
     $("set-sandbox_cli").value = s.sandbox_cli || "";
     $("set-sandbox_data").value = s.sandbox_data || "";
+    $("set-claude_cli").value = s.claude_cli || "";
+    $("set-codex_cli").value = s.codex_cli || "";
+    renderPrograms(data.programs || []);
+    $("settings-scan-result").replaceChildren();
     $("set-backup_dir").placeholder = data.backup_folder || "data\\sauvegardes";
     for (const name of SETTING_NUMBERS) $(`set-${name}`).value = s[name];
     for (const name of SETTING_BOOLS) $(`set-${name}`).checked = s[name];
@@ -3342,6 +3384,8 @@ function setupSettingsDialog() {
     backup_dir: $("set-backup_dir").value.trim() || null,
     sandbox_cli: $("set-sandbox_cli").value.trim() || null,
     sandbox_data: $("set-sandbox_data").value.trim() || null,
+    claude_cli: $("set-claude_cli").value.trim() || null,
+    codex_cli: $("set-codex_cli").value.trim() || null,
     models: chosenModels(),
     default_model: $("set-default_model").value,
     default_conductor: $("set-default_conductor").value,
@@ -3371,6 +3415,20 @@ function setupSettingsDialog() {
   $("settings-create-vault").addEventListener("click", createSettingsVault);
   $("settings-pick-vault").addEventListener("click", () => openVaultsDialog({ pick: (path) => { $("set-obsidian_vault").value = path; } }));
   $("settings-cancel").addEventListener("click", () => dialog.close());
+  $("settings-scan").addEventListener("click", async () => {
+    const button = $("settings-scan");
+    button.disabled = true;
+    $("settings-scan-result").replaceChildren(el("p", { class: "quota-note", text: "Recherche sur le PC… (une minute au plus)" }));
+    try {
+      const data = await api("POST", "/api/programs/scan");
+      renderPrograms(data.programs_state);
+      renderProgramScan(data, new Set(data.programs_state.filter((p) => p.offered !== false).map((p) => p.program)));
+    } catch (err) {
+      $("settings-scan-result").replaceChildren(el("p", { class: "form-error", text: err.message }));
+    } finally {
+      button.disabled = false;
+    }
+  });
   $("settings-form").addEventListener("submit", async (event) => {
     event.preventDefault();
     let now;

@@ -21,19 +21,35 @@ def module(provider):
         raise ProviderError(f"le fournisseur « {NAMES.get(provider, provider)} » n'est pas encore branché") from None
 
 
+def searched(option=None, setting=None):
+    """What `commands` holds for a CLI searched for at each use (aihub/locate.py): the path
+    given at launch (serve --claude, --codex) and the one kept in Réglages, tried first.
+    A dict, so that it goes as it is to a delegation's process (aihub/tools.py)."""
+    return {"option": option, "setting": setting}
+
+
+def by_provider(commands):
+    """`commands` as a dict by provider (see `command_for`): None and a dict as they are.
+
+    A list is Claude Code's command alone (a test's fake CLI), as before Codex: no other
+    AI is offered with it. Searched for behind it, Codex would be the real one of the PC
+    (aihub/locate.py finds the Codex app's copy), on its owner's account."""
+    if commands is None or isinstance(commands, dict):
+        return commands
+    return {provider: commands if provider == claude_code.PROVIDER else False for provider in MODULES}
+
+
 def command_for(commands, provider, *, execution=None):
     """The command that starts this provider's CLI.
 
     `commands` is what the hub was given: None (each CLI is searched for),
-    a list (the Claude Code command, as before Codex), or a dict by
-    provider, where False means "not offered here".
+    a list (the Claude Code command alone: `by_provider`), or a dict by
+    provider, where False means "not offered here" and `searched()` "searched
+    for, these paths first". An isolated space runs the VM's own CLI: nothing
+    is searched for on the PC then.
     """
-    if isinstance(commands, dict):
-        given = commands.get(provider)
-    elif commands is not None and provider == claude_code.PROVIDER:
-        given = commands
-    else:
-        given = None
+    commands = by_provider(commands)
+    given = None if commands is None else commands.get(provider)
     if given is False:
         raise ProviderError(f"{NAMES.get(provider, provider)} n'est pas branché sur ce serveur")
     if execution is not None:
@@ -42,6 +58,8 @@ def command_for(commands, provider, *, execution=None):
         if provider not in ('claude_code', 'codex'):
             raise ProviderError('ce fournisseur ne prend pas en charge les espaces isolés')
         return ['claude' if provider == 'claude_code' else 'codex']
+    if isinstance(given, dict):
+        return module(provider).find_cli(option=given.get("option"), setting=given.get("setting"))
     return list(given) if given else module(provider).find_cli()
 
 

@@ -1,5 +1,28 @@
 # Journal des versions
 
+## 1.3.0 — 20 octobre 2026 : AI Hub trouve tout seul Claude Code et Codex
+
+- **Fini « [WinError 2] Le fichier spécifié est introuvable »** : Claude Code et Codex sont
+  cherchés à chaque lancement, plus une fois pour toutes au démarrage. Quand l’application
+  Codex se met à jour et déplace sa CLI, la nouvelle copie est trouvée et la demande repart.
+- **Une recherche plus large** : le PATH (un `.exe` avant un `.cmd`), puis les applications
+  Claude et Codex, l’installeur officiel, npm, winget, Scoop, Cargo et les extensions
+  d’éditeur ; sous Linux `~/.local/bin`, `~/.npm-global`, nvm, `/usr/local/bin`, Homebrew.
+  La copie la plus récente d’abord ; jamais celle de WindowsApps, qui refuse d’être lancée.
+- **« Chercher sur ce PC »** (Réglages › IA proposées et sauvegardes › Programmes) : votre
+  dossier, Program Files et les autres disques locaux, une minute au plus, jamais un disque
+  réseau. Chaque copie trouvée est donnée avec sa provenance et sa version ; **Retenir** la
+  garde dans les réglages, « Revenir à la recherche automatique » l’oublie.
+- **Un message clair** quand rien n’est trouvé : ce qui a été cherché et quoi faire. Une copie
+  retenue qui a disparu est signalée, et la recherche automatique prend le relais.
+- La pastille des IA dit « introuvable », « non connecté » ou « ne répond pas » avec une
+  phrase lisible, et **Vérifier le fonctionnement** dit si Claude et Codex sont trouvés.
+- Les espaces isolés n’en changent pas : ils utilisent toujours les CLI de leur VM.
+- **Plus sûr** : un programme installé par npm (un `.cmd`) ne reçoit plus d’arguments que
+  `cmd.exe` réinterpréterait (`&`, `%`, sauts de ligne) : la demande est refusée avec un
+  message clair, et une copie native est préférée quand il y en a une. Le dossier du
+  serveur, où une IA peut écrire, n’est plus jamais fouillé avant le PATH.
+
 ## 1.2.4 — 20 octobre 2026 : une mise à jour en un clic plus sûre et plus rapide
 
 - **L’empreinte vérifiée** : le paquet téléchargé doit avoir l’empreinte SHA256 publiée avec

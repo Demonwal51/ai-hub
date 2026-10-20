@@ -8,7 +8,6 @@ import hashlib
 import json
 import os
 import re
-import shutil
 import shlex
 import stat
 import subprocess
@@ -17,6 +16,7 @@ import uuid
 import tempfile
 from pathlib import Path
 
+from . import locate
 from .providers.claude_code import ProviderError, NO_WINDOW
 
 _LOCKS = {}
@@ -46,14 +46,13 @@ FORBIDDEN = {'.git', '.venv', 'node_modules', '.claude', '.codex', '.ssh', '.aws
 
 
 def find_cli(explicit=None):
-    found = explicit or shutil.which('sbx')
-    if not found and os.name == 'nt':
-        candidate = Path(os.environ.get('LOCALAPPDATA', '')) / 'DockerSandboxes/bin/sbx.exe'
-        if candidate.is_file():
-            found = str(candidate)
-    if not found or not Path(found).is_file():
-        raise ProviderError('Docker Sandboxes est indisponible : aucun accès au PC ne sera utilisé en remplacement')
-    return str(found)
+    """The sbx to run: `explicit` (Réglages), the PATH, then %LOCALAPPDATA%\\DockerSandboxes (aihub/locate.py).
+
+    A path kept in Réglages that has gone is passed over for the search, like Claude Code's and Codex's."""
+    try:
+        return locate.find('sbx', setting=explicit).path
+    except locate.NotFound:
+        raise ProviderError('Docker Sandboxes est indisponible : aucun accès au PC ne sera utilisé en remplacement') from None
 
 
 def guest_path(path):

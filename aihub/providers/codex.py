@@ -14,7 +14,6 @@ hand it a token.
 import json
 import os
 import re
-import shutil
 import subprocess
 import threading
 import time
@@ -51,31 +50,25 @@ _WARNING_FROM = 0.8
 _CLIENT = {"name": "aihub", "version": "1"}
 
 
-def find_cli(explicit=None, *, home=None, local_appdata=None):
+def find_cli(explicit=None, *, home=None, local_appdata=None, option=None, setting=None):
     """Return the command that starts Codex, as a list.
 
-    Order: the explicit path, `codex` on the PATH, then the newest of the
-    copies the Codex desktop app keeps: %LOCALAPPDATA%\\OpenAI\\Codex\\bin\\<id>\\
-    (app 26.1007, CLI 0.162) and ~/.codex/.sandbox-bin (older apps, left
-    behind by the update: 0.144.2). The app's own codex.exe under
-    WindowsApps cannot be started by another program (access denied).
+    `explicit`: exactly this file, else an error. Otherwise aihub/locate.py
+    searches: `option` (serve --codex), `setting` (Réglages), the PATH, then the
+    newest of the copies of the installers, among them those the Codex desktop app
+    keeps: %LOCALAPPDATA%\\OpenAI\\Codex\\bin\\<id>\\ (the <id> changes with each
+    update of the app: the result searches again when its file goes) and
+    ~/.codex/.sandbox-bin (older apps, left behind by the update: 0.144.2). The
+    app's own codex.exe under WindowsApps cannot be started by another program
+    (access denied): never taken. `home`: the Codex home; `local_appdata`: tests.
     """
+    from .. import locate  # it imports this module
     if explicit:
         if not Path(explicit).is_file():
             raise ProviderError(f"Codex introuvable à l'emplacement indiqué : {explicit}")
         return [str(explicit)]
-    on_path = shutil.which("codex")
-    if on_path:
-        return [on_path]
-    name = "codex.exe" if os.name == "nt" else "codex"
-    candidates = [(home or codex_home()) / ".sandbox-bin" / name]
-    local = local_appdata or os.environ.get("LOCALAPPDATA")
-    if local:
-        candidates += Path(local, "OpenAI", "Codex", "bin").glob(f"*/{name}")
-    found = [p for p in candidates if p.is_file()]
-    if found:
-        return [str(max(found, key=lambda p: p.stat().st_mtime))]
-    raise ProviderError("Codex introuvable : installez l'application Codex ou indiquez le chemin de codex.exe")
+    env = dict(os.environ, LOCALAPPDATA=str(local_appdata)) if local_appdata else None
+    return locate.command("codex", option=option, setting=setting, env=env, codex_home=home)
 
 
 def codex_home():
@@ -197,12 +190,15 @@ class _Server:
         self.execution = execution
         if home is None and env and env.get("CODEX_HOME"):
             home = Path(env["CODEX_HOME"])  # a person's own account (aihub/accounts.py)
+        from .. import locate  # it imports this module
         try:
-            spawn = execution.spawn if execution is not None else subprocess.Popen
-            args = (['codex', 'app-server', '--listen', 'stdio://', '-c', 'mcp_servers={}']
-                    if execution is not None else server_args(command, home))
-            self.proc = spawn(
-                args, cwd=workdir, env=env if env is not None else dict(os.environ),
+            if execution is not None:  # the VM's own codex: never searched for on the PC
+                command, spawn = ['codex'], execution.spawn
+                tail = ['app-server', '--listen', 'stdio://', '-c', 'mcp_servers={}']
+            else:
+                spawn, tail = subprocess.Popen, server_args(command, home)[len(command):]
+            self.proc = locate.start(
+                command, tail, spawn, cwd=workdir, env=env if env is not None else dict(os.environ),
                 stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
                 text=True, encoding="utf-8", errors="replace", bufsize=1,
                 creationflags=NO_WINDOW, start_new_session=(os.name != "nt"),
@@ -329,10 +325,11 @@ def list_models(command, *, workdir, env=None, timeout_s=60, home=None):
 
 def login_status(command, *, env=None, timeout_s=60):
     """True when Codex is signed in. `codex login status` prints the method only."""
+    from .. import locate  # it imports this module
     try:
-        proc = subprocess.run(list(command) + ["login", "status"], capture_output=True, text=True,
-                              stdin=subprocess.DEVNULL, timeout=timeout_s, encoding="utf-8", errors="replace",
-                              creationflags=NO_WINDOW, env=env if env is not None else dict(os.environ))
+        proc = locate.start(command, ["login", "status"], subprocess.run, capture_output=True, text=True,
+                            stdin=subprocess.DEVNULL, timeout=timeout_s, encoding="utf-8", errors="replace",
+                            creationflags=NO_WINDOW, env=env if env is not None else dict(os.environ))
     except (OSError, subprocess.SubprocessError) as exc:
         raise ProviderError(f"état de connexion de {DISPLAY_NAME} illisible : {exc}") from None
     text = (proc.stdout + proc.stderr).lower()
@@ -394,7 +391,8 @@ class CodexRun:
             raise ProviderError(f"mode de permission inconnu : {permission_mode!r}")
         if not isinstance(prompt, str) or not prompt.strip():
             raise ProviderError("demande vide")
-        self.command = list(command)
+        from .. import locate  # it imports this module
+        self.command = locate.keep(command)  # a searched one can search again
         self.prompt = prompt
         self.workdir = workdir
         self.permission_mode = permission_mode

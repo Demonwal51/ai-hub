@@ -123,8 +123,9 @@ MUTATIONS = [
      '            "--permission-prompts", "host",\n', ""),
     ("cc: demandes non routees vers l'hote (stdio)", "aihub/providers/claude_code.py",
      '            "--permission-prompt-tool", "stdio",\n', ""),
-    ("cc: versions comparees comme du texte", "aihub/providers/claude_code.py",
-     'return tuple(int(part) for part in name.split("."))', 'return tuple(name.split("."))'),
+    # 1.3.0: the copies of the Claude app are compared in aihub/locate.py.
+    ("cc: versions comparees comme du texte", "aihub/locate.py",
+     'return tuple(int(part) for part in text.split("."))', 'return tuple(text.split("."))'),
     ("runner: texte non enregistre en direct", "aihub/runner.py",
      "        store.append_message_content(self.conn, self.message_id, chunk)\n", ""),
     ("runner: autorisation non journalisee", "aihub/runner.py",
@@ -293,7 +294,7 @@ MUTATIONS = [
     ("quota: limite atteinte non vue", "aihub/providers/claude_code.py",
      "    if worst >= 1:\n        status = \"rejected\"", "    if False:\n        status = \"rejected\""),
     ("quota: lecture sans --no-session-persistence", "aihub/providers/claude_code.py",
-     '"--strict-mcp-config", "--no-session-persistence",', '"--strict-mcp-config",'),
+     '"--strict-mcp-config", "--no-session-persistence"]', '"--strict-mcp-config"]'),
     ("quota: relecture a chaque appel", "aihub/web/app.py",
      "if last is None or time.monotonic() - last >= QUOTA_REFRESH_S:", "if True:"),
     ("quota: erreur de relecture tue", "aihub/web/app.py",
@@ -778,7 +779,8 @@ MUTATIONS = [
     ("web: modeles GPT proposes sans Codex", "aihub/web/app.py",
      "return [m for m in s.models if config.provider_of(m) != codex.PROVIDER or m in usable]", "return list(s.models)"),
     ("web: vrai Codex cherche sous un faux Claude", "aihub/web/app.py",
-     "codex_command if codex_command is not None else (None if command is None else False),", "codex_command,"),
+     "                    if command is None or given_paths.get(codex.PROVIDER) else False),\n",
+     "                    ),\n"),
     ("web: table jamais informee", "aihub/web/app.py",
      "        routing.set_available(connected or {claude_code.PROVIDER: None})\n", ""),
     ("web: agent GPT cree sous Claude", "aihub/web/app.py",
@@ -981,10 +983,13 @@ MUTATIONS = [
      "    model = summary_model(model, commands=commands, env=env, workdir=workdir)\n", ""),
     ("runner: resume Codex sur un modele absent", "aihub/runner.py",
      "return next((m for m in LIGHT_CODEX if m in offered), \"codex\")", "return LIGHT_CODEX[0]"),
-    ("codex: copie la plus ancienne choisie", "aihub/providers/codex.py",
-     "max(found, key=lambda p: p.stat().st_mtime)", "found[0]"),
-    ("codex: nouvelle place de l'appli ignoree", "aihub/providers/codex.py",
-     '        candidates += Path(local, "OpenAI", "Codex", "bin").glob(f"*/{name}")\n', "        pass\n"),
+    # 1.3.0: the copies of the Codex app are searched for in aihub/locate.py.
+    ("codex: copie la plus ancienne choisie", "aihub/locate.py",
+     "    return max(copies, key=lambda c: (not _script(c.path), c.mtime, -c.index))\n",
+     "    return min(copies, key=lambda c: (not _script(c.path), c.mtime, -c.index))\n"),
+    ("codex: nouvelle place de l'appli ignoree", "aihub/locate.py",
+     '            out += [("codex_app", local / "OpenAI" / "Codex" / "bin" if local else None, "*/codex.exe", False),\n',
+     '            out += [("codex_app", None, "*/codex.exe", False),\n'),
     ("personnes: compte cree sur un nom pris", "aihub/auth.py",
      "        if conn.execute(\"SELECT 1 FROM users WHERE name = ?\", (name,)).fetchone():\n"
      "            raise AuthError(f\"le nom « {name} » est déjà pris\")\n"
@@ -1869,6 +1874,124 @@ MUTATIONS.append(('v116: blank lines of the server log shown', 'aihub/updater.py
 MUTATIONS.append(('v116: a server log begun again not read', 'aihub/updater.py',
                  '            fh.seek(max(start if start <= size else 0, size - 64 * 1024))',
                  '            fh.seek(max(start, size - 64 * 1024))'))
+
+# v117 (1.3.0): Claude Code, Codex and sbx searched for at each use (aihub/locate.py), never kept from the
+# launch; « Chercher sur ce PC » in Réglages; the path kept in config.json; nothing of it in an isolated space.
+MUTATIONS.append(('v117: a vanished copy kept by the cache', 'aihub/locate.py',
+                 'now - kept[0] < CACHE_S and Path(kept[1].path).is_file():', 'now - kept[0] < CACHE_S:'))
+MUTATIONS.append(('v117: the cache kept forever', 'aihub/locate.py',
+                 'not refresh and now - kept[0] < CACHE_S and', 'not refresh and'))
+MUTATIONS.append(('v117: a vanished file started without a new search', 'aihub/locate.py',
+                 '    searched = not Path(command[0]).is_file()\n', '    searched = False\n'))
+MUTATIONS.append(('v117: no new try after FileNotFoundError', 'aihub/locate.py',
+                 '        if searched:\n            raise _no_start(command) from None\n',
+                 '        raise _no_start(command) from None\n'))
+MUTATIONS.append(('v117: a second new try after FileNotFoundError', 'aihub/locate.py',
+                 '        if searched:\n            raise _no_start(command) from None\n', '        pass\n'))
+MUTATIONS.append(('v117: a .cmd of the PATH before a native .exe', 'aihub/locate.py',
+                 '    for names in ([f"{program}.exe"], [f"{program}.cmd", f"{program}.bat", f"{program}.com"]):\n',
+                 '    for names in ([f"{program}.cmd", f"{program}.bat", f"{program}.com", f"{program}.exe"],):\n'))
+MUTATIONS.append(("v117: npm's shim instead of its native copy", 'aihub/locate.py',
+                 '        native = _native_of(program, hit, system)\n', '        native = None\n'))
+MUTATIONS.append(('v117: a newer .cmd before a native copy', 'aihub/locate.py',
+                 '    return max(copies, key=lambda c: (not _script(c.path), c.mtime, -c.index))\n',
+                 '    return max(copies, key=lambda c: (c.mtime, -c.index))\n'))
+MUTATIONS.append(('v117: the first place before the newest copy', 'aihub/locate.py',
+                 '    return max(copies, key=lambda c: (not _script(c.path), c.mtime, -c.index))\n',
+                 '    return max(copies, key=lambda c: (not _script(c.path), -c.index))\n'))
+MUTATIONS.append(('v117: the oldest copy of a place', 'aihub/locate.py',
+                 '(_version_key(copy.version), copy.mtime) > (_version_key(kept.version), kept.mtime)',
+                 '(_version_key(copy.version), copy.mtime) < (_version_key(kept.version), kept.mtime)'))
+MUTATIONS.append(('v117: a copy of WindowsApps taken', 'aihub/locate.py',
+                 '    if any(part.lower() == "windowsapps" for part in path.parts):\n', '    if False:\n'))
+MUTATIONS.append(('v117: the PATH stops at WindowsApps', 'aihub/locate.py',
+                 '                if os.path.isfile(hit) and refused(program, hit) is None:\n',
+                 '                if os.path.isfile(hit):\n'))
+MUTATIONS.append(('v117: the current folder taken for the PATH', 'aihub/locate.py',
+                 ' if d and os.path.isabs(d)]', ' if d]'))
+MUTATIONS.append(('v117: a desktop app taken for its CLI', 'aihub/locate.py',
+                 '    if ((folder / "Update.exe").exists() or (folder / "icudtl.dat").exists()\n'
+                 '            or (folder / "resources" / "app.asar").exists()):\n', '    if False:\n'))
+MUTATIONS.append(('v117: a path kept that has gone still used', 'aihub/locate.py',
+                 '        if Path(given).is_file():\n            return Found(', '        if True:\n            return Found('))
+MUTATIONS.append(('v117: a path kept that has gone not said', 'aihub/locate.py',
+                 '        notes.append(_gone(program, origin, given))\n', '        pass\n'))
+MUTATIONS.append(('v117: the native installer of Linux not looked at', 'aihub/locate.py',
+                 '    common = [("native", home / ".local" / "bin", program, False),\n',
+                 '    common = [("native", home / ".local" / "lib", program, False),\n'))
+MUTATIONS.append(('v117: the scan without a depth', 'aihub/locate.py',
+                 'if depth > 0 and name.lower() not in _SKIP', 'if name.lower() not in _SKIP'))
+MUTATIONS.append(('v117: the scan without a time limit', 'aihub/locate.py',
+                 '        if looked >= max_dirs or clock() > deadline:\n', '        if looked >= max_dirs:\n'))
+MUTATIONS.append(('v117: the scan without a limit of folders', 'aihub/locate.py',
+                 '        if looked >= max_dirs or clock() > deadline:\n', '        if clock() > deadline:\n'))
+MUTATIONS.append(('v117: an unreadable folder stops the scan', 'aihub/locate.py',
+                 '        except OSError:\n            continue  # unreadable (access denied, gone): passed over\n',
+                 '        except FileNotFoundError:\n            continue  # unreadable (access denied, gone): passed over\n'))
+MUTATIONS.append(('v117: the scan follows links', 'aihub/locate.py',
+                 '                                    and not _linked(entry) \\\n', '                                    and True \\\n'))
+MUTATIONS.append(('v117: an older .sandbox-bin shown', 'aihub/locate.py',
+                 '                and any(_mtime(other.path) > _mtime(found.path) for other in codexes if other is not found):\n',
+                 '                and False:\n'))
+MUTATIONS.append(('v117: a file met by the scan run', 'aihub/locate.py',
+                 'if trusted and found.version is None', 'if found.version is None'))
+MUTATIONS.append(('v117: a network folder scanned', 'aihub/locate.py',
+                 'if folder is not None and _LOCAL.match(str(folder))]', 'if folder is not None]'))
+MUTATIONS.append(('v117: an isolated space searches the PC', 'aihub/providers/__init__.py',
+                 "n'est pas branché sur ce serveur\")\n    if execution is not None:\n",
+                 "n'est pas branché sur ce serveur\")\n    if isinstance(given, dict):\n"
+                 "        return module(provider).find_cli()\n    if execution is not None:\n"))
+MUTATIONS.append(("v117: an isolated space's Codex taken from the PC", 'aihub/providers/codex.py',
+                 "                command, spawn = ['codex'], execution.spawn\n", '                spawn = execution.spawn\n'))
+MUTATIONS.append(('v117: a delegation forgets the path kept', 'aihub/providers/__init__.py',
+                 '        return module(provider).find_cli(option=given.get("option"), setting=given.get("setting"))\n',
+                 '        return module(provider).find_cli()\n'))
+MUTATIONS.append(('v117: the path kept not tried before a restart', 'aihub/web/app.py',
+                 '                commands[provider]["setting"] = kept\n', '                pass\n'))
+MUTATIONS.append(('v117: the state read before the path kept', 'aihub/web/app.py',
+                 '            status_cache.pop("all", None)  # the state of the AIs is read again with it\n',
+                 '            pass\n'))
+MUTATIONS.append(('v117: a member scans the PC', 'aihub/web/app.py',
+                 '        access.require_owner(me())\n        if not scan_lock.acquire(blocking=False):\n',
+                 '        if not scan_lock.acquire(blocking=False):\n'))
+MUTATIONS.append(('v117: the diagnostic gives the path', 'aihub/web/app.py',
+                 "'detail': f'{name} trouvé ({where}).' if where",
+                 "'detail': f'{name} trouvé ({where}) : {providers.command_for(commands, provider)[0]}.' if where"))
+MUTATIONS.append(("v117: the pill shows an exception's text", 'aihub/web/app.py',
+                 '    if state["error"]:\n        text = (f"{name} est trouvé',
+                 '    if state["error"]:\n        return state["error"]\n        text = (f"{name} est trouvé'))
+MUTATIONS.append(('v117: the launch paths fixed or lost', 'aihub/cli.py',
+                 '                     cli_paths={claude_code.PROVIDER: args.claude, codex.PROVIDER: args.codex},\n',
+                 '                     cli_paths=None,\n'))
+MUTATIONS.append(('v117: a program kept that is not there', 'aihub/config.py',
+                 '    if not Path(value).is_file():\n        raise ConfigError(f"{what} : fichier introuvable ({value})")\n', ''))
+MUTATIONS.append(('v117: any file kept as a program', 'aihub/config.py',
+                 '    reason = refused(program, value)\n', '    reason = None\n'))
+MUTATIONS.append(('v117: a program gone stops the server', 'aihub/config.py',
+                 '        return validate(data, check_programs=False)\n', '        return validate(data)\n'))
+MUTATIONS.append(('v117: a network path of a program resolved', 'aihub/config.py',
+                 '    if os.name == "nt" and not re.match(r"^[A-Za-z]:[\\\\/]", value):\n', '    if False:\n'))
+# Review of 1.3.0: a fake Claude alone offers no real Codex; a .cmd never gets what cmd.exe cuts or runs.
+MUTATIONS.append(('v117: a Claude command alone offers the real Codex', 'aihub/providers/__init__.py',
+                 'commands if provider == claude_code.PROVIDER else False for provider in MODULES}',
+                 'commands if provider == claude_code.PROVIDER else None for provider in MODULES}'))
+MUTATIONS.append(('v117: a delegation under a Claude command alone searches Codex', 'aihub/tools.py',
+                 'json.dumps(providers.by_provider(commands))',
+                 'json.dumps(commands if isinstance(commands, dict) else {"claude_code": commands})'))
+MUTATIONS.append(('v117: ask --claude offers Claude Code only', 'aihub/cli.py',
+                 '{claude_code.PROVIDER: claude_code.find_cli(args.claude)} if args.claude else None))',
+                 'claude_code.find_cli(args.claude) if args.claude else None))'))
+MUTATIONS.append(('v117: a .cmd started with what cmd.exe cuts or runs', 'aihub/locate.py',
+                 '    if os.name == "nt" and _script(command[0]) and _cmd_changes([*command, *tail]):\n',
+                 '    if False:\n'))
+MUTATIONS.append(('v117: a line break passed to cmd.exe', 'aihub/locate.py',
+                 'if "\\n" in line or "\\r" in line or re.search', 'if re.search'))
+MUTATIONS.append(('v117: a %NAME% passed to cmd.exe', 'aihub/locate.py',
+                 ' or re.search(r"%[^%\\s]+%", line):', ':'))
+MUTATIONS.append(('v117: a & between quotes refused to a .cmd', 'aihub/locate.py',
+                 '        elif char in "&|<>^" and not quoted:\n', '        elif char in "&|<>^":\n'))
+MUTATIONS.append(('v117: the copies to keep not named for a screen reader', 'aihub/web/static/app.js',
+                 ', "aria-label": `Retenir ${c.path}`', ''))
 
 TEST_MODULES = []
 

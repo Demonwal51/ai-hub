@@ -281,7 +281,7 @@
         <button class="hub-item hidden" id="updates" type="button"><strong>Mises à jour <span class="hub-badge hidden" id="updates-badge">à faire</span></strong>
           <span id="updates-sub">Vérifier s'il y a une nouvelle version</span></button>
         <button class="hub-item hidden" id="settings" type="button"><strong>IA proposées et sauvegardes</strong>
-          <span>Les IA de la liste, celle par défaut, la sauvegarde de chaque jour</span></button>
+          <span>Les IA de la liste, celle par défaut, leurs programmes, la sauvegarde de chaque jour</span></button>
         <button class="hub-item" id="advanced-toggle" type="button"><strong>Fonctions avancées : non</strong>
           <span>Plusieurs IA, travail autonome, comparer, planifier, espaces isolés, partage, coffres… (sur cet appareil)</span></button>
         <button class="hub-item hidden adv" id="people" type="button"><strong>Personnes</strong>
@@ -437,6 +437,22 @@
         <label class="adv">Seuil d'alerte du quota (%)
           <input id="set-quota_warning" type="number" min="50" max="99" step="1">
         </label>
+      </fieldset>
+      <fieldset id="settings-programs">
+        <legend>Programmes</legend>
+        <p class="quota-note">AI Hub cherche Claude Code, Codex et Docker Sandboxes à chaque lancement : le PATH,
+          puis là où leurs installeurs les mettent. Installés ailleurs ? « Chercher sur ce PC » regarde aussi votre
+          dossier, Program Files et les autres disques locaux (une minute au plus) ; « Retenir » garde une copie,
+          à enregistrer avec les réglages.</p>
+        <ul class="program-list" id="set-programs"></ul>
+        <div class="field-row">
+          <label>Claude Code (vide : recherche automatique)
+            <input id="set-claude_cli" placeholder="Recherche automatique" spellcheck="false"></label>
+          <label>Codex (vide : recherche automatique)
+            <input id="set-codex_cli" placeholder="Recherche automatique" spellcheck="false"></label>
+        </div>
+        <button class="btn btn-ghost" type="button" id="settings-scan">Chercher sur ce PC</button>
+        <div class="program-scan" id="settings-scan-result" aria-live="polite"></div>
       </fieldset>
       <fieldset>
         <legend>Sauvegardes</legend>

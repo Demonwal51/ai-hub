@@ -65,6 +65,8 @@ class Settings:
     ntfy_events: list = field(default_factory=lambda: list(NTFY_EVENTS))  # the alerts sent there
     ntfy_detail: str = "minimal"                         # minimal: what happened, not where
     tool_servers: list = field(default_factory=list)     # MCP servers a conversation may choose (aihub/tools.py)
+    claude_cli: str | None = None                        # Claude Code kept in Réglages; None: searched (aihub/locate.py)
+    codex_cli: str | None = None                         # Codex kept in Réglages; None: searched
     sandbox_cli: str | None = None                      # optional explicit sbx executable
     sandbox_data: str | None = None                     # process-only LOCALAPPDATA override (Windows)
 
@@ -98,6 +100,8 @@ LABELS = {
     "ntfy_events": "Alertes envoyées à ntfy",
     "ntfy_detail": "Ce que disent les alertes ntfy",
     "tool_servers": "Serveurs d'outils (MCP) proposés aux conversations",
+    "claude_cli": "Claude Code : chemin du programme (vide : recherche automatique)",
+    "codex_cli": "Codex : chemin du programme (vide : recherche automatique)",
     "sandbox_cli": "Docker Sandboxes : chemin de la commande sbx (vide : détection)",
     "sandbox_data": "Docker Sandboxes : stockage Windows (vide : emplacement du moteur)",
 }
@@ -134,11 +138,40 @@ def _bool(value, what):
     return value
 
 
-def validate(data, base=None):
+def _program(value, what, program, check):
+    """The path of a program kept in Réglages (aihub/locate.py), or None for « searched ».
+
+    `check`: being chosen now, it must be there and be the program; one kept from
+    before may have gone since (an update moved it): the search says so and goes on."""
+    if value in (None, ""):
+        return None
+    if not isinstance(value, str) or not Path(value.strip()).is_absolute():
+        raise ConfigError(f"{what} : indiquez le chemin complet du fichier {program}")
+    value = value.strip()
+    if os.name == "nt" and not re.match(r"^[A-Za-z]:[\\/]", value):
+        # Never looked at (aihub/places.py): a network path would make Windows connect to that machine.
+        raise ConfigError(f"{what} : choisissez un fichier d'un disque local du serveur ({value})")
+    if not check:
+        return value
+    if not Path(value).is_file():
+        raise ConfigError(f"{what} : fichier introuvable ({value})")
+    from .locate import refused
+    reason = refused(program, value)
+    if reason:
+        raise ConfigError(f"{what} : {reason} ({value})")
+    return str(Path(value).resolve())
+
+
+PROGRAMS = (("claude_cli", "Claude Code", "claude"), ("codex_cli", "Codex", "codex"),
+            ("sandbox_cli", "Docker Sandboxes", "sbx"))
+
+
+def validate(data, base=None, *, check_programs=True):
     """A checked Settings from `base` (defaults if None) changed by `data`.
 
     Unknown names are refused rather than ignored: a typo must not pass
-    for a change that did not happen.
+    for a change that did not happen. `check_programs`: a program's path in
+    `data` must be there (False when the file is read: see `_program`).
     """
     if not isinstance(data, dict):
         raise ConfigError("réglages illisibles")
@@ -208,13 +241,8 @@ def validate(data, base=None):
         out["tool_servers"] = check_catalog(merged["tool_servers"])
     except ToolError as exc:
         raise ConfigError(str(exc)) from None
-    cli = merged['sandbox_cli']
-    if cli not in (None, ''):
-        if not isinstance(cli, str) or not Path(cli).is_absolute() or not Path(cli).is_file():
-            raise ConfigError('Docker Sandboxes : indiquez le chemin complet du fichier sbx')
-        out['sandbox_cli'] = str(Path(cli).resolve())
-    else:
-        out['sandbox_cli'] = None
+    for name, what, program in PROGRAMS:
+        out[name] = _program(merged[name], what, program, check_programs and name in data)
     folder = merged['sandbox_data']
     out['sandbox_data'] = _folder(folder, 'stockage Docker Sandboxes', must_exist=False) if folder not in (None, '') else None
     return Settings(**out)
@@ -230,7 +258,7 @@ def load(path):
     except (OSError, ValueError) as exc:
         raise ConfigError(f"fichier de réglages illisible ({path}) : {exc}") from None
     try:
-        return validate(data)
+        return validate(data, check_programs=False)
     except ConfigError as exc:
         raise ConfigError(f"{path} : {exc}") from None
 

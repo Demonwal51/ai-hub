@@ -162,7 +162,9 @@ def for_run(conn, conversation, settings, *, own=False, commands=None, project=T
         args = ["-I", str(DELEGATE_SCRIPT), "--db", db_path, "--conversation", str(conversation["id"]),
                 "--models", ",".join(models)]
         if commands is not None:
-            args += ["--commands", json.dumps(commands if isinstance(commands, dict) else {"claude_code": commands})]
+            from . import providers
+            # A Claude Code command alone offers no other AI there either (providers.by_provider).
+            args += ["--commands", json.dumps(providers.by_provider(commands))]
         servers[DELEGATE] = {"type": "stdio", "command": project_access._python(), "args": args,
                              "tool_timeout_sec": DELEGATE_TIMEOUT_S}
         if account_env:

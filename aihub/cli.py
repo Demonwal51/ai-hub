@@ -18,7 +18,7 @@ import sys
 from datetime import datetime
 from pathlib import Path
 
-from . import VERSION_LABEL, __version__, db, store
+from . import VERSION_LABEL, __version__, db, locate, store
 from .providers import claude_code, codex
 from .providers.claude_code import Decision, ProviderError
 from .runner import Request
@@ -33,8 +33,8 @@ def _parser():
     parser = argparse.ArgumentParser(prog="aihub", description="AI Hub en ligne de commande")
     parser.add_argument("--version", action="version", version=f"AI Hub {__version__} ({VERSION_LABEL})")
     parser.add_argument("--db", default=str(DEFAULT_DB), help="fichier de la base (défaut : data/aihub.db)")
-    parser.add_argument("--claude", help="chemin de claude.exe, si la recherche automatique échoue")
-    parser.add_argument("--codex", help="chemin de codex.exe, si la recherche automatique échoue")
+    parser.add_argument("--claude", help="chemin de claude.exe, essayé avant la recherche automatique")
+    parser.add_argument("--codex", help="chemin de codex.exe, essayé avant la recherche automatique")
     sub = parser.add_subparsers(dest="command", required=True)
 
     sub.add_parser("status", help="trouver Claude Code et dire s'il est connecté")
@@ -200,15 +200,14 @@ def cmd_serve(args, out, command):
             # A new server: it is created from the page, on this computer only.
             out("Serveur pas encore créé : ouvrez l'adresse ci-dessous sur cet ordinateur pour choisir")
             out("votre nom, votre mot de passe (facultatif) et celui du serveur (facultatif).")
-    codex_cli = codex.find_cli(args.codex) if args.codex else None
-    if codex_cli is None and command is None:  # a test's own Claude Code: no real Codex behind it
-        try:
-            codex_cli = codex.find_cli()
-        except ProviderError:
-            codex_cli = None  # not installed: the app says so in its status
-    app = create_app(args.db, command=command or (claude_code.find_cli(args.claude) if args.claude else None),
-                     auth_policy=policy, local_only=policy is None, settings=settings,
-                     config_path=config_path, overridden=sorted(overrides), codex_command=codex_cli,
+    # Claude Code and Codex are searched for at each use (aihub/locate.py), these paths first:
+    # a path kept for the life of the server would go with the next update of the Codex app.
+    for flag, path in (("--claude", args.claude), ("--codex", args.codex)):
+        if path and not Path(path).is_file():
+            out(f"{flag} {path} : fichier introuvable, recherche automatique à chaque lancement.")
+    app = create_app(args.db, command=command, auth_policy=policy, local_only=policy is None, settings=settings,
+                     config_path=config_path, overridden=sorted(overrides),
+                     cli_paths={claude_code.PROVIDER: args.claude, codex.PROVIDER: args.codex},
                      journal_path=args.journal)
     backup_dir = app.state.backup.folder if app.state.backup else None
     if app.state.jobs.recovered:
@@ -409,10 +408,14 @@ def cmd_status(args, out, command):
         out(str(exc))
         return 1
     out(f"Claude Code : {' '.join(cli)}")
-    proc = subprocess.run(cli + ["auth", "status"], capture_output=True, text=True,
-                          stdin=subprocess.DEVNULL, timeout=60,
-                          env=claude_code.clean_env(os.environ),
-                          encoding="utf-8", errors="replace", creationflags=claude_code.NO_WINDOW)
+    try:
+        proc = locate.start(cli, ["auth", "status"], subprocess.run, capture_output=True, text=True,
+                            stdin=subprocess.DEVNULL, timeout=60,
+                            env=claude_code.clean_env(os.environ),
+                            encoding="utf-8", errors="replace", creationflags=claude_code.NO_WINDOW)
+    except ProviderError as exc:  # gone, and nothing else found (aihub/locate.py)
+        out(str(exc))
+        return 1
     try:
         status = json.loads(proc.stdout)
     except json.JSONDecodeError:
@@ -571,8 +574,10 @@ def main(argv=None, *, ask=input, out=None, command=None, secret=None):
     conn = db.connect(args.db)
     try:
         if args.command == "ask":
+            # --claude gives Claude Code's path only: Codex and the local AI are still searched for
+            # (a list alone would offer Claude Code only: providers.by_provider).
             return cmd_ask(args, conn, ask, out, command or (
-                claude_code.find_cli(args.claude) if args.claude else None))
+                {claude_code.PROVIDER: claude_code.find_cli(args.claude)} if args.claude else None))
         if args.command == "conversations":
             return cmd_conversations(conn, out)
         if args.command == "quota":

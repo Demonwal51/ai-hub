@@ -10,7 +10,6 @@ The CLI signs in with its own login. This module never reads credentials.
 import json
 import os
 import re
-import shutil
 import signal
 import subprocess
 import threading
@@ -81,44 +80,21 @@ class RunResult:
     usage: dict = field(default_factory=dict)  # the CLI's own token counts, by kind
 
 
-def _version_key(name):
-    try:
-        return tuple(int(part) for part in name.split("."))
-    except ValueError:
-        return None
-
-
-def find_cli(explicit=None):
+def find_cli(explicit=None, *, option=None, setting=None):
     """Return the command that starts Claude Code, as a list.
 
-    Order: the explicit path, `claude` on the PATH, then the copy that the
-    Claude desktop app keeps under %APPDATA%\\Claude\\claude-code\\<version>\\,
-    newest version first. That folder changes with every update, which is
-    why it is searched instead of written in the configuration.
+    `explicit`: exactly this file (a command of the command line), else an error.
+    Otherwise aihub/locate.py searches: `option` (serve --claude), `setting`
+    (Réglages), the PATH, then the copies of the installers, among them the one
+    the Claude desktop app keeps under %APPDATA%\\Claude\\claude-code\\<version>\\
+    (newest version first). The result can search again when its file goes.
     """
+    from .. import locate  # it imports this module
     if explicit:
         if not Path(explicit).is_file():
             raise ProviderError(f"Claude Code introuvable à l'emplacement indiqué : {explicit}")
         return [str(explicit)]
-    on_path = shutil.which("claude")
-    if on_path:
-        return [on_path]
-    appdata = os.environ.get("APPDATA")
-    if appdata:
-        root = Path(appdata) / "Claude" / "claude-code"
-        candidates = []
-        if root.is_dir():
-            for version_dir in root.iterdir():
-                key = _version_key(version_dir.name)
-                if key is None or not version_dir.is_dir():
-                    continue
-                for exe in version_dir.glob("*/claude.exe"):
-                    candidates.append((key, exe))
-        if candidates:
-            return [str(max(candidates)[1])]
-    raise ProviderError(
-        "Claude Code introuvable : installez-le ou indiquez le chemin de claude.exe dans la configuration"
-    )
+    return locate.command("claude", option=option, setting=setting)
 
 
 _HOST_SESSION_PREFIXES = ("CLAUDE_CODE_", "CLAUDE_AGENT_SDK_", "CLAUDE_PREVIEW_")
@@ -227,15 +203,14 @@ def read_usage(command, *, workdir, env=None, timeout_s=60, warning_from=_WARNIN
     The CLI answers a get_usage control request on its own: this costs no
     quota, unlike a request (about 26,000 tokens of context each).
     """
+    from .. import locate  # it imports this module
     if not Path(workdir).is_dir():
         raise ProviderError(f"dossier introuvable : {workdir}")
-    args = list(command) + [
-        "-p", "--input-format", "stream-json", "--output-format", "stream-json", "--verbose",
-        "--strict-mcp-config", "--no-session-persistence",
-    ]
+    tail = ["-p", "--input-format", "stream-json", "--output-format", "stream-json", "--verbose",
+            "--strict-mcp-config", "--no-session-persistence"]
     try:
-        proc = subprocess.Popen(
-            args, cwd=workdir, env=env if env is not None else clean_env(os.environ),
+        proc = locate.start(
+            command, tail, subprocess.Popen, cwd=workdir, env=env if env is not None else clean_env(os.environ),
             stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
             text=True, encoding="utf-8", errors="replace", bufsize=1,
             creationflags=NO_WINDOW, start_new_session=(os.name != "nt"),
@@ -364,7 +339,8 @@ class ClaudeCodeRun:
             raise ProviderError(f"mode de permission inconnu : {permission_mode!r}")
         if not isinstance(prompt, str) or not prompt.strip():
             raise ProviderError("demande vide")
-        self.command = list(command)
+        from .. import locate  # it imports this module
+        self.command = locate.keep(command)  # a searched one can search again
         self.prompt = prompt
         self.workdir = workdir
         self.permission_mode = permission_mode
@@ -510,9 +486,12 @@ class ClaudeCodeRun:
                 result.status = "stopped"
                 return result
             try:
+                from .. import locate  # it imports this module
                 spawn = self.execution.spawn if self.execution is not None else subprocess.Popen
-                proc = spawn(
-                    self.arguments(), cwd=self.workdir,
+                args = self.arguments()
+                # An isolated space's ['claude'] is started as it is: locate searches only a searched command.
+                proc = locate.start(
+                    self.command, args[len(self.command):], spawn, cwd=self.workdir,
                     env=self.env if self.env is not None else clean_env(os.environ),
                     stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
                     text=True, encoding="utf-8", errors="replace", bufsize=1,

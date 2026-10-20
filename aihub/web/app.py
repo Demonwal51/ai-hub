@@ -32,7 +32,7 @@ from .. import (auth, autonomous, backup, browse, config, db, eveil, memory, not
                 schedule, semantic, store, tools)
 from .. import access, accounts, attachments, compare, filesystem, importer, isolation, library, rag, resumption, sandbox_results, updater, usage, vaults
 from .. import restore as restoring
-from .. import places, project_export, relaunch, trials
+from .. import locate, places, project_export, relaunch, trials
 from ..providers import claude_code, codex, ollama
 from ..providers.claude_code import ProviderError
 from ..store import BypassConfirmationRequired, Busy, NotFound, StoreError
@@ -546,17 +546,37 @@ def _quota(row):
     return data
 
 
+def _status_hint(name, state, sign_in):
+    """What the status pill says of one AI's CLI, in words: never an exception's text."""
+    if state["found"] is False:
+        return state["error"]  # aihub/locate.py: what was looked at, and what to do
+    note = state.get("note")  # a path given or kept that has gone
+    if state["logged_in"]:
+        return note
+    if state["error"]:
+        text = (f"{name} est trouvé ({state['where'] or '?'}) mais ne répond pas comme prévu : vérifiez son "
+                "installation, ou choisissez-en une autre copie (Réglages › IA proposées et sauvegardes).")
+    else:
+        text = f"{name} n’est connecté à aucun compte : {sign_in}."
+    return f"{note} {text}" if note else text
+
+
 def create_app(db_path, *, command=None, env=None, allowed_roots=(), permission_timeout_s=1800,
                request_timeout_s=None, sse_ping_s=15, obsidian_vault=None, auth_policy=None,
                local_only=False, backup_dir=None, backup_keep=14, clock=None, keep_awake=False,
                awake_setter=None, settings=None, config_path=None, overridden=(), codex_command=None,
                push_post=None, run_scheduler=True, schedule_clock=None, ollama_url=None, local_home=None,
-               update_hooks=None, journal_path=None):
+               update_hooks=None, journal_path=None, cli_paths=None):
     """Build the application. `command` overrides the Claude Code CLI (tests).
 
     `codex_command` is the Codex CLI. Left to None, Codex is searched for
     only when `command` is too: a test that gives its own Claude Code does
     not start the real Codex of the computer by surprise.
+
+    A CLI searched for is searched at each use (aihub/locate.py), never kept from
+    the launch: `cli_paths` {provider: path} (serve --claude, --codex) first, then
+    the one kept in Réglages (claude_cli, codex_cli), then the PATH and the places
+    of the installers.
 
     `journal_path`: the server's log (serve --journal), whose end the dashboard shows.
 
@@ -615,9 +635,13 @@ def create_app(db_path, *, command=None, env=None, allowed_roots=(), permission_
     def policy_of(s):
         return auth.Policy(idle_days=s.idle_days, max_failures=s.max_failures, lock_minutes=s.lock_minutes)
 
-    # By provider; None: searched for; False: not offered.
-    commands = {claude_code.PROVIDER: command,
-                codex.PROVIDER: codex_command if codex_command is not None else (None if command is None else False),
+    # By provider; providers.searched(): searched for at each use, these paths first; False: not offered.
+    given_paths = cli_paths or {}
+    commands = {claude_code.PROVIDER: command if command is not None else providers.searched(
+                    given_paths.get(claude_code.PROVIDER), settings.claude_cli),
+                codex.PROVIDER: codex_command if codex_command is not None else (providers.searched(
+                    given_paths.get(codex.PROVIDER), settings.codex_cli)
+                    if command is None or given_paths.get(codex.PROVIDER) else False),
                 # The local AI: its URL (a test's own); same rule, no real Ollama behind a test's fake Claude.
                 ollama.PROVIDER: [ollama_url] if ollama_url else (None if command is None else False)}
     jobs = JobManager(db_path, command=commands, env=env, permission_timeout_s=permission_timeout_s,
@@ -727,6 +751,12 @@ def create_app(db_path, *, command=None, env=None, allowed_roots=(), permission_
         old = current()
         live["settings"] = new
         jobs.obsidian_vault = new.obsidian_vault
+        # The runs, the accounts and the state share `commands`: the path kept is tried at once.
+        for provider, kept in ((claude_code.PROVIDER, new.claude_cli), (codex.PROVIDER, new.codex_cli)):
+            if isinstance(commands[provider], dict):
+                commands[provider]["setting"] = kept
+        if (old.claude_cli, old.codex_cli) != (new.claude_cli, new.codex_cli):
+            status_cache.pop("all", None)  # the state of the AIs is read again with it
         if authority is not None:
             authority.policy = policy_of(new)
         if (backup_folder(old), old.backup_keep) != (backup_folder(new), new.backup_keep):
@@ -1579,36 +1609,47 @@ def create_app(db_path, *, command=None, env=None, allowed_roots=(), permission_
 
     # --- state of the providers -------------------------------------------
 
+    def cli_found(result, cli):
+        result.update(cli=" ".join(cli), **locate.origin(cli))
+
     def claude_status():
-        result = {"provider": "claude_code", "cli": None, "logged_in": None, "error": None}
+        result = {"provider": "claude_code", "cli": None, "logged_in": None, "error": None,
+                  "found": None, "where": None, "note": None}
         try:
             cli = providers.command_for(commands, claude_code.PROVIDER)
-            result["cli"] = " ".join(cli)
-            proc = subprocess.run(cli + ["auth", "status"], capture_output=True, text=True,
-                                  stdin=subprocess.DEVNULL, timeout=60, encoding="utf-8",
-                                  errors="replace", creationflags=claude_code.NO_WINDOW,
-                                  env=env if env is not None else claude_code.clean_env(os.environ))
+            cli_found(result, cli)
+            proc = locate.start(cli, ["auth", "status"], subprocess.run, capture_output=True, text=True,
+                                stdin=subprocess.DEVNULL, timeout=60, encoding="utf-8",
+                                errors="replace", creationflags=claude_code.NO_WINDOW,
+                                env=env if env is not None else claude_code.clean_env(os.environ))
             result["logged_in"] = bool(json.loads(proc.stdout).get("loggedIn"))
+        except locate.NotFound as exc:
+            result.update(found=False, error=str(exc))
         except ProviderError as exc:
             result["error"] = str(exc)
         except (OSError, ValueError, subprocess.SubprocessError) as exc:
             result["error"] = f"état de connexion illisible : {exc}"
+        result["hint"] = _status_hint(claude_code.DISPLAY_NAME, result, "lancez « claude auth login » dans un terminal")
         return result
 
     def codex_status():
         """Signed in, and the models this Codex offers (both free: no model call)."""
         result = {"provider": "codex", "cli": None, "logged_in": None, "error": None, "models": None,
-                  "offered": commands[codex.PROVIDER] is not False}
+                  "offered": commands[codex.PROVIDER] is not False, "found": None, "where": None, "note": None,
+                  "hint": None}
         if not result["offered"]:
             return result
         try:
             cli = providers.command_for(commands, codex.PROVIDER)
-            result["cli"] = " ".join(cli)
+            cli_found(result, cli)
             result["logged_in"] = codex.login_status(cli, env=env)
             if result["logged_in"]:
                 result["models"] = codex.list_models(cli, workdir=str(Path(db_path).resolve().parent), env=env)
+        except locate.NotFound as exc:
+            result.update(found=False, error=str(exc))
         except ProviderError as exc:
             result["error"] = str(exc)
+        result["hint"] = _status_hint(codex.DISPLAY_NAME, result, "ouvrez l’application Codex et connectez-vous")
         return result
 
     def local_status():
@@ -1753,7 +1794,57 @@ def create_app(db_path, *, command=None, env=None, allowed_roots=(), permission_
         return {"settings": s.to_dict(), "labels": config.LABELS, "all_models": list(config.MODELS),
                 "editable": config_path is not None, "password_needed": authority is not None,
                 "overridden": list(overridden), "backup_folder": backup_folder(s),
-                "file": str(Path(config_path).resolve()) if config_path else None}
+                "file": str(Path(config_path).resolve()) if config_path else None,
+                "programs": programs_state()}
+
+    # --- the programs the hub starts (aihub/locate.py) ------------------------------
+
+    def program_given(program):
+        """What the hub has for a program: providers.searched() (searched for, these paths first),
+        a command it was given (tests), or False (not offered)."""
+        if program == "sbx":
+            return providers.searched(setting=current().sandbox_cli)
+        return commands.get({name: provider for provider, name in locate.PROVIDERS.items()}[program])
+
+    def programs_state():
+        """Each program in use and where it comes from (Réglages), searched as at its next start."""
+        out = []
+        for program, spec in locate.PROGRAMS.items():
+            given = program_given(program)
+            if isinstance(given, dict):
+                out.append(locate.state(program, **given))
+            elif given is False:
+                out.append({"program": program, "label": spec.label, "offered": False, "found": False})
+            else:
+                out.append({"program": program, "label": spec.label, "offered": True, "found": True,
+                            "path": " ".join(given or ()), "where": locate.ORIGINS["given"], "version": None,
+                            "note": None, "error": None})
+        return out
+
+    scan_lock = threading.Lock()
+
+    @app.post("/api/programs/scan")
+    def scan_programs():
+        """« Chercher sur ce PC »: every copy of Claude Code, Codex and sbx on the local disks
+        (a minute at most). Nothing is kept: a copy is kept with the settings, by the owner."""
+        access.require_owner(me())
+        if not scan_lock.acquire(blocking=False):
+            raise Busy("une recherche est déjà en cours sur ce PC")
+        try:
+            where = {program: given for program in locate.PROGRAMS
+                     if isinstance(given := program_given(program), dict)}
+            result = locate.scan(where=where)
+        finally:
+            scan_lock.release()
+        locate.forget()                   # the next start searches again: a new copy may be there
+        status_cache.pop("all", None)
+        states = programs_state()
+        for entry, state in zip(result["programs"], states):
+            if entry["program"] not in where:  # a command the hub was given (tests): that one is in use
+                entry["in_use"] = state
+                for copy in entry["copies"]:
+                    copy["in_use"] = False
+        return dict(result, programs_state=states)
 
     @app.patch("/api/config")
     def change_config(body: ConfigChange, request: HttpRequest):
@@ -2100,6 +2191,19 @@ def create_app(db_path, *, command=None, env=None, allowed_roots=(), permission_
         checks.append({'id': 'disk', 'name': 'Espace disque', 'ok': free is not None and free >= 1024**3,
                        'detail': f'{free // (1024**2)} Mo libres.' if free is not None else 'Lecture du disque indisponible.',
                        'action': 'Vérifiez ou libérez le disque du serveur.' if free is None or free < 1024**3 else ''})
+        # Found or not, and where from (application Codex, PATH…): never its path.
+        for provider, name in ((claude_code.PROVIDER, 'Claude'), (codex.PROVIDER, 'Codex')):
+            if commands.get(provider) is False:
+                continue  # not offered on this server
+            try:
+                where = locate.origin(providers.command_for(commands, provider))['where']
+            except ProviderError:
+                where = None
+            checks.append({'id': provider, 'name': 'Claude Code' if provider == claude_code.PROVIDER else 'Codex',
+                           'ok': where is not None,
+                           'detail': f'{name} trouvé ({where}).' if where else f'{name} introuvable sur le PC du serveur.',
+                           'action': '' if where else ('Sur le PC du serveur, installez-le, ou lancez « Chercher sur ce PC » '
+                                                       'dans Réglages › IA proposées et sauvegardes.')})
         try:
             cli = sandbox.find_cli(current().sandbox_cli)
             probe_env = {k: v for k, v in os.environ.items() if k.upper() in

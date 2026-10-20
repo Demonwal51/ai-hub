@@ -28,7 +28,7 @@ import time
 from pathlib import Path
 from urllib.parse import urlsplit
 
-from . import providers
+from . import locate, providers
 from .providers import ProviderError, claude_code, codex
 
 PROVIDERS = (claude_code.PROVIDER, codex.PROVIDER)
@@ -88,9 +88,9 @@ def remove(root, user_id):
 
 
 def claude_signed_in(command, env, timeout_s=60):
-    proc = subprocess.run(list(command) + ["auth", "status"], capture_output=True, text=True,
-                          stdin=subprocess.DEVNULL, timeout=timeout_s, encoding="utf-8", errors="replace",
-                          creationflags=claude_code.NO_WINDOW, env=env)
+    proc = locate.start(command, ["auth", "status"], subprocess.run, capture_output=True, text=True,
+                        stdin=subprocess.DEVNULL, timeout=timeout_s, encoding="utf-8", errors="replace",
+                        creationflags=claude_code.NO_WINDOW, env=env)
     try:
         return bool(json.loads(proc.stdout).get("loggedIn"))
     except ValueError:
@@ -326,9 +326,9 @@ class Accounts:
         self.cancel_login(user, provider)
         args = ["auth", "logout"] if provider == claude_code.PROVIDER else ["logout"]
         try:
-            subprocess.run(self._command(provider) + args, capture_output=True, text=True,
-                           stdin=subprocess.DEVNULL, timeout=60, encoding="utf-8", errors="replace",
-                           creationflags=claude_code.NO_WINDOW, env=self.env_for(user))
+            locate.start(self._command(provider), args, subprocess.run, capture_output=True, text=True,
+                         stdin=subprocess.DEVNULL, timeout=60, encoding="utf-8", errors="replace",
+                         creationflags=claude_code.NO_WINDOW, env=self.env_for(user))
         except (OSError, subprocess.SubprocessError) as exc:
             raise AccountError(f"déconnexion impossible : {exc}") from None
 
@@ -353,11 +353,14 @@ class Accounts:
             with login._lock:
                 if login.done.is_set():
                     return
-                proc = login._proc = subprocess.Popen(
-                    list(command) + ["auth", "login", "--claudeai"], env=env, cwd=self.workdir,
+                proc = login._proc = locate.start(
+                    command, ["auth", "login", "--claudeai"], subprocess.Popen, env=env, cwd=self.workdir,
                     stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True,
                     encoding="utf-8", errors="replace", bufsize=1, creationflags=claude_code.NO_WINDOW,
                     start_new_session=(os.name != 'nt'))
+        except ProviderError as exc:  # nothing to start (aihub/locate.py)
+            login.finish("error", str(exc))
+            return
         except OSError as exc:
             login.finish("error", f"impossible de lancer Claude Code : {exc}")
             return

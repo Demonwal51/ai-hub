@@ -1993,6 +1993,13 @@ MUTATIONS.append(('v117: a & between quotes refused to a .cmd', 'aihub/locate.py
 MUTATIONS.append(('v117: the copies to keep not named for a screen reader', 'aihub/web/static/app.js',
                  ', "aria-label": `Retenir ${c.path}`', ''))
 
+# v118 (1.3.1): the plan's schema closed for OpenAI's strict mode (Codex)
+MUTATIONS.append(('v118: a subtask of the plan left open', 'aihub/orchestrator.py',
+                 '        "additionalProperties": False,  # OpenAI\'s strict mode (Codex) refuses an open object\n', ''))
+MUTATIONS.append(('v118: the plan left open', 'aihub/orchestrator.py',
+                 '        "required": ["summary", "max_parallel", "subtasks"],\n        "additionalProperties": False,\n',
+                 '        "required": ["summary", "max_parallel", "subtasks"],\n'))
+
 TEST_MODULES = []
 
 

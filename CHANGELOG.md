@@ -1,5 +1,12 @@
 # Journal des versions
 
+## 1.3.1 — 20 octobre 2026 : les plans de Codex refusés par OpenAI
+
+- **Codex peut de nouveau proposer un plan** (« Propose un plan d’abord », ou le chef de
+  plusieurs IA) : OpenAI refusait la forme imposée au plan (« Invalid schema for
+  response_format … additionalProperties … strict »). Le plan et chacune de ses sous-tâches
+  sont maintenant des objets fermés, comme l’exige son mode strict.
+
 ## 1.3.0 — 20 octobre 2026 : AI Hub trouve tout seul Claude Code et Codex
 
 - **Fini « [WinError 2] Le fichier spécifié est introuvable »** : Claude Code et Codex sont

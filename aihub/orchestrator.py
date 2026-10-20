@@ -61,6 +61,7 @@ def plan_schema(agent_names=None):
                       "description": "fichiers créés ou modifiés ; \"*\" si inconnu"},
         },
         "required": ["title", "description", "kind", "depends_on", "files"],
+        "additionalProperties": False,  # OpenAI's strict mode (Codex) refuses an open object
     }
     if agent_names:
         subtask["properties"]["agent"] = {"type": "string", "enum": list(agent_names)}
@@ -73,6 +74,7 @@ def plan_schema(agent_names=None):
             "subtasks": {"type": "array", "items": subtask, "minItems": 1, "maxItems": MAX_SUBTASKS},
         },
         "required": ["summary", "max_parallel", "subtasks"],
+        "additionalProperties": False,
     }
 
 

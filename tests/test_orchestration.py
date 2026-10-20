@@ -214,6 +214,25 @@ class AnswerParsingTests(unittest.TestCase):
             with self.subTest(answer=answer), self.assertRaises(ProviderError):
                 orchestrator.specs_from_answer(answer)
 
+    def test_the_plan_schema_is_strict(self):
+        """OpenAI's strict mode (Codex): every object closed, every property required."""
+        def objects(schema):
+            if isinstance(schema, dict):
+                if schema.get("type") == "object":
+                    yield schema
+                for value in schema.values():
+                    yield from objects(value)
+            elif isinstance(schema, list):
+                for value in schema:
+                    yield from objects(value)
+        for names in (None, ["A", "B"]):
+            found = list(objects(orchestrator.plan_schema(names)))
+            self.assertEqual(len(found), 2)  # the plan and a subtask
+            for schema in found:
+                with self.subTest(names=names, properties=sorted(schema["properties"])):
+                    self.assertIs(schema.get("additionalProperties"), False)
+                    self.assertEqual(sorted(schema["required"]), sorted(schema["properties"]))
+
 
 class ExecutionTests(OrchestrationTestCase):
     def test_full_plan_with_synthesis(self):
